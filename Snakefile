@@ -698,18 +698,51 @@ rule extract_3di_descriptors:
         """
 
 
-def get_block_extra_inputs(wildcards):
-    """Inputs a specific block's provider needs beyond the similarity matrix.
+#: Providers that read the UniProt features table. Keyed on the provider rather
+#: than the block id, for the reason recorded in
+#: config_schema.NOT_FUSABLE_PROVIDERS: the block id is a name the user chooses,
+#: so a table keyed on it would work only for users who happened to pick the
+#: expected one.
+FEATURES_TABLE_PROVIDERS = ("biophys", "domains")
 
-    Keyed on the provider rather than the block id, for the reason recorded in
-    config_schema.NOT_FUSABLE_PROVIDERS: the block id is a name the user chooses,
-    so a table keyed on it would work only for users who happened to pick the
-    expected one.
+
+def uniprot_features_table():
+    """The features table for this mode.
+
+    Search mode fetches it into the output directory; cluster mode takes the
+    user's file from the input directory. Same split as
+    `get_aggregate_features_input`, and the reason the path cannot come from the
+    config: it is a property of the run, not of the block.
+    """
+    if MODE == config_utils.Mode.SEARCH:
+        return rules.fetch_uniprot_metadata.output.uniprot_features
+    return FEATURES_FILE
+
+
+def get_block_extra_inputs(wildcards):
+    """Inputs a specific block's provider needs beyond the similarity matrix."""
+    block = MULTISPACE_CONFIG.blocks.get(wildcards.block_id)
+    if block is None:
+        return []
+    if block.provider == "threedi":
+        return [PROTEIN_FEATURES_DIR / THREEDI_DESCRIPTORS_FILENAME]
+    if block.provider in FEATURES_TABLE_PROVIDERS:
+        return [uniprot_features_table()]
+    return []
+
+
+def get_block_provider_inputs(wildcards):
+    """The `--provider-input NAME=PATH` arguments for this block.
+
+    Separate from the input list because snakemake's `{input}` expansion gives
+    the provider a bare path with no indication of what it is. A provider that
+    reads two files would have to index into that list positionally, which is
+    the same defect as reading a labeled matrix by position (ADR 0007).
     """
     block = MULTISPACE_CONFIG.blocks.get(wildcards.block_id)
-    if block is not None and block.provider == "threedi":
-        return [PROTEIN_FEATURES_DIR / THREEDI_DESCRIPTORS_FILENAME]
-    return []
+    if block is not None and block.provider in FEATURES_TABLE_PROVIDERS:
+        return "--provider-input features_file=" + str(uniprot_features_table())
+    return ""
 
 
 rule compute_block:
@@ -728,6 +761,8 @@ rule compute_block:
     output:
         manifest=BLOCKS_DIR / "{block_id}" / "manifest.json",
         protids=BLOCKS_DIR / "{block_id}" / "protids.txt",
+    params:
+        provider_inputs=get_block_provider_inputs,
     conda:
         "envs/analysis.yml"
     benchmark:
@@ -737,7 +772,8 @@ rule compute_block:
         python ProteinCartography/compute_block.py \
             --configfile {input.resolved_config} \
             --block-id {wildcards.block_id} \
-            --output-dir {OUTPUT_DIR}
+            --output-dir {OUTPUT_DIR} \
+            {params.provider_inputs}
         """
 
 
