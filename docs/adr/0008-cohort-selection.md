@@ -77,16 +77,43 @@ cohort:
   max_structures: 5000
   selection: as_filtered   # "as_filtered" (current) | "accession" | "significance"
   significance_rule:
-    blast: best_evalue_across_queries
-    foldseek: best_tmscore
+    measure: evalue        # "evalue" (default) | "bits" | "tmscore"
   record_truncation: true
 ```
+
+**Correction, made during implementation: `foldseek: best_tmscore` is not
+achievable, and the reason is circular.** The draft above asked for the best
+e-value across queries for BLAST hits and the best TM-score for Foldseek hits.
+The TM-score half cannot be done.
+
+Search mode queries the Foldseek **web API**, and its `.m8` output has 21
+columns with no alignment TM-score — `constants.FOLDSEEK_COLUMN_NAMES`, verified
+against a recorded API response. The TM-scores this pipeline is built around
+come from the *local* all-versus-all run in `foldseek_clustering`, which runs on
+the downloaded structures. So ranking the cohort by TM-score would require the
+structures that the ranking exists to choose. There is no ordering of the DAG
+that resolves this; it is a property of where the measurement comes from.
+
+What the web API does report is an e-value and a bit score, and those are what
+`hit_significance.py` aggregates: the best value across every query that found
+the hit, so a protein is ranked by the strongest evidence anyone has for it
+rather than by the query that barely found it. `tmscore` remains in the
+vocabulary because the measure is well-defined wherever scores exist — cluster
+mode has real TM-scores — but it is not the default and cannot be used in search
+mode.
+
+One consequence worth stating plainly: **`significance` is a weaker rule than
+this ADR originally implied.** An e-value is a sequence-and-structure alignment
+significance, not a measure of structural similarity, so ranking by it selects
+for confidently-detected hits rather than for structurally close ones. It is
+still reproducible and still principled, which is more than either alternative
+manages. It is not the TM-score ranking the draft promised.
 
 | rule | order truncated | reproducible? | principled? |
 |---|---|---|---|
 | **`as_filtered`** (default) | UniProt response order, as today | **no** — depends on UniProt | no |
 | `accession` | sorted by accession | yes | no — accessions cluster by proteome |
-| `significance` | best e-value / best TM-score | yes | yes |
+| `significance` | best e-value across queries | yes | yes, with the caveat above |
 
 `as_filtered` is the default because it is what runs today, and the parity test
 depends on that. It is named `as_filtered` rather than `accession` precisely

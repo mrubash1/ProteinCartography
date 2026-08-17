@@ -37,7 +37,7 @@ from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 
-from config_schema import SELECTION_RULES
+from config_schema import SELECTION_RULES, SIGNIFICANCE_MEASURES
 
 __all__ = [
     "SIGNIFICANCE_MEASURES",
@@ -54,27 +54,6 @@ __all__ = [
 class CohortError(Exception):
     """Cohort selection was asked for something it cannot do."""
 
-
-#: Each significance measure and which direction is better.
-#:
-#: ``better`` is the whole point of this table. Ranking by e-value ascending and
-#: by TM-score ascending are both one-word changes and only one of them is
-#: right; deriving the direction from the measure's name means the caller cannot
-#: get it wrong by passing a raw float.
-SIGNIFICANCE_MEASURES = {
-    "evalue": {
-        "better": "lower",
-        "description": "BLAST or Foldseek expectation value; lower is a stronger hit",
-    },
-    "bits": {
-        "better": "higher",
-        "description": "alignment bit score; higher is a stronger hit",
-    },
-    "tmscore": {
-        "better": "higher",
-        "description": "structural alignment TM-score in [0, 1]; higher is more similar",
-    },
-}
 
 #: Rules whose output does not depend on anything outside this repository.
 #:
