@@ -54,25 +54,50 @@ taxon-biased sample, and nothing says so.
 
 ## Decision
 
-**1. Fix determinism at the truncation point, not upstream of it.** The sort is
-applied where the cut happens, so it cannot be lost by an intermediate rewrite.
-This also fixes the current non-determinism, which #106 intended to fix and did
-not.
+**1. Surface the problem by default; do not silently change the answer.**
 
-**2. Selection becomes an explicit, configurable rule.**
+An earlier draft of this ADR proposed sorting at the truncation point by default,
+described as "reproducing current behavior". That was wrong, and checking the
+code is what caught it. `fetch_uniprot_metadata` chunks the sorted accession list
+into batches (default 100) and appends each batch's TSV response in the order
+UniProt returns it, dropping accessions it does not recognize. So the order
+reaching `download_pdbs` is *batch order with arbitrary order inside each batch,
+and batch boundaries that shift whenever an accession is dropped*. Sorting at the
+truncation point would therefore select a **different set of proteins** than the
+pipeline selects today — a different map, and a failed parity test.
+
+Silently improving a scientific result is still silently changing it. So the
+default records the problem and changes nothing.
+
+**2. Selection becomes an explicit, configurable rule, with the current
+behavior named honestly.**
 
 ```yaml
 cohort:
   max_structures: 5000
-  selection: significance      # "accession" (current, alphabetical) | "significance"
+  selection: as_filtered   # "as_filtered" (current) | "accession" | "significance"
   significance_rule:
     blast: best_evalue_across_queries
     foldseek: best_tmscore
   record_truncation: true
 ```
 
-**`selection: accession` is the default**, reproducing current behavior exactly,
-because the default config must stay byte-identical. `significance` is opt-in.
+| rule | order truncated | reproducible? | principled? |
+|---|---|---|---|
+| **`as_filtered`** (default) | UniProt response order, as today | **no** — depends on UniProt | no |
+| `accession` | sorted by accession | yes | no — accessions cluster by proteome |
+| `significance` | best e-value / best TM-score | yes | yes |
+
+`as_filtered` is the default because it is what runs today, and the parity test
+depends on that. It is named `as_filtered` rather than `accession` precisely
+because calling it "accession" would repeat the mistake #106 made: assuming the
+sort survived when it does not.
+
+**3. The diagnostic fires regardless of the rule.** Whatever the selection, the
+run records candidate counts, whether truncation fired, and — when the rule is
+`as_filtered` and truncation fired — an explicit warning that the retained set is
+not reproducible. A user does not have to opt into being told their cohort was
+arbitrarily cut.
 
 **3. Truncation is recorded in the manifest and surfaced as a first-class
 diagnostic**, never silent:
@@ -96,9 +121,14 @@ which rule ran so the distinction is auditable after the fact.
 ## Consequences
 
 - The default map is unchanged, and the parity test proves it.
-- Users who opt into `significance` get a cohort chosen by evidence strength
-  rather than by accession string, at the cost of a different map — which is
-  correct, and is why it is opt-in rather than a silent improvement.
+- Users who opt into `accession` or `significance` get a different, better-defined
+  cohort, at the cost of a different map — which is correct, and is why both are
+  opt-in rather than silent improvements.
+- **The default remains non-reproducible, and this ADR does not fix that.** It
+  makes it visible. Choosing `accession` is a one-line config change and is the
+  right default for anyone starting fresh; making it the default here would
+  break the parity test that the rest of this work depends on. Recommending the
+  switch to upstream, separately, is the right venue.
 - The truncation diagnostic will sometimes reveal that a published map was
   built on a taxon-biased sample. That is a feature.
 - Cohort selection sits upstream of every block, so this is the one decision in

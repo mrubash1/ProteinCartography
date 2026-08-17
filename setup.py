@@ -5,7 +5,10 @@ setup(
     url="https://github.com/Arcadia-Science/ProteinCartography-private",
     author="Dennis Sun",
     author_email="dennis.sun@arcadiascience.com",
-    packages=["ProteinCartography"],
+    packages=[
+        "ProteinCartography",
+        "ProteinCartography.spaces",
+    ],
     version="0.0.2",
     license="MIT",
     description="Builds maps of protein space from structures.",
