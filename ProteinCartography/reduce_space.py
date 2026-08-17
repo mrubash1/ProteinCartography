@@ -16,7 +16,7 @@ import argparse
 import json
 import os
 
-import yaml
+from config_io import load_config
 from config_schema import from_legacy
 from index import ProteinIndex
 from spaces.manifest import Manifest
@@ -81,8 +81,7 @@ def _features_for(space, store: BlockStore, config):
 
 def main() -> int:
     args = parse_args()
-    with open(args.configfile) as fh:
-        config = from_legacy(yaml.safe_load(fh))
+    config = from_legacy(load_config(args.configfile))
 
     if args.space_id not in config.spaces:
         raise SystemExit(

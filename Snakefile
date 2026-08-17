@@ -616,6 +616,31 @@ rule dim_reduction:
         """
 
 
+rule multispace_config:
+    """
+    Write the run's config as JSON for the block and space scripts to read.
+
+    Not a convenience. Those scripts run in `envs/analysis.yml`, which has no
+    PyYAML, so they could not read the config at all -- `compute_block` failed at
+    import the first time it was executed. Adding PyYAML to that environment
+    would change its hash and force a fresh solve of the one environment whose
+    package versions decide the pipeline's numeric output, which this repository
+    has already been bitten by once. Writing JSON avoids the parser instead.
+
+    `run:` rather than `shell:`, so it executes in snakemake's own environment
+    and needs no conda environment of its own.
+    """
+    output:
+        resolved=OUTPUT_DIR / "multispace_config.json",
+    run:
+        import json
+
+        os.makedirs(os.path.dirname(output.resolved), exist_ok=True)
+        with open(output.resolved, "w") as handle:
+            json.dump(dict(config), handle, indent=2, sort_keys=True, default=str)
+            handle.write("\n")
+
+
 rule compute_block:
     """
     Compute one representation and write it to the block store.
@@ -627,6 +652,7 @@ rule compute_block:
     """
     input:
         all_by_all_tmscores=rules.foldseek_clustering.output.all_by_all_tmscores,
+        resolved_config=rules.multispace_config.output.resolved,
     output:
         manifest=BLOCKS_DIR / "{block_id}" / "manifest.json",
         protids=BLOCKS_DIR / "{block_id}" / "protids.txt",
@@ -637,7 +663,7 @@ rule compute_block:
     shell:
         """
         python ProteinCartography/compute_block.py \
-            --configfile {workflow.configfiles[0]} \
+            --configfile {input.resolved_config} \
             --block-id {wildcards.block_id} \
             --output-dir {OUTPUT_DIR}
         """
@@ -659,7 +685,8 @@ rule reduce_space:
     scientific result.
     """
     input:
-        get_space_block_inputs,
+        blocks=get_space_block_inputs,
+        resolved_config=rules.multispace_config.output.resolved,
     output:
         embedding=SPACES_DIR / "{space_id}" / "embedding_{reducer}.tsv",
     conda:
@@ -669,7 +696,7 @@ rule reduce_space:
     shell:
         """
         python ProteinCartography/reduce_space.py \
-            --configfile {workflow.configfiles[0]} \
+            --configfile {input.resolved_config} \
             --space-id {wildcards.space_id} \
             --reducer {wildcards.reducer} \
             --output-dir {OUTPUT_DIR}
