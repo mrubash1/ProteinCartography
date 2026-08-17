@@ -26,6 +26,7 @@ CORE_MODULES = [
     "config_schema",
     "coregistration",
     "coregister",
+    "enrichment",
     "spaces.base",
     "spaces.registry",
     "spaces.store",
