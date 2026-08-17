@@ -42,11 +42,29 @@ blocks:
     representation: profile
     normalization: unit_mean_distance
 
+  # Foldseek's 3Di alphabet as k-mer frequencies. Local structure, where
+  # `tmscore` is global: two proteins sharing a domain but differing in how
+  # their domains are arranged score poorly under TM-score, because no single
+  # rigid superposition fits both, and score alike here. The two spaces are
+  # meant to disagree, and where they disagree is the finding.
+  threedi:
+    provider: threedi
+    k: 3
+    scaling: frequency
+
 spaces:
   structure:
     blocks: [tmscore]
     strategy: none
     reducers: [pca_umap, pca_tsne]
+
+  # A second, independent geometry over the same protein index. Not fused with
+  # `structure` -- co-registration is the default product and fusion is an
+  # explicitly invoked analysis. See docs/adr/0001-block-space-view.md.
+  local_structure:
+    blocks: [threedi]
+    strategy: none
+    reducers: [pca_umap]
 
 # Overlay-only signals may be declared here and used as overlays, but the
 # validator will refuse to fuse them into a geometry, with the circularity

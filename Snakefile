@@ -75,6 +75,10 @@ FINAL_RESULTS_DIR = OUTPUT_DIR / "final_results"
 BLOCKS_DIR = OUTPUT_DIR / "blocks"
 SPACES_DIR = OUTPUT_DIR / "spaces"
 
+# Foldseek's 3Di structural alphabet, one row per analyzed structure. Produced
+# only when a block uses the `threedi` provider.
+THREEDI_DESCRIPTORS_FILENAME = "3di_descriptors.tsv"
+
 # The multi-space configuration. A config with no `blocks`/`spaces` keys is
 # translated into the single structure space the pipeline has always built, and
 # `MULTISPACE_ENABLED` stays false so none of the new rules enter the DAG. That
@@ -665,6 +669,49 @@ rule multispace_config:
             handle.write("\n")
 
 
+rule extract_3di_descriptors:
+    """
+    Extract foldseek's 3Di structural alphabet for every analyzed structure.
+
+    Its own rule rather than part of `compute_block` because it needs the
+    foldseek binary, which lives in a different conda environment from the one
+    the block providers run in. Same arrangement as `foldseek_clustering`: the
+    tool writes a file, the provider reads it.
+
+    Only in the DAG when a block actually uses the `threedi` provider.
+    """
+    input:
+        pdb_files=get_pdb_filepaths,
+    output:
+        descriptors=PROTEIN_FEATURES_DIR / THREEDI_DESCRIPTORS_FILENAME,
+        # foldseek writes a `.dbtype` sidecar next to its output. Declared so
+        # snakemake tracks and cleans it rather than leaving it as litter that
+        # nothing in the workflow accounts for.
+        dbtype=PROTEIN_FEATURES_DIR / (THREEDI_DESCRIPTORS_FILENAME + ".dbtype"),
+    conda:
+        "envs/foldseek.yml"
+    benchmark:
+        BENCHMARKS_DIR / "extract_3di_descriptors.txt"
+    shell:
+        """
+        foldseek structureto3didescriptor {input.pdb_files} {output.descriptors}
+        """
+
+
+def get_block_extra_inputs(wildcards):
+    """Inputs a specific block's provider needs beyond the similarity matrix.
+
+    Keyed on the provider rather than the block id, for the reason recorded in
+    config_schema.NOT_FUSABLE_PROVIDERS: the block id is a name the user chooses,
+    so a table keyed on it would work only for users who happened to pick the
+    expected one.
+    """
+    block = MULTISPACE_CONFIG.blocks.get(wildcards.block_id)
+    if block is not None and block.provider == "threedi":
+        return [PROTEIN_FEATURES_DIR / THREEDI_DESCRIPTORS_FILENAME]
+    return []
+
+
 rule compute_block:
     """
     Compute one representation and write it to the block store.
@@ -677,6 +724,7 @@ rule compute_block:
     input:
         all_by_all_tmscores=rules.foldseek_clustering.output.all_by_all_tmscores,
         resolved_config=rules.multispace_config.output.resolved,
+        provider_inputs=get_block_extra_inputs,
     output:
         manifest=BLOCKS_DIR / "{block_id}" / "manifest.json",
         protids=BLOCKS_DIR / "{block_id}" / "protids.txt",
