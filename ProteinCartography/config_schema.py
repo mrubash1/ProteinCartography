@@ -31,6 +31,7 @@ from spaces.base import (
 __all__ = [
     "NOT_FUSABLE_PROVIDERS",
     "NOT_FUSABLE_REASONS",
+    "SIGNIFICANCE_MEASURES",
     "BlockConfig",
     "CohortConfig",
     "ConfigError",
@@ -43,6 +44,39 @@ __all__ = [
 
 REPRESENTATIONS = ("profile", "direct")
 SELECTION_RULES = ("as_filtered", "accession", "significance")
+
+#: Each significance measure a cohort can be ranked by, and which direction is
+#: better. Consumed by ``cohort.select``; declared here because it is
+#: configuration vocabulary, and because validating it at config-parse time is
+#: what stops a typo from failing four hours into a search run.
+#:
+#: ``better`` is the point of the table. Ranking by e-value ascending and by
+#: TM-score ascending are both one-word changes and only one of them is right;
+#: deriving the direction from the measure's name means a caller holding a raw
+#: float cannot get it wrong.
+#:
+#: ``tmscore`` is listed and is *not* obtainable during a search-mode run: the
+#: Foldseek web API reports no TM-score, and the pipeline's TM-scores come from
+#: the local all-versus-all run, which happens after the structures the cohort
+#: rule chooses have already been downloaded. It stays in the table because the
+#: measure is well-defined wherever scores do exist. See ADR 0008.
+SIGNIFICANCE_MEASURES = {
+    "evalue": {
+        "better": "lower",
+        "description": "BLAST or Foldseek expectation value; lower is a stronger hit",
+    },
+    "bits": {
+        "better": "higher",
+        "description": "alignment bit score; higher is a stronger hit",
+    },
+    "tmscore": {
+        "better": "higher",
+        "description": "structural alignment TM-score in [0, 1]; higher is more similar",
+    },
+}
+
+#: The measure used when a config asks for `significance` without naming one.
+DEFAULT_SIGNIFICANCE_MEASURE = "evalue"
 LEGACY_PLOTTING_MODES = ("pca", "tsne", "umap", "pca_tsne", "pca_umap")
 
 #: The space that legacy `plotting_modes` maps onto. Named so that an existing
@@ -219,7 +253,17 @@ class CohortConfig:
         )
         _require_choice("cohort.selection", self.selection, SELECTION_RULES)
         _require_mapping("cohort.significance_rule", self.significance_rule)
+        # Checked here rather than where it is used, because where it is used is
+        # after the searches have run.
+        _require_choice(
+            "cohort.significance_rule.measure", self.measure, tuple(SIGNIFICANCE_MEASURES)
+        )
         _require_bool("cohort.record_truncation", self.record_truncation)
+
+    @property
+    def measure(self) -> str:
+        """Which significance measure ranks the cohort."""
+        return self.significance_rule.get("measure", DEFAULT_SIGNIFICANCE_MEASURE)
 
     @classmethod
     def from_dict(cls, data: Mapping | None) -> CohortConfig:
@@ -649,6 +693,24 @@ class MultispaceConfig:
 # ---------------------------------------------------------------------------
 
 
+def _cohort_from_legacy(config: Mapping) -> dict:
+    """The `cohort` block, with the top-level `max_structures` folded in.
+
+    Both branches of :func:`from_legacy` need this and an earlier version only
+    applied it to one of them, which meant a `cohort:` block in a config with no
+    `blocks`/`spaces` keys -- that is, in every existing config -- was silently
+    discarded. `selection:` was then a setting that parsed, validated, and did
+    nothing. Sharing the code is the fix; keeping it in one place is the point.
+
+    The nested key wins when both are present, so a config can move to `cohort:`
+    without deleting the old key first.
+    """
+    cohort = dict(_require_mapping("cohort", config.get("cohort") or {}))
+    if "max_structures" in config and "max_structures" not in cohort:
+        cohort["max_structures"] = int(config["max_structures"])
+    return cohort
+
+
 def from_legacy(config: Mapping | None) -> MultispaceConfig:
     """Build a MultispaceConfig from an existing ``config.yml``.
 
@@ -670,20 +732,13 @@ def from_legacy(config: Mapping | None) -> MultispaceConfig:
 
     if config.get("blocks") or config.get("spaces"):
         merged = dict(config)
-        merged.setdefault("cohort", {})
-        if "max_structures" in config and "max_structures" not in merged["cohort"]:
-            merged["cohort"] = dict(merged["cohort"])
-            merged["cohort"]["max_structures"] = int(config["max_structures"])
+        merged["cohort"] = _cohort_from_legacy(config)
         return MultispaceConfig.from_dict(merged)
 
     modes = config.get("plotting_modes") or ["pca_umap"]
     modes = _require_sequence("plotting_modes", modes)
     for i, mode in enumerate(modes):
         _require_choice(f"plotting_modes[{i}]", mode, LEGACY_PLOTTING_MODES)
-
-    cohort: dict = {}
-    if "max_structures" in config:
-        cohort["max_structures"] = int(config["max_structures"])
 
     return MultispaceConfig.from_dict(
         {
@@ -701,7 +756,7 @@ def from_legacy(config: Mapping | None) -> MultispaceConfig:
                     "reducers": list(modes),
                 }
             },
-            "cohort": cohort,
+            "cohort": _cohort_from_legacy(config),
             "from_legacy_config": True,
         }
     )

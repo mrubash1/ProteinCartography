@@ -29,6 +29,7 @@ from pathlib import Path
 import pytest
 from parity import (
     ADDITIVE_OUTPUTS,
+    CRITICAL_OUTPUTS,
     assert_critical_outputs_compared,
     compare_trees,
     normalize_bytes,
@@ -256,6 +257,42 @@ def test_the_cohort_the_report_describes_is_the_cohort_that_was_built(runs):
 
 
 @pytest.mark.slow
+def test_significance_selection_produces_a_reproducible_cohort(
+    tmp_path_factory, repo_dirpath, conda_prefix
+):
+    """The opt-in rule, exercised through the DAG rather than in isolation.
+
+    This is the only coverage of `aggregate_hit_significance` actually running:
+    the rule is deliberately absent from the default DAG, so nothing else
+    reaches it. Asserted on the report rather than on the outputs, because the
+    fixture only carries AlphaFold responses for the ten proteins the *default*
+    rule selects -- a different cohort means most downloads fail, which is
+    itself confirmation that the rule selects differently.
+    """
+    import json
+
+    work = tmp_path_factory.mktemp("significance")
+    output = run_pipeline(
+        Path(repo_dirpath),
+        work / "run",
+        conda_prefix=conda_prefix,
+        extra_config={"cohort": {"selection": "significance", "max_structures": 10}},
+    )
+
+    scores = (output / "protein_features" / "hit_significance.tsv").read_text().splitlines()
+    assert scores[0] == "protid\tevalue\tbits\tn_queries\tsources"
+    assert len(scores) > 100, "the Foldseek results should score many accessions"
+
+    payload = json.loads((output / "protein_features" / "cohort_report.json").read_text())
+    assert payload["rule"] == "significance"
+    assert payload["measure"] == "evalue"
+    assert payload["truncation_fired"] is True
+    # The point of the rule: truncation fired and the result is still reproducible.
+    assert payload["reproducible"] is True
+    assert not any("not controlled by this pipeline" in w for w in payload["warnings"])
+
+
+@pytest.mark.slow
 def test_the_cohort_report_is_deterministic(runs, nondeterminism_floor):
     """It lands in the output tree, so it must not become a source of churn."""
     relpath = "protein_features/cohort_report.json"
@@ -403,7 +440,29 @@ def test_an_unknown_baseline_side_is_rejected():
 def test_every_additive_output_carries_a_reason():
     for path, reason in ADDITIVE_OUTPUTS:
         assert path and reason, path
-        assert "*" not in path, f"{path}: additive outputs are exact paths, not globs"
+
+
+def test_no_additive_pattern_can_swallow_a_critical_output():
+    """The allowance must not be able to excuse a missing promised artifact.
+
+    A pattern loose enough to match one of the CRITICAL_OUTPUTS would turn
+    "the baseline produced this and we do not" into an allowed difference for
+    exactly the files whose byte-identity is the promise.
+    """
+    import fnmatch
+
+    for pattern, _reason in ADDITIVE_OUTPUTS:
+        for critical in CRITICAL_OUTPUTS:
+            relpath = critical.format(name="parity")
+            assert not fnmatch.fnmatch(relpath, pattern), f"{pattern} matches {relpath}"
+
+
+def test_a_per_protein_additive_pattern_matches_its_files(tmp_path):
+    """The mapping file is one per query protein, so its entry is a glob."""
+    a, b = _trees_where(tmp_path, in_a=["blast_results/P60709.blast_hits.mapping.tsv"])
+    report = compare_trees(a, b, baseline="b")
+    assert report.ok
+    assert "discards" in report.added["blast_results/P60709.blast_hits.mapping.tsv"]
 
 
 def test_a_tree_compared_against_itself_is_clean(tmp_path):

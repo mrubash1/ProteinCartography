@@ -113,6 +113,11 @@ MAX_FOLDSEEK_HITS = int(config["max_foldseek_hits"])
 # `from_legacy` copies the old key across when the new one is absent.
 MAX_STRUCTURES = MULTISPACE_CONFIG.cohort.max_structures
 COHORT_SELECTION = MULTISPACE_CONFIG.cohort.selection
+COHORT_MEASURE = MULTISPACE_CONFIG.cohort.measure
+# Significance ranking needs a score per candidate, and building that table
+# means reading every raw search result. The default rule needs no scores, so
+# the rule that builds it stays out of the DAG entirely unless it is asked for.
+COHORT_NEEDS_SIGNIFICANCE = COHORT_SELECTION == "significance"
 MIN_LENGTH = int(config["min_length"])
 MAX_LENGTH = int(config["max_length"])
 UNIPROT_ADDITIONAL_FIELDS = config["uniprot_additional_fields"]
@@ -224,6 +229,10 @@ rule map_refseq_ids:
         blast_hits=rules.extract_blast_hits.output.blast_hits,
     output:
         blast_hits_uniprot_ids=BLAST_RESULTS_DIR / "{protid}.blast_hits.uniprot.txt",
+        # The from/to pairs behind that list. The list alone loses which RefSeq
+        # accession became which UniProt entry, and that correspondence is the
+        # only way to key a BLAST e-value to a cohort candidate.
+        refseq_mapping=BLAST_RESULTS_DIR / "{protid}.blast_hits.mapping.tsv",
     benchmark:
         BENCHMARKS_DIR / "{protid}.map_refseq_ids.txt"
     conda:
@@ -232,7 +241,8 @@ rule map_refseq_ids:
         """
         python ProteinCartography/map_refseq_ids.py \
             --input {input.blast_hits} \
-            --output {output.blast_hits_uniprot_ids}
+            --output {output.blast_hits_uniprot_ids} \
+            --mapping-output {output.refseq_mapping}
         """
 
 
@@ -307,6 +317,43 @@ rule aggregate_foldseek_fraction_seq_identity:
             --input {input.m8_files} \
             --output {output.fident_features} \
             --protid {wildcards.protid}
+        """
+
+
+rule aggregate_hit_significance:
+    """
+    Best e-value and bit score per hit, across every query that found it.
+
+    Only in the DAG when `cohort.selection` is `significance` -- see the
+    conditional input on `download_pdbs`. The default cohort rule needs no
+    scores, so the default run does not build this and its output tree is
+    unchanged.
+
+    Note that this is an e-value and not a TM-score, which is what ADR 0008
+    originally asked for. The Foldseek web API's .m8 output has no TM-score
+    column, and the TM-scores the pipeline is built around come from the local
+    all-versus-all run, which happens after the structures are downloaded. See
+    the header of hit_significance.py.
+    """
+    input:
+        m8_files=expand(rules.run_foldseek.output.m8_files, protid=SEARCH_MODE_INPUT_PROTIDS),
+        blast_results=expand(rules.run_blast.output.blast_results, protid=SEARCH_MODE_INPUT_PROTIDS),
+        refseq_mapping=expand(
+            rules.map_refseq_ids.output.refseq_mapping, protid=SEARCH_MODE_INPUT_PROTIDS
+        ),
+    output:
+        significance=PROTEIN_FEATURES_DIR / "hit_significance.tsv",
+    benchmark:
+        BENCHMARKS_DIR / "aggregate_hit_significance.txt"
+    conda:
+        "envs/pandas.yml"
+    shell:
+        """
+        python ProteinCartography/hit_significance.py \
+            --foldseek-m8 {input.m8_files} \
+            --blast-results {input.blast_results} \
+            --refseq-mapping {input.refseq_mapping} \
+            --output {output.significance}
         """
 
 
@@ -388,9 +435,23 @@ checkpoint download_pdbs:
     cohort decision to report.
     """
     input:
+        **(
+            {"significance": rules.aggregate_hit_significance.output.significance}
+            if COHORT_NEEDS_SIGNIFICANCE
+            else {}
+        ),
         filtered_aggregated_hits=rules.filter_aggregated_hits.output.filtered_aggregated_hits,
         uniprot_features=rules.fetch_uniprot_metadata.output.uniprot_features,
         aggregated_hits=rules.aggregate_hits.output.aggregated_hits,
+    params:
+        significance_args=(
+            "--significance-table "
+            + str(PROTEIN_FEATURES_DIR / "hit_significance.tsv")
+            + " --significance-measure "
+            + COHORT_MEASURE
+            if COHORT_NEEDS_SIGNIFICANCE
+            else ""
+        ),
     output:
         protein_structures_dir=directory(DOWNLOADED_PROTEIN_STRUCTURES_DIR),
         cohort_report=PROTEIN_FEATURES_DIR / "cohort_report.json",
@@ -407,7 +468,8 @@ checkpoint download_pdbs:
             --selection {COHORT_SELECTION} \
             --uniprot-features {input.uniprot_features} \
             --candidates-before-filtering {input.aggregated_hits} \
-            --cohort-report {output.cohort_report}
+            --cohort-report {output.cohort_report} \
+            {params.significance_args}
         """
 
 

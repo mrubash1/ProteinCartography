@@ -130,6 +130,12 @@ ADDITIVE_OUTPUTS = (
         "list silently, so it has no equivalent file. Its presence is the point: "
         "the retained set was always a choice and now the run says so.",
     ),
+    (
+        "blast_results/*.blast_hits.mapping.tsv",
+        "the RefSeq-to-UniProt pairs behind the hit list, which the baseline "
+        "computes and discards. Written sorted and deduplicated, so it is stable "
+        "run to run; needed to key a BLAST e-value to a cohort candidate.",
+    ),
 )
 
 #: The artifacts whose byte-identity *is* the backwards-compatibility promise.
