@@ -74,6 +74,7 @@ FINAL_RESULTS_DIR = OUTPUT_DIR / "final_results"
 # multi-space outputs; empty unless the config defines `spaces`
 BLOCKS_DIR = OUTPUT_DIR / "blocks"
 SPACES_DIR = OUTPUT_DIR / "spaces"
+COREGISTRATION_DIR = OUTPUT_DIR / "coregistration"
 
 # Foldseek's 3Di structural alphabet, one row per analyzed structure. Produced
 # only when a block uses the `threedi` provider.
@@ -97,6 +98,30 @@ if MULTISPACE_ENABLED:
             # Built by concatenation, never an f-string: under PEP 701 `make
             # format` rewrites the doubled braces that make a literal wildcard.
             MULTISPACE_TARGETS.append(SPACES_DIR / space_id / ("embedding_" + reducer + ".tsv"))
+
+# Co-registration compares spaces pairwise. Empty unless `coregistration.compare`
+# names at least two of them, so asking for spaces does not silently buy a
+# comparison as well.
+COREGISTERED_SPACES = list(MULTISPACE_CONFIG.coregistration.compare) if MULTISPACE_ENABLED else []
+COREGISTRATION_ENABLED = len(COREGISTERED_SPACES) > 1
+COREGISTRATION_PAIR_FILES = []
+# Procrustes needs both layouts in the same coordinate system, so it needs one
+# reducer that every compared space ran. Picking the first shared one keeps the
+# choice deterministic; when there is none, the entry point records that the
+# disparity was not computed rather than inventing a comparison.
+COREGISTRATION_REDUCER = None
+if COREGISTRATION_ENABLED:
+    for space_a, space_b in (
+        (a, b) for i, a in enumerate(COREGISTERED_SPACES) for b in COREGISTERED_SPACES[i + 1 :]
+    ):
+        COREGISTRATION_PAIR_FILES.append(
+            COREGISTRATION_DIR / (space_a + "__vs__" + space_b + ".tsv")
+        )
+    shared_reducers = set.intersection(
+        *(set(MULTISPACE_CONFIG.spaces[s].reducers) for s in COREGISTERED_SPACES)
+    )
+    if shared_reducers:
+        COREGISTRATION_REDUCER = sorted(shared_reducers)[0]
 
 # search-mode-specific parameters
 # note: although these parameters are only used in search mode, we can assume they exist here
@@ -791,6 +816,74 @@ rule reduce_space:
         """
 
 
+def get_coregistration_block_inputs(wildcards):
+    """Every block behind every compared space."""
+    needed = []
+    for space_id in COREGISTERED_SPACES:
+        for block_id in MULTISPACE_CONFIG.spaces[space_id].blocks:
+            needed.append(str(BLOCKS_DIR / block_id / "manifest.json"))
+    return sorted(set(needed))
+
+
+def get_coregistration_embeddings(wildcards):
+    """The 2-D embeddings the Procrustes comparison needs, or none."""
+    if COREGISTRATION_REDUCER is None:
+        return []
+    return [
+        str(SPACES_DIR / space_id / ("embedding_" + COREGISTRATION_REDUCER + ".tsv"))
+        for space_id in COREGISTERED_SPACES
+    ]
+
+
+def get_coregistration_embedding_args(wildcards):
+    """`--embedding SPACE_ID=PATH` per compared space.
+
+    Named rather than positional for the reason `--provider-input` is: snakemake
+    hands the shell a bare list of paths, and working out which is which by
+    position is the same defect as reading a labeled matrix by position
+    (ADR 0007).
+    """
+    if COREGISTRATION_REDUCER is None:
+        return ""
+    return " ".join(
+        "--embedding "
+        + space_id
+        + "="
+        + str(SPACES_DIR / space_id / ("embedding_" + COREGISTRATION_REDUCER + ".tsv"))
+        for space_id in COREGISTERED_SPACES
+    )
+
+
+rule coregister_spaces:
+    """
+    Compare every pair of co-registered spaces over one shared protein index.
+
+    Additive and opt-in twice over: the rule is unreachable without `spaces`,
+    and unreachable again unless `coregistration.compare` names two of them.
+    """
+    input:
+        blocks=get_coregistration_block_inputs,
+        embeddings=get_coregistration_embeddings,
+        resolved_config=rules.multispace_config.output.resolved,
+    output:
+        summary=COREGISTRATION_DIR / "summary.tsv",
+        index=COREGISTRATION_DIR / "index.json",
+        pairs=COREGISTRATION_PAIR_FILES,
+    params:
+        embeddings=get_coregistration_embedding_args,
+    conda:
+        "envs/analysis.yml"
+    benchmark:
+        BENCHMARKS_DIR / "coregister_spaces.txt"
+    shell:
+        """
+        python ProteinCartography/coregister.py \
+            --configfile {input.resolved_config} \
+            --output-dir {OUTPUT_DIR} \
+            {params.embeddings}
+        """
+
+
 rule leiden_clustering:
     """
     Performs Leiden clustering on the data using scanpy's implementation.
@@ -1085,3 +1178,5 @@ rule all:
         # Empty unless the config defines `spaces`, so the default DAG is
         # exactly the one it has always been.
         MULTISPACE_TARGETS,
+        # Empty again unless `coregistration.compare` names two spaces.
+        [str(COREGISTRATION_DIR / "summary.tsv")] if COREGISTRATION_ENABLED else [],

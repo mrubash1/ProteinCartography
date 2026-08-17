@@ -25,6 +25,7 @@ CORE_MODULES = [
     "index",
     "config_schema",
     "coregistration",
+    "coregister",
     "spaces.base",
     "spaces.registry",
     "spaces.store",
