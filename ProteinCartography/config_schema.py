@@ -29,6 +29,7 @@ from spaces.base import (
 )
 
 __all__ = [
+    "NOT_FUSABLE_PROVIDERS",
     "NOT_FUSABLE_REASONS",
     "BlockConfig",
     "CohortConfig",
@@ -49,9 +50,6 @@ LEGACY_PLOTTING_MODES = ("pca", "tsne", "umap", "pca_tsne", "pca_umap")
 LEGACY_SPACE_ID = "structure"
 LEGACY_BLOCK_ID = "tmscore"
 
-#: Why particular signals may never enter a geometry. See ADR 0003. Held here
-#: rather than in each provider so that the argument lives in one place and a
-#: config can be validated without importing the providers.
 #: Providers whose output must stay overlay-only, keyed by ``provider`` name.
 #:
 #: Keying on the *provider* rather than the block id is load-bearing. The block
@@ -77,6 +75,9 @@ NOT_FUSABLE_PROVIDERS = {
     "strucluster": "struclusters",
 }
 
+#: Why each of those signals may never enter a geometry. See ADR 0003. Held here
+#: rather than in each provider so that the argument lives in one place and a
+#: config can be validated without importing any provider.
 NOT_FUSABLE_REASONS = {
     "taxonomy": (
         "fusing taxonomy makes every taxon-specific cluster claim circular -- the "
@@ -341,6 +342,35 @@ class BlockConfig:
             metric=data.get("metric", "euclidean"),
             representation=data.get("representation"),
         )
+
+    def to_spec(self, *, kind: str, **overrides):
+        """Build the :class:`spaces.base.BlockSpec` this config describes.
+
+        The bridge between the two descriptions of a block. ``BlockConfig`` is
+        what a user writes and can be validated without importing any provider;
+        ``BlockSpec`` is what a provider produces and includes facts only the
+        provider knows -- whether the block is features or pairwise, and how a
+        pairwise block was symmetrized. So ``kind`` comes from the caller, which
+        is always the provider.
+
+        Without this, the two would be maintained separately and drift: the
+        config layer would be unable to validate its own defaults, and a config
+        that passed validation could still be rejected at compute time.
+        """
+        from spaces.base import BlockSpec
+
+        fields = {
+            "id": self.id,
+            "kind": kind,
+            "fusable": self.fusable,
+            "metric": "precomputed" if kind.startswith("pairwise") else self.metric,
+            "normalization": self.normalization,
+            "provider": self.provider,
+            "params": dict(self.params),
+            "not_fusable_reason": self.not_fusable_reason,
+        }
+        fields.update(overrides)
+        return BlockSpec(**fields)
 
 
 @dataclass(frozen=True)
