@@ -126,13 +126,20 @@ def main() -> int:
 
     check_pair_filenames_are_distinct(compared)
 
+    # Each space's geometry is rebuilt here rather than read back from disk,
+    # because what `reduce_space` writes is the 2-D embedding and two of the
+    # three metrics need the full-dimensional matrix. For a fused space that
+    # means running the fusion a second time -- deterministic, so it gives the
+    # same answer, but not free: `graph` re-runs its diffusion. Worth revisiting
+    # if fusion ever becomes the expensive step.
     store = BlockStore(args.output_dir)
-    blocks, space_protids = {}, {}
+    geometries, space_protids, space_blocks = {}, {}, {}
     for space_id in compared:
         space = config.spaces[space_id]
-        block, index = features_for(space, store, config)
-        blocks[space_id] = block
+        fused, index, block_results = features_for(space, store, config)
+        geometries[space_id] = fused
         space_protids[space_id] = list(index)
+        space_blocks[space_id] = block_results
 
     report = shared_index(space_protids, reference=reference)
     with open(os.path.join(output_dir, INDEX_FILENAME), "w") as handle:
@@ -146,7 +153,7 @@ def main() -> int:
     aligned = {
         space_id: report.index.align(
             space_protids[space_id],
-            np.asarray(blocks[space_id].features, dtype=np.float64),
+            np.asarray(geometries[space_id].values, dtype=np.float64),
             what=f"space {space_id}",
         )
         for space_id in compared
@@ -208,8 +215,9 @@ def main() -> int:
         provider="coregister",
         params={"compare": compared, "reference_space": reference, "k": coregistration.k},
         inputs={
-            "block:" + blocks[space_id].spec.id: blocks[space_id].manifest.get("cache_key", "")
+            "block:" + block.spec.id: block.manifest.get("cache_key", "")
             for space_id in compared
+            for block in space_blocks[space_id]
         },
         protids=protids,
         extra={
@@ -217,6 +225,14 @@ def main() -> int:
             "pairs": summaries,
             "geometry_caveats": list(GEOMETRY_CAVEATS),
             "procrustes_spaces": sorted(embeddings),
+            # How each compared space was built. Without this, a reader looking
+            # at "structure agrees with fused_late at Jaccard 0.8" has no way to
+            # see that `fused_late` is half `structure` by construction.
+            "fusion": {
+                space_id: geometries[space_id].to_dict()
+                for space_id in compared
+                if geometries[space_id].strategy != "none"
+            },
         },
     )
     manifest.write(os.path.join(output_dir, "manifest.json"))

@@ -317,6 +317,21 @@ def test_early_warns_with_the_runs_own_numbers(wide, narrow):
     assert "strategy: late" in warning
 
 
+def test_early_also_gets_the_dominance_warning(wide, narrow):
+    """ADR 0002's 70% rule applies to every strategy, not only the fused ones.
+
+    `early` has a warning of its own about column count, and it is not the same
+    statement: one says why the share came out that way, the other says what the
+    share means for reading the map. On the demo cohort `early` lands at 73.3%,
+    just over the line, which is exactly the case where one warning without the
+    other would be easy to skim past.
+    """
+    result = fuse_early([wide, narrow])
+    assert result.dominant.block_id == WIDE_BLOCK
+    assert any("that block's map" in w for w in result.warnings)
+    assert any("total variance" in w for w in result.warnings)
+
+
 def test_early_says_when_it_left_a_constant_column_alone(cohort, wide):
     block = FusionInput("constant_column", cohort.blocks["constant_column"])
     result = fuse_early([wide, block])

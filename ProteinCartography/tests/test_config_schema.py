@@ -435,7 +435,11 @@ def test_a_full_multispace_config_validates():
                 "multiview": {
                     "blocks": ["tmscore", "plm", "biophys"],
                     "strategy": "graph",
-                    "params": {"K": 20, "mu": 0.5},
+                    # `k`, not the paper's uppercase `K`. This example carried
+                    # `K` from the day the schema was written and nothing ever
+                    # read it, which is only visible now that `graph` exists and
+                    # the params are checked against what it consumes.
+                    "params": {"k": 20, "mu": 0.5},
                     "reducers": ["pca_umap"],
                 },
             },
@@ -456,3 +460,4 @@ def test_a_full_multispace_config_validates():
     assert config.fusable_blocks() == ["biophys", "plm", "tmscore"]
     assert list(config.overlay_only_blocks()) == ["taxonomy"]
     assert config.spaces["struct_plus_seq"].weight_for("plm") == 0.85
+    assert config.spaces["multiview"].params == {"k": 20, "mu": 0.5}
