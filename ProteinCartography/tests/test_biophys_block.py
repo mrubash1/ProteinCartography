@@ -335,7 +335,12 @@ def test_the_block_carries_features_and_a_manifest(tmp_path):
 
 
 def test_the_block_standardizes_its_columns_by_default(tmp_path):
-    """Without it the euclidean distance is the isoelectric point and nothing else."""
+    """Without it the euclidean distance is the isoelectric point and nothing else.
+
+    This checks the provider in isolation, which is not by itself enough: the
+    default only survives if `compute_block` refrains from filling the parameter
+    in, and for a while it did not. `test_compute_block.py` covers that path.
+    """
     write_features(tmp_path, features_file(("P1", ACTIN_FRAGMENT)))
     result = BiophysProvider().compute(Ctx(str(tmp_path)), {})
     assert result.spec.normalization == "zscore_within"

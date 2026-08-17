@@ -120,7 +120,12 @@ def main() -> int:
     params.setdefault("block_id", block.id)
     if block.representation is not None:
         params.setdefault("representation", block.representation)
-    params.setdefault("normalization", block.normalization)
+    # Only when the config actually asked for one. Filling in a default here
+    # would reach the provider as an explicit choice and silence the provider's
+    # own, which is what it used to do -- and it went unnoticed because the two
+    # blocks that existed at the time both wanted the same value.
+    if block.normalization is not None:
+        params.setdefault("normalization", block.normalization)
 
     expected = Manifest.build("block", block.id, provider=block.provider, params=params, protids=[])
     if not args.force and store.is_fresh(block.id, expected):
