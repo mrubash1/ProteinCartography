@@ -26,13 +26,23 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-from parity import compare_trees, run_pipeline, run_reducer, synthetic_matrix
+from parity import (
+    compare_trees,
+    run_leiden,
+    run_pipeline,
+    run_pivot,
+    run_reducer,
+    synthetic_matrix,
+    synthetic_pair_list,
+)
 
 __all__ = [
     "MUTATIONS",
+    "COMPONENT_MUTATIONS",
     "REDUCER_MUTATIONS",
     "Mutation",
     "run_mutation_suite",
+    "run_component_mutation_suite",
     "run_reducer_mutation_suite",
 ]
 
@@ -48,7 +58,15 @@ class MutationDidNotApply(RuntimeError):
 
 @dataclass(frozen=True)
 class Mutation:
-    """A deliberate defect, and what it is meant to prove the test can see."""
+    """A deliberate defect, and what it is meant to prove the test can see.
+
+    One trap is worth stating, because it caught me three times: **do not
+    anchor on a default that the caller overrides.** Mutating
+    ``def f(..., n_pcs=30)`` does nothing when ``main()`` passes ``n_pcs`` from
+    an argparse default, and the run then reports "survived" -- indistinguishable
+    from a genuine hole in the test. Anchor on the value the executed path
+    actually reads.
+    """
 
     name: str
     path: str
@@ -75,8 +93,8 @@ MUTATIONS = (
         detects="a changed PCA dimensionality, which moves every coordinate",
         expected_to_survive=(
             "at N=11 both 30 and 20 clamp to min(matrix.shape)=11, so the two "
-            "configurations are the same computation. Covered by the N=750 "
-            "reducer suite instead."
+            "configurations are the same computation. Covered by "
+            "reducer_pca_components at N=750."
         ),
     ),
     Mutation(
@@ -107,8 +125,9 @@ MUTATIONS = (
         detects="a changed fill token, which would break every censoring mask downstream",
         expected_to_survive=(
             "the 11-protein fixture has all 121 pairs measured, so the fill "
-            "token is never emitted and cannot differ. Only a fixture above the "
-            "per-query cap can show this."
+            "token is never emitted and cannot differ. Covered by "
+            "component_censoring_fill, which drives the pivot step from a "
+            "capped pair list."
         ),
     ),
     Mutation(
@@ -117,7 +136,10 @@ MUTATIONS = (
         old="    n_pcs=30,",
         new="    n_pcs=10,",
         detects="a changed clustering parameter, on the branch that forks from the matrix",
-        expected_to_survive=("at N=11 both 30 and 10 clamp to min(n-1, n_vars-1)=10."),
+        expected_to_survive=(
+            "at N=11 both 30 and 10 clamp to min(n-1, n_vars-1)=10. Covered by "
+            "component_leiden_n_pcs at N=750."
+        ),
     ),
     Mutation(
         name="feature_join_semantics",
@@ -283,6 +305,7 @@ def main(argv=None) -> int:
     python = args.analysis_python or _find_analysis_python(prefix)
     if python:
         results += run_reducer_mutation_suite(repo, Path(args.workdir) / "reducer", python)
+        results += run_component_mutation_suite(repo, Path(args.workdir) / "component", python)
     else:
         print(
             "skipping the N=750 reducer suite: no environment with scikit-learn "
@@ -356,6 +379,100 @@ REDUCER_MUTATIONS = (
         detects="a changed t-SNE perplexity, at a size where it is not clamped away",
     ),
 )
+
+
+#: Mutations aimed at the two steps neither other suite reaches.
+#:
+#: The reducer suite starts from a matrix, so it never exercises the pivot that
+#: *creates* the censoring fill; and it never touches Leiden, which forks from
+#: the matrix independently. Both were unreachable by any test until these
+#: existed -- the earlier claim that every N=11 survivor had an N=750
+#: counterpart was wrong for exactly these two.
+COMPONENT_MUTATIONS = (
+    Mutation(
+        name="component_censoring_fill",
+        path="ProteinCartography/foldseek_clustering.py",
+        old='scores.append(targets_to_scores.get(target, "0.0"))',
+        new='scores.append(targets_to_scores.get(target, "0.00"))',
+        detects=(
+            "a changed censoring fill token. Every downstream mask keys on the "
+            "exact string, so this would silently disable censoring detection"
+        ),
+    ),
+    Mutation(
+        name="component_leiden_n_pcs",
+        # The CLI default, not the function default. `main()` always passes
+        # `n_pcs` explicitly from `args.n_pcs`, so mutating the function
+        # signature changes nothing -- a mistake made three times while building
+        # this suite, each time looking exactly like a hole in the test.
+        path="ProteinCartography/leiden_clustering.py",
+        old='        default="30",',
+        new='        default="10",',
+        occurrences=1,
+        detects="a changed Leiden parameter, at a size where it is not clamped away",
+    ),
+)
+
+
+def run_component_mutation_suite(repo: Path, workdir: Path, python: str) -> list:
+    """Mutate the pivot and Leiden steps and check the comparison notices.
+
+    Two runners rather than one, because the two steps take different inputs:
+    the pivot consumes a raw pair list, Leiden consumes a matrix.
+    """
+    repo, workdir = Path(repo), Path(workdir)
+    workdir.mkdir(parents=True, exist_ok=True)
+
+    pair_list = synthetic_pair_list(workdir / "fixture" / "pairs.tsv", n=200, cap=80)
+    matrix = synthetic_matrix(workdir / "fixture" / "all_by_all_tmscore_pivoted.tsv", n=750)
+
+    runners = {
+        "component_censoring_fill": lambda out: run_pivot(repo, pair_list, out, python=python),
+        "component_leiden_n_pcs": lambda out: run_leiden(repo, matrix, out, python=python),
+    }
+
+    references, floors = {}, {}
+    for name, run in runners.items():
+        print(f"=== reference for {name} ===", flush=True)
+        a = run(workdir / ("reference_" + name))
+        b = run(workdir / ("reference_" + name + "_b"))
+        references[name] = a
+        floors[name] = set(compare_trees(a, b).differing)
+        print(f"floor: {sorted(floors[name]) or 'nothing -- fully deterministic'}\n", flush=True)
+
+    results = []
+    for mutation in COMPONENT_MUTATIONS:
+        print(f"=== component mutation: {mutation.name} ===", flush=True)
+        outcome, note, changed = "survived", "", []
+        try:
+            with _patched(repo, mutation):
+                mutated = runners[mutation.name](workdir / ("mut_" + mutation.name))
+                report = compare_trees(
+                    references[mutation.name], mutated, ignore=floors[mutation.name]
+                )
+                outcome = "detected" if not report.ok else "survived"
+                changed = report.differing[:6]
+        except MutationDidNotApply as exc:
+            outcome, note = "error", str(exc)
+        except RuntimeError as exc:
+            outcome, note = "detected", f"step failed: {str(exc)[:160]}"
+        results.append(
+            {
+                "name": mutation.name,
+                "outcome": outcome,
+                "detected": outcome == "detected",
+                "detects": mutation.detects,
+                "expected_to_survive": mutation.expected_to_survive,
+                "changed_files": changed,
+                "note": note,
+            }
+        )
+        print(f"  -> {outcome.upper()}  {note}", flush=True)
+        for rel in changed:
+            print(f"     ! {rel}", flush=True)
+        shutil.rmtree(workdir / ("mut_" + mutation.name), ignore_errors=True)
+        print(flush=True)
+    return results
 
 
 def run_reducer_mutation_suite(
