@@ -622,15 +622,156 @@ Worth stating as a pattern, since it has now come up twice in one session:
 system is not going to help and neither is a name.** The only defences are an
 assertion that would fail if they were swapped, and a test that swaps them.
 
-### Verification, since G6.1 is about verification
+### Verification at the time of G6.1–G6.3, since G6.1 is about verification
 
-- The shipped `demo/multispace/config.yml` runs to completion: 19/19 steps, two
+*Superseded by "Verification, group 6 complete" below; kept because these are the
+numbers the `threedi` commit was checked against.*
+
+- The shipped `demo/multispace/config.yml` ran to completion: 19/19 steps, two
   co-registered spaces over one protein index, both block manifests populated.
 - The 3Di block was checked against real foldseek output rather than a fixture:
   11 demo structures, 3Di lengths matching sequence lengths exactly, pairwise
   distances spanning 0.020–0.118 with the longest, most divergent structure the
   outlier in both farthest pairs. Non-degenerate, and it disagrees with TM-score.
 - Parity: 31 slow tests, 0 differing. Cluster DAG 16.
+
+### G6.4 — every provider default was dead code · found by adding a block that disagreed
+
+`compute_block` prepared the provider's parameters like this:
+
+    params.setdefault("normalization", block.normalization)
+
+and `BlockConfig.normalization` defaulted to `"unit_mean_distance"`, unconditionally.
+It was therefore never `None`, the `setdefault` always won, and every provider's own
+`params.get("normalization", ...)` default was unreachable code. Both providers that
+existed wanted `unit_mean_distance`, so the config default and the provider defaults
+agreed by coincidence, and the mechanism looked like it worked.
+
+`biophys` broke the coincidence. Its columns are a pH beside a per-residue charge
+beside a dimensionless fraction — pI spans 4 to 12, charge per residue spans about
+−0.1 to 0.1 — so the unnormalized euclidean distance between two proteins is the
+isoelectric point and essentially nothing else. The provider asks for `zscore_within`.
+It was getting `unit_mean_distance`, and that value was written into the block manifest,
+which is the record a later reader would trust.
+
+**How it got past a test that was written to catch exactly this.**
+`test_the_block_standardizes_its_columns_by_default` existed, asserted `zscore_within`,
+and passed — because it calls the provider directly, and the defect is in the caller.
+This is the same failure as a mutation anchored on a default the caller overrides, which
+this work has already recorded twice: *a default is dead code if its caller always
+passes the parameter, and no test of the callee can tell you so.* The fix therefore came
+with `test_compute_block.py`, driving `main()` through an argv, which is the path the
+Snakefile takes. The entry point had had no tests at all.
+
+`normalization` is now optional; `None` means "ask the provider". Nothing else moves:
+both existing providers default to the same value they were being handed, `from_legacy`
+sets it explicitly, and `to_spec` — which builds a spec with no provider to ask — falls
+back to the historical default. The field is still validated when given.
+
+### G6.5 — a transcription error that every derived test tolerated · caught by comparing tables
+
+`biophys` computes hydropathy, charge, isoelectric point and molecular weight from
+published constants rather than from Biopython, because `compute_block` runs in
+`envs/analysis.yml`, Biopython is not in it, and adding it would change that
+environment's hash and force a fresh solve of the environment whose pins exist because a
+fresh solve once installed a numpy-2-built matplotlib beside `numpy=1.23.5` (ADR 0006).
+
+The constants are Biopython's, so the two can be compared. That was not decoration:
+
+- The first draft used the **EMBOSS** pKa set (Nterm 9.69, K 10.5, R 12.4, Cterm 2.34,
+  D 3.86, E 4.25, C 8.33) rather than the **Bjellqvist** set Biopython uses (Nterm 7.5,
+  K 10.0, R 12.0, Cterm 3.55, D 4.05, E 4.45, C 9.0). Both are real, published, widely
+  cited tables calibrated against different experiments. Every charge and every pI was
+  wrong by a plausible amount — net charge off by up to 1.6 units, pI by up to 0.49.
+- Arginine's average mass was transcribed as 174.2017 against Biopython's 174.201. That
+  difference is **below the tolerance of the derived molecular-weight check**, which
+  passed throughout.
+
+The lesson is about which test to write. Sixteen derived-value comparisons failed at
+once and none of them said *which* of fourteen constants was responsible; comparing the
+**tables themselves** named it immediately, and was the only check that saw the arginine
+slip at all. `test_the_pka_tables_are_biopythons` and `test_the_weight_table_is_
+biopythons` are now the first cross-checks in the file. Both skip when Biopython is
+absent, which it is in the environment the block must work in.
+
+After the correction: 28 of 28 cross-checks agree — charge to machine precision, pI to
+2×10⁻⁵, GRAVY and aromaticity and MW exact.
+
+### G6.6 — intensive versus extensive, and why the default descriptor set is short
+
+Molecular weight is about 110 Da per residue and nothing else. A space that includes it
+is partly a map of protein length, which is the exact argument ADR 0003 uses to keep
+pLDDT out of any geometry — and unlike pLDDT, nothing about the name `molecular_weight`
+warns you.
+
+Rather than bar it, the descriptor table carries an `intensive` flag per descriptor and
+the default set is the intensive ones only: mean hydropathy, aromatic fraction,
+isoelectric point, charge per residue. `molecular_weight` and `length` remain available;
+asking for either is recorded in the manifest as `length_proportional_descriptors` and
+warned about on stderr, so the choice is visible to whoever reads the map rather than
+buried in a config file. `test_an_intensive_descriptor_does_not_track_length_and_an_
+extensive_one_does` measures the distinction instead of asserting it.
+
+### G6.7 — `jaccard` refused rather than silently ignored
+
+`spaces.base.METRICS` contains `jaccard`, and it is the natural distance between two
+sets, so it is the obvious choice for `domains`' binary presence vectors. But
+`reduce_space` never consults `spec.metric`: it feeds `block.features` straight into a
+euclidean PCA. Declaring `metric: jaccard` would therefore have written a claim into the
+manifest that no code in the repo honors — a metric that exists only as a label.
+
+The block declares `euclidean`, which is what actually happens, and refuses `jaccard`
+with an error explaining that the reducer core is not metric-aware and that euclidean
+distance on binary vectors is the square root of the number of families two proteins
+differ on. That is a real distance; it simply weights a heavily annotated protein more
+than Jaccard would.
+
+This is the third time in group 6 that the honest move was to make an unhonored setting
+loud rather than to accept it. It is the same category as G6.1 (rules that had never
+executed) and G6.4 (a parameter that was always overridden): **a setting nothing reads
+is worse than a setting that does not exist**, because it reads as a decision that was
+made.
+
+### G6.8 — where the mutation rule stops, stated rather than eroded
+
+The standing rule is that any new numeric component gets a mutation entry. Neither
+`threedi` (previous commit) nor `biophys`/`domains` has one, and that is deliberate
+rather than an omission accumulating quietly.
+
+The mutation harness measures what the **parity test** can see, and the parity test runs
+the **default** configuration. None of these three blocks is in it — they are reachable
+only from a config that defines `spaces`. A mutation planted in any of them would be
+reported as "survived", with the reason "the default configuration never executes this
+path" — which is already recorded once, against `cohort_significance_polarity`, and
+adding three more identical entries would grow the expected-survivor list without adding
+information.
+
+They are covered by unit tests instead: 46 for `biophys`, 35 for `domains`, 39 for
+`threedi`, plus 12 for the entry point that assembles them. The boundary worth
+remembering is unchanged and is the one §0.1 states: **the parity test cannot see
+anything the default configuration does not run.** When a block enters the default
+config, it gets a mutation entry.
+
+### Verification, group 6 complete
+
+- `demo/multispace/config.yml` runs to completion: **23/23 steps**, four co-registered
+  geometries over one protein index — `structure` (tmscore), `local_structure` (threedi),
+  `physicochemistry` (biophys), `families` (domains). All four block manifests populated.
+- `biophys` checked against real data, not a fixture: on the demo's eleven actins it
+  reproduces human β-actin's published pI of 5.29 exactly, and isolates the single
+  outlier — a 507-residue fungal actin–histone fusion — at pI 8.7 with positive net
+  charge where the other ten sit at −0.03 per residue.
+- `domains` on the same cohort finds PF00022 (actin) in all eleven and PF00125 (histone)
+  in that same fusion protein, 100% annotated. The resulting space is nearly degenerate,
+  which is the correct answer for a cohort this homogeneous.
+- ADR 0006's four free blocks — `tmscore`, `threedi`, `biophys`, `domains` — now all
+  exist and all import with only numpy and pandas, enforced by
+  `test_optional_dependencies.py`.
+- Rebased onto `upstream/main` at `36a38c7`; all four carried cherry-picks dropped, so
+  the PR diff is now purely this work. Parity re-run against that new baseline: 31 slow
+  tests, 0 differing files. Mutation harness exits 0 — no unexplained holes across its
+  17 mutations. Unit suite 500 passed / 40 skipped; cluster DAG 16, search DAG 25, both
+  unchanged from the baseline.
 
 ## Gate D — after commit group 8 (fusion and diagnostics)
 
