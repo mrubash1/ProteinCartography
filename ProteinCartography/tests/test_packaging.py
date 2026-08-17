@@ -35,6 +35,23 @@ def get_setup_scripts() -> list:
     raise AssertionError("Could not find a `scripts` argument in setup.py.")
 
 
+def get_setup_packages() -> list:
+    """
+    Parse setup.py and return the list of package names in the `packages` argument.
+
+    Returns:
+        The package names, for example "ProteinCartography.spaces".
+    """
+    tree = ast.parse(SETUP_FILEPATH.read_text())
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and getattr(node.func, "id", None) == "setup"):
+            continue
+        for keyword in node.keywords:
+            if keyword.arg == "packages":
+                return [element.value for element in keyword.value.elts]
+    raise AssertionError("Could not find a `packages` argument in setup.py.")
+
+
 def get_module_scope_imports(filepath: pathlib.Path) -> list:
     """
     Return the names of the top-level packages imported at module scope in a module.
@@ -66,6 +83,29 @@ def test_all_scripts_listed_in_setup_py_exist():
     assert not missing_filepaths, (
         f"setup.py lists scripts that do not exist: {missing_filepaths}. "
         "This makes `pip install .` fail during the `build_scripts` step."
+    )
+
+
+def test_every_subpackage_is_listed_in_setup_py():
+    """
+    Tests that every subpackage of `ProteinCartography` appears in `packages`.
+
+    `setup()` does not recurse, so a subpackage that is not listed is silently
+    omitted from an installed copy. Nothing fails at build time and nothing fails
+    in a source checkout, because the source tree still has the directory -- it
+    only fails for someone who installed the package, which is the hardest place
+    to notice it.
+    """
+    listed = set(get_setup_packages())
+    expected = {
+        f"{PACKAGE_DIRPATH.name}.{path.parent.name}"
+        for path in PACKAGE_DIRPATH.glob("*/__init__.py")
+        if path.parent.name != "tests"
+    }
+    missing = sorted(expected - listed)
+    assert not missing, (
+        f"these subpackages exist but are not in setup.py's `packages`: {missing}. "
+        "They would be missing from an installed copy of the package."
     )
 
 
