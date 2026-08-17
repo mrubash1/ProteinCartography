@@ -926,6 +926,147 @@ than being defended by the harness.
   docstring and no behavior change, because PLAN.md requires the superseded metric be
   kept and marked rather than removed (invariant I6).
 
+## Group 7, second half — cluster enrichment
+
+### G7.7 — the fixture came before the statistic, and it was the right order
+
+PLAN §0.5 note 3 said to build the fixture first, because the demo cohort is degenerate
+for this: eleven proteins, four with byte-identical sequences, and a `Pfam` column with
+two distinct values. Following it produced a 400-protein generated cohort with planted
+signal — named terms in named clusters at a stated marginal rate, named columns shifted
+by a stated effect size — and its own test file checking those claims by measurement
+rather than by reading.
+
+That test file earned itself twice before any statistic existed. It caught the planted
+cluster labels not matching the generated ones (`leiden_clustering.py` pads a label to
+the digit count of the largest index, so eight clusters are `LC0`..`LC7` and twelve are
+`LC00`..`LC11`; the planted labels had been written two-digit), and it caught a recorded
+`rate_inside` that was conditional rather than marginal, because the generator drew
+`Eukaryota` first and `Chordata` beneath it. Both would have presented later as "the
+statistic missed the signal".
+
+The half that matters more is the **null** half. The fixture asserts that `Organism` is
+independent of the clustering and that an unplanted family is not concentrated anywhere,
+because a statistic that calls everything significant passes every test that only looks
+for the planted signal.
+
+### G7.8 — the entry point crashed on a table shape no unit test had built · **blocks** · fixed
+
+Thirty-six unit tests passed and the demo run failed immediately:
+`ValueError: cannot insert LeidenCluster, already exists`.
+
+`aggregated_features.tsv` is built by joining `leiden_features.tsv` into everything else,
+so **both** of the entry point's inputs carry the cluster column. The test fixture had
+written the annotation table with that column dropped, which is a shape the pipeline
+never produces.
+
+This is group 6's lesson for the third time — *test the caller's path, not only the
+callee's* — and the second time in this work that running a thing end to end found what
+a full unit suite could not (the first was `compute_block` and `reduce_space` never
+having executed at all). The fixture now writes the pipeline's shape, and the reconciled
+case is a test in both directions: the duplicate column is dropped in favour of the
+cluster table, and the two *disagreeing* is an error, because that means the tables
+describe different runs and an enrichment across them would be wrong in no visible way.
+
+### G7.9 — what the demo actually found, and why it is not a biological result
+
+The demo's two Leiden clusters — seven canonical 375–385 aa actins, four longer ones up
+to 507 aa — separate **perfectly** on `pdb_confidence` (max of one cluster 91.83, min of
+the other 92.11) and almost perfectly on `Length`, in opposite directions. Across the
+cohort the two correlate at **r = −0.86**.
+
+So the enrichment table rediscovers, from the other end, exactly the confound
+`NOT_FUSABLE_REASONS["pdb_confidence"]` already refuses to fuse: prediction confidence
+tracks length, so a map that let it move the points would make protein length an axis.
+Arriving at the same place from an independent direction is the most useful thing the
+demo does here, and it is recorded in `demo/multispace/config.yml` so a reader of the
+output meets the explanation rather than the number.
+
+Nothing categorical is significant, which is the honest null half: two distinct `Pfam`
+values, and most of the lineage vocabulary carried by a single protein.
+
+### G7.10 — the annotated universe shrinks, and the file format is why
+
+For a categorical column the universe is the proteins whose cell is present. A protein
+whose annotation was never determined is not evidence that it lacks a term, and counting
+it as one biases every term toward whichever cluster is better annotated — annotation
+completeness correlates with taxonomy, which is one of the things being tested.
+
+Measured on the 400-protein fixture, that is not a small correction. A protein with no
+Pfam families is written as an empty field and read back as NaN, so **after a round-trip
+through TSV "carries no families" and "was never annotated" are the same bytes**: 168 of
+400 rows, taking Pfam's universe to 232 and raising every fold enrichment accordingly.
+
+The choice stands — an enrichment background is conventionally the annotated background
+— but it is made visible three ways rather than argued once: `n_universe` on every row,
+the per-column universe in the manifest, and a stderr line from any column that lost
+proteins. ADR 0012 §3.
+
+### G7.11 — two defects recorded, not fixed
+
+**`remove_nans` invents a zero** (FOLLOWUPS #34). `plot_cluster_distributions.remove_nans`
+has `default=(0,)`, which fires whenever a cluster's values for a column are all missing.
+That cluster is then Mann-Whitney tested as a distribution of one synthetic `0.0` against
+every other cluster's real values, and marked on the plot. A cluster whose structures all
+failed to download reads as significantly low confidence rather than as unmeasured. Same
+family as #29 and #32: a value that is present, looks like evidence, and is not. Not
+fixed here because it changes a shipped SVG, which the parity requirement forbids;
+`enrichment` takes the other branch and reports the comparison as untested with a reason.
+
+**Two of PLAN's four enrichment categories have no data source** (FOLLOWUPS #35).
+`fetch_uniprot_metadata` requests neither `ec` nor `cc_subcellular_location`, so EC and
+localization have no column. Adding a field changes the columns of `uniprot_features.tsv`
+and therefore of `aggregated_features.tsv` — exactly what the byte-identical guarantee
+forbids. Enrichment is column-driven rather than category-driven for this reason, and a
+requested column that is absent is named on stderr and in the manifest rather than
+skipped, because "no enrichment for localization" and "localization was never in the
+table" are different facts.
+
+### G7.12 — the scipy cross-check was executed this time, not only asserted
+
+G7.5 established the pattern. Applying it here surfaced something about the pattern
+itself: `cartography_tidy` has no scipy, and the environment with scipy that group 7 used
+for its manual check has no pytest — so an `importorskip` test can be written, be
+correct, and never once run.
+
+All four statistics were checked twice. First directly, against scipy 1.15.2:
+Mann-Whitney to 2.2e-16 over 300 cases including heavily tied and 60%-censored input, the
+hypergeometric to a **relative** 5.5e-12 down to p = 1e-94, Fisher's one-sided exact test
+to 7.8e-15, Benjamini–Hochberg to 2.2e-16. Then as the suite, in
+`.snakemake/conda/21cb44d…` which carries both scipy 1.13.1 and pytest: **95 passed, 0
+skipped**, against 78 passed / 17 skipped in the bare environment. The 17 are the gated
+cross-checks, and they are now known to pass rather than assumed to.
+
+The relative check is the one worth keeping. An absolute tolerance of 1e-12 is vacuous on
+a p-value of 1e-30, and the top of an enrichment table is entirely made of those.
+
+### Verification, group 7 second half
+
+- Unit suite: 714 passed, 59 skipped. The 17 extra skips over group 7 are the scipy
+  cross-checks; in an environment with scipy the same file is 95 passed / 0 skipped.
+- **Parity: 33 slow tests, 0 differing files**, against `upstream/main` at `36a38c7`.
+  Unchanged from group 7a, which is the expected result: the default configuration sets
+  no `enrichment` key, so none of this executes in a parity run.
+- Each of the three code commits verified alone in a detached worktree:
+  596 / 675 / 713 pass, lint clean, cluster DAG 16 at every point.
+- Lint: `ruff check`, `ruff format --check`, `snakefmt --check` all clean.
+- Cluster DAG 16 and search DAG 25, both unchanged. Multispace demo 24 → 25, the one new
+  rule, and it runs 25/25 to completion.
+- Enrichment is opt-in on its own key, and gated on `enrichment` rather than on `spaces`,
+  because a legacy cluster-mode run already produces both tables it needs. A config that
+  names no annotation column gets no rule.
+- **Mutation harness exits 0** — 11 mutations, 10 detected, one survivor, and that one is
+  the `cohort_significance_polarity` survival already recorded in §0.1 with its reason.
+  No new entries were added, for the reason recorded in G7.6: the default configuration
+  sets no `enrichment` key, so the parity test cannot see this output at all and every
+  mutation to it would survive for a structural reason rather than a real hole. The tree
+  was checked restored afterwards — no diff against HEAD in any source file.
+- Pre-existing files touched stays at 10. The only pre-existing file this half edits is
+  `Snakefile`, which was already in the set; `config_schema.py` and
+  `demo/multispace/config.yml` are files this work created. `plot_cluster_distributions.py`
+  is deliberately untouched (invariant I6) — its defect is FOLLOWUPS #34, not a drive-by
+  fix.
+
 ## Gate D — after commit group 8 (fusion and diagnostics)
 
 *Not yet run.*
