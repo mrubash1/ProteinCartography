@@ -19,6 +19,7 @@ from diagnostics.embedding import (
     EmbeddingFaithfulness,
     continuity,
     faithfulness,
+    largest_valid_k,
     trustworthiness,
 )
 from embedding_cohort import (
@@ -314,3 +315,64 @@ def test_the_isometric_case_agrees_with_sklearn_exactly(cohort, high, low):
             high, cohort.case(ISOMETRIC).low, n_neighbors=k, metric="precomputed"
         )
         assert trustworthiness(high, low[ISOMETRIC], k).mean() == theirs == 1.0
+
+
+# --- small cohorts ----------------------------------------------------------
+#
+# Added after the demo. Nineteen unit tests passed and every space in the
+# multispace demo failed at once, because every test here ran at N=240 and the
+# demo cohort is eleven proteins against a default k of fifteen. Fifth sighting
+# of "a passing test suite is not evidence the entry point works".
+
+
+def test_k_is_clamped_to_the_cohort_rather_than_refused():
+    """A cohort smaller than the configured k is ordinary, not an error.
+
+    `reduce_pca` handles the same situation by clamping `n_components` with a
+    warning. Refusing instead would mean the smallest cohorts -- the ones whose
+    maps are least trustworthy -- are the only ones that get no diagnostics.
+    """
+    small = embedding_cohort(n=12)
+    high = _distances(small.high)
+    low = _distances(small.case(FOLD).low)
+    report = faithfulness("s", "pca_umap", high, low, small.protids, k=DEFAULT_K)
+    assert report.k_requested == DEFAULT_K
+    assert report.k == largest_valid_k(12) == 7
+    assert report.trustworthiness.shape == (12,)
+
+
+def test_the_clamp_is_reported_rather_than_silent():
+    """Two runs with identical configs and different N are not the same run."""
+    small = embedding_cohort(n=12)
+    high = _distances(small.high)
+    low = _distances(small.case(FOLD).low)
+    report = faithfulness("s", "pca_umap", high, low, small.protids, k=DEFAULT_K)
+    assert any("k was reduced from 15 to 7" in note for note in report.warnings())
+    assert report.to_dict()["k_requested"] == DEFAULT_K
+    assert report.to_dict()["k"] == 7
+
+
+def test_a_k_that_already_fits_is_not_reported_as_clamped():
+    """The other half: a diagnostic that always fires is noise."""
+    small = embedding_cohort(n=12)
+    high = _distances(small.high)
+    low = _distances(small.case(ISOMETRIC).low)
+    report = faithfulness("s", "pca_umap", high, low, small.protids, k=3)
+    assert report.k == report.k_requested == 3
+    assert not any("k was reduced" in note for note in report.warnings())
+
+
+@pytest.mark.parametrize("n,expected", [(3, 1), (11, 6), (12, 7), (240, 159)])
+def test_the_largest_valid_k_is_the_largest_one_that_works(n, expected):
+    """Pinned against the constraint itself rather than against a formula
+    rewritten from the same source."""
+    assert largest_valid_k(n) == expected
+    assert 2 * n - 3 * expected - 1 > 0, "the claimed maximum is not actually valid"
+    assert 2 * n - 3 * (expected + 1) - 1 <= 0, "a larger k would also have worked"
+
+
+@pytest.mark.parametrize("n", [1, 2])
+def test_a_cohort_too_small_for_any_neighborhood_is_refused(n):
+    high = np.zeros((n, n))
+    with pytest.raises(EmbeddingDiagnosticError, match="no valid neighborhood size"):
+        faithfulness("s", "pca_umap", high, high, [f"P{i}" for i in range(n)], k=1)
