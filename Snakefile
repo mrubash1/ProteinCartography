@@ -1,7 +1,16 @@
 import os
+import sys
 from pathlib import Path
 
 from ProteinCartography import config_utils
+
+# The package's modules import each other flat (`from spaces.base import ...`),
+# which works when snakemake runs them as `python ProteinCartography/foo.py`
+# because that puts the package directory on the path. Importing one of them
+# *here*, in the snakemake process, needs the same thing done explicitly.
+sys.path.insert(0, str(Path(workflow.basedir) / "ProteinCartography"))
+
+import config_schema  # noqa: E402
 
 
 # Default pipeline configuration parameters are in this file
@@ -62,6 +71,29 @@ FOLDSEEK_TMSCORES_DIR = OUTPUT_DIR / "key_protid_tmscores_results"
 # final output results (plots and aggregated TSV files)
 FINAL_RESULTS_DIR = OUTPUT_DIR / "final_results"
 
+# multi-space outputs; empty unless the config defines `spaces`
+BLOCKS_DIR = OUTPUT_DIR / "blocks"
+SPACES_DIR = OUTPUT_DIR / "spaces"
+
+# The multi-space configuration. A config with no `blocks`/`spaces` keys is
+# translated into the single structure space the pipeline has always built, and
+# `MULTISPACE_ENABLED` stays false so none of the new rules enter the DAG. That
+# is what keeps the default run byte-identical: the rules below are unreachable
+# unless someone asks for them.
+#
+# Validation happens here rather than inside a rule so that an invalid config --
+# in particular one that tries to fuse an overlay-only signal -- fails before
+# any work is done, instead of four hours in. See docs/adr/0003-the-fusable-flag.md.
+MULTISPACE_CONFIG = config_schema.from_legacy(config)
+MULTISPACE_ENABLED = bool(config.get("spaces"))
+MULTISPACE_TARGETS = []
+if MULTISPACE_ENABLED:
+    for space_id, space in sorted(MULTISPACE_CONFIG.spaces.items()):
+        for reducer in space.reducers:
+            # Built by concatenation, never an f-string: under PEP 701 `make
+            # format` rewrites the doubled braces that make a literal wildcard.
+            MULTISPACE_TARGETS.append(SPACES_DIR / space_id / ("embedding_" + reducer + ".tsv"))
+
 # search-mode-specific parameters
 # note: although these parameters are only used in search mode, we can assume they exist here
 # because they are defined in the base config file, which snakemake always loads
@@ -83,6 +115,13 @@ UNIPROT_ADDITIONAL_FIELDS = config["uniprot_additional_fields"]
 wildcard_constraints:
     plotting_mode="|".join(PLOTTING_MODES),
     protid="|".join(SEARCH_MODE_INPUT_PROTIDS + KEY_PROTIDS),
+    # Constrained to the ids the config actually defines, and to no id at all
+    # when multi-space is off. Without this a `{space_id}` wildcard would match
+    # greedily across path separators, because snakemake wildcards are regexes
+    # and `.+` happily eats a `/`.
+    block_id="|".join(MULTISPACE_CONFIG.block_ids()) if MULTISPACE_ENABLED else "^$",
+    space_id="|".join(MULTISPACE_CONFIG.space_ids()) if MULTISPACE_ENABLED else "^$",
+    reducer="|".join(sorted(config_schema.LEGACY_PLOTTING_MODES)),
 
 
 rule make_pdb:
@@ -493,6 +532,66 @@ rule dim_reduction:
         """
 
 
+rule compute_block:
+    """
+    Compute one representation and write it to the block store.
+
+    Additive: nothing in the legacy pipeline depends on this, and the rule is
+    unreachable unless the config defines `spaces`. A block whose provider is
+    unavailable records a skip rather than failing the DAG, so a missing
+    optional dependency costs you that block and nothing else.
+    """
+    input:
+        all_by_all_tmscores=rules.foldseek_clustering.output.all_by_all_tmscores,
+    output:
+        manifest=BLOCKS_DIR / "{block_id}" / "manifest.json",
+        protids=BLOCKS_DIR / "{block_id}" / "protids.txt",
+    conda:
+        "envs/analysis.yml"
+    benchmark:
+        BENCHMARKS_DIR / "compute_block_{block_id}.txt"
+    shell:
+        """
+        python ProteinCartography/compute_block.py \
+            --configfile {workflow.configfiles[0]} \
+            --block-id {wildcards.block_id} \
+            --output-dir {OUTPUT_DIR}
+        """
+
+
+def get_space_block_inputs(wildcards):
+    """The block manifests a space needs before it can be reduced."""
+    space = MULTISPACE_CONFIG.spaces[wildcards.space_id]
+    return [str(BLOCKS_DIR / block_id / "manifest.json") for block_id in space.blocks]
+
+
+rule reduce_space:
+    """
+    Reduce one space to coordinates, through the same reducer core that the
+    legacy `dim_reduction` rule uses.
+
+    Sharing that core is the point: two implementations of the pipeline's PCA
+    would eventually disagree, and the disagreement would look like a
+    scientific result.
+    """
+    input:
+        get_space_block_inputs,
+    output:
+        embedding=SPACES_DIR / "{space_id}" / "embedding_{reducer}.tsv",
+    conda:
+        "envs/analysis.yml"
+    benchmark:
+        BENCHMARKS_DIR / "reduce_space_{space_id}_{reducer}.txt"
+    shell:
+        """
+        python ProteinCartography/reduce_space.py \
+            --configfile {workflow.configfiles[0]} \
+            --space-id {wildcards.space_id} \
+            --reducer {wildcards.reducer} \
+            --output-dir {OUTPUT_DIR}
+        """
+
+
 rule leiden_clustering:
     """
     Performs Leiden clustering on the data using scanpy's implementation.
@@ -784,3 +883,6 @@ rule all:
         rules.plot_semantic_analysis.output.pdf,
         expand(rules.plot_interactive.output.html, plotting_mode=PLOTTING_MODES),
         expand(rules.plot_cluster_distributions.output.svg, protid=KEY_PROTIDS),
+        # Empty unless the config defines `spaces`, so the default DAG is
+        # exactly the one it has always been.
+        MULTISPACE_TARGETS,

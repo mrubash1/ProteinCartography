@@ -1,0 +1,53 @@
+# Multi-space demo: the same actin structures as the cluster-mode demo, but
+# with the map built through the block/space machinery as well as through the
+# legacy path.
+#
+# Everything the legacy pipeline produces is still produced, byte for byte. The
+# `blocks` and `spaces` keys are additive: they add `blocks/` and `spaces/`
+# directories to the output and add nothing to, and take nothing from, the
+# existing outputs.
+#
+# Run it with:
+#   snakemake --configfile demo/multispace/config.yml --use-conda --cores 8
+
+mode: "cluster"
+analysis_name: "multispace-demo"
+input_dir: "demo/cluster-mode/input"
+output_dir: "demo/multispace/output"
+
+features_file: "uniprot_features.tsv"
+
+# The legacy plotting modes still drive the legacy outputs.
+plotting_modes:
+- "pca_umap"
+
+# `key_protids` is deliberately empty. Setting it pulls the Foldseek web API
+# into the DAG even in cluster mode -- `aggregate_foldseek_fraction_seq_identity`
+# and `calculate_concordance` are expanded for key protids as *common* inputs,
+# not search-mode-only -- so a config that sets it is not offline. See
+# docs/EXPLORATION.md.
+
+# ------------------------------------------------------------------------------
+# Multi-space configuration
+# ------------------------------------------------------------------------------
+
+blocks:
+  # The pipeline's existing representation, as a block. `profile` means each
+  # protein is described by its row of the similarity matrix, which is what the
+  # pipeline has always done and is invariant to the column permutation that
+  # PR #106 fixed. `direct` reads the matrix as a matrix and is gated behind a
+  # verified alignment -- see docs/adr/0007-matrix-index-alignment.md.
+  tmscore:
+    provider: tmscore
+    representation: profile
+    normalization: unit_mean_distance
+
+spaces:
+  structure:
+    blocks: [tmscore]
+    strategy: none
+    reducers: [pca_umap, pca_tsne]
+
+# Overlay-only signals may be declared here and used as overlays, but the
+# validator will refuse to fuse them into a geometry, with the circularity
+# reason in the error. See docs/adr/0003-the-fusable-flag.md.
