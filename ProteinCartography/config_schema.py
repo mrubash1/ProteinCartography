@@ -43,6 +43,11 @@ __all__ = [
 ]
 
 REPRESENTATIONS = ("profile", "direct")
+
+#: Used only where a block's normalization has to be resolved without asking a
+#: provider. A block config that leaves `normalization` unset is asking its
+#: provider to choose, and the provider is the thing that knows.
+DEFAULT_NORMALIZATION = "unit_mean_distance"
 SELECTION_RULES = ("as_filtered", "accession", "significance")
 
 #: Each significance measure a cohort can be ranked by, and which direction is
@@ -287,7 +292,15 @@ class BlockConfig:
     params: dict = field(default_factory=dict)
     fusable: bool = True
     not_fusable_reason: str | None = None
-    normalization: str = "unit_mean_distance"
+    #: ``None`` means "whatever this provider says", which is not the same as
+    #: any particular value. A block's features decide what normalizing them
+    #: means: scaling a sparse k-mer profile per column would give a k-mer seen
+    #: three times the weight of one seen everywhere, while *not* scaling a
+    #: handful of physical quantities on incomparable scales leaves the distance
+    #: equal to whichever has the largest units. Defaulting this field to a
+    #: concrete value made every provider's own default unreachable, because
+    #: `compute_block` fills the parameter in before the provider is called.
+    normalization: str | None = None
     metric: str = "euclidean"
     representation: str | None = None
 
@@ -298,7 +311,8 @@ class BlockConfig:
         _require_str(f"{path}.provider", self.provider)
         _require_mapping(f"{path}.params", self.params)
         _require_bool(f"{path}.fusable", self.fusable)
-        _require_choice(f"{path}.normalization", self.normalization, NORMALIZATIONS)
+        if self.normalization is not None:
+            _require_choice(f"{path}.normalization", self.normalization, NORMALIZATIONS)
         _require_choice(f"{path}.metric", self.metric, METRICS)
         if self.representation is not None:
             _require_choice(f"{path}.representation", self.representation, REPRESENTATIONS)
@@ -382,7 +396,7 @@ class BlockConfig:
             params=params,
             fusable=fusable,
             not_fusable_reason=reason,
-            normalization=data.get("normalization", "unit_mean_distance"),
+            normalization=data.get("normalization"),
             metric=data.get("metric", "euclidean"),
             representation=data.get("representation"),
         )
@@ -408,7 +422,11 @@ class BlockConfig:
             "kind": kind,
             "fusable": self.fusable,
             "metric": "precomputed" if kind.startswith("pairwise") else self.metric,
-            "normalization": self.normalization,
+            # `to_spec` builds a spec without consulting a provider, so an
+            # unset normalization has to become something here. The historical
+            # default is the right choice: it is what every block got before
+            # the field became optional.
+            "normalization": self.normalization or DEFAULT_NORMALIZATION,
             "provider": self.provider,
             "params": dict(self.params),
             "not_fusable_reason": self.not_fusable_reason,

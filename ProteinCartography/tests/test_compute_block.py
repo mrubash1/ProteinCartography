@@ -1,13 +1,17 @@
 """Tests for the `compute_block` entry point.
 
-This file exists because the entry point had none. `compute_block` sits between
-the config and the provider: it resolves the block from the config, fills in
-parameters on the way through, looks the provider up, and turns an unavailable
-one into a recorded skip rather than a failed DAG. All of that is behavior a
-provider-level test cannot see, because it happens before the provider is
-called.
+This file exists because the entry point had none, and the gap had already cost
+something. `compute_block` sits between the config and the provider and fills
+in parameters on the way through, and one of those fills silently overrode
+every provider's own default. That went unnoticed for two blocks because both
+happened to want the same value; the third one did not, and the wrong value was
+already written into its manifest before anyone looked.
 
-The tests drive `main()` with an argv, which is the path the Snakefile takes.
+The lesson generalizes, and it is the same one that makes a mutation survive
+when it is anchored on a default the caller overrides: **a default is dead code
+if its caller always passes the parameter.** A test that calls the provider
+directly cannot see that. So the tests here drive `main()` with an argv, which
+is the path the Snakefile actually takes.
 """
 
 import json
@@ -54,6 +58,44 @@ def run(monkeypatch, config_path, block_id, output_dir, *extra):
 def manifest_of(output_dir, block_id):
     path = output_dir / "blocks" / block_id / "manifest.json"
     return json.loads(path.read_text())
+
+
+# ---------------------------------------------------------------------------
+# the defect this file was written for
+# ---------------------------------------------------------------------------
+
+
+def test_a_provider_default_survives_when_the_config_is_silent(monkeypatch, run_dir):
+    """The regression. `biophys` asks for `zscore_within` and must get it.
+
+    Was: `BlockConfig.normalization` defaulted to `unit_mean_distance` and
+    `compute_block` passed it down as though the user had asked for it, so the
+    provider's `params.get("normalization", ...)` never saw its own default.
+    The manifest recorded `unit_mean_distance` for a block whose columns are a
+    pH beside a per-residue charge, where the unnormalized euclidean distance
+    is the isoelectric point and nothing else.
+    """
+    config = write_config(run_dir, {"biophys": {"provider": "biophys"}})
+    assert run(monkeypatch, config, "biophys", run_dir / "output") == 0
+    spec = manifest_of(run_dir / "output", "biophys")["derived"]["spec"]
+    assert spec["normalization"] == "zscore_within"
+
+
+def test_an_explicit_normalization_still_wins(monkeypatch, run_dir):
+    """The config remains the authority when it says something."""
+    config = write_config(
+        run_dir, {"biophys": {"provider": "biophys", "normalization": "unit_mean_distance"}}
+    )
+    assert run(monkeypatch, config, "biophys", run_dir / "output") == 0
+    spec = manifest_of(run_dir / "output", "biophys")["derived"]["spec"]
+    assert spec["normalization"] == "unit_mean_distance"
+
+
+def test_an_invalid_normalization_is_still_rejected(monkeypatch, run_dir):
+    """Making the field optional must not make it unvalidated."""
+    config = write_config(run_dir, {"biophys": {"provider": "biophys", "normalization": "zscore"}})
+    with pytest.raises(Exception, match="normalization"):
+        run(monkeypatch, config, "biophys", run_dir / "output")
 
 
 # ---------------------------------------------------------------------------
