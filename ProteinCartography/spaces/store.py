@@ -107,6 +107,15 @@ class BlockStore:
 
         _write_protids(os.path.join(staging, PROTIDS_FILE), result.protids)
 
+        # Prefer the manifest the provider built. It is the only one that knows
+        # what the block was computed *from* -- the input digests, the seed, and
+        # whatever the provider recorded about its own work. Rebuilding here from
+        # the spec alone silently dropped all of it, which left `inputs` empty in
+        # every block on disk and therefore absent from `cache_key`: a changed
+        # input matrix produced an unchanged key, and the stale block looked
+        # fresh. Falling back to a rebuild keeps direct callers working.
+        if manifest is None and result.manifest:
+            manifest = Manifest.from_dict(result.manifest)
         manifest = manifest or Manifest.build(
             "block",
             result.spec.id,
