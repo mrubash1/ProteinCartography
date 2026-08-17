@@ -556,6 +556,82 @@ and TM-score directions against each other. Recording it is the point: the
 parity test cannot see anything the default configuration does not run, and that
 limit should be written down rather than discovered later.
 
+## Group 6 — free blocks
+
+### G6.1 — the block and space rules had never run · **blocks** · fixed
+
+`compute_block` and `reduce_space` were wired into the Snakefile in `e72f87d`.
+Building the 3Di block was the first time either was *executed*, and both failed
+at import:
+
+```
+ModuleNotFoundError: No module named 'yaml'
+```
+
+They run in `envs/analysis.yml`, which has no PyYAML. `tmscore` failed the same
+way, so **no block had ever been computed by the pipeline**. The wiring commit
+was verified by `snakemake -n` and by the cluster DAG staying at 16 rules — both
+of which passed, and neither of which executes anything.
+
+The fix is not to add PyYAML to `envs/analysis.yml`. That changes the env hash,
+which forces a fresh solve of the one environment whose package versions decide
+the pipeline's numeric output — the drift this repository has already been bitten
+by once, when a fresh solve pulled a numpy-2-built matplotlib in beside a pinned
+numpy 1.23.5. A `multispace_config` rule writes JSON instead, and `config_io`
+imports PyYAML lazily for the by-hand path.
+
+**Standing consequence: a rule can resolve in the DAG, pass `-n`, and never have
+run.** Every remaining group adds rules. Each one needs an actual execution
+before its commit claims anything, and "the DAG is unchanged" is not that claim.
+
+### G6.2 — `write_block` discarded the manifest it was handed · **blocks** · fixed
+
+Found within minutes of G6.1, because the first successfully written block had
+an empty `extra`.
+
+`write_block(result)` rebuilt a minimal manifest from `result.spec` and ignored
+`result.manifest`. Everything a provider records about what it computed *from*
+was dropped at the moment of writing: input digests, seed, and provider stats.
+`tmscore`'s censoring summary — the number ADR 0009 is built on — had never
+reached disk.
+
+Not only lost provenance. `inputs` feeds `cache_key`, so **a changed input matrix
+produced an unchanged key and a stale block looked fresh.** Both properties are
+now tests.
+
+This is the third finding in this work about the same shape of mistake: an
+object is constructed carefully and then quietly replaced by a cheaper one
+downstream. Gate B's B3 was the same defect in the other direction — `write_block`
+*mutating* the caller's manifest, which made freshness answer itself.
+
+### G6.3 — the descriptor format hides a sequence/structure collision · designed against
+
+`foldseek structureto3didescriptor` emits four fields. Fields 2 and 3 are the
+amino-acid sequence and the 3Di string, and they are **both uppercase letter
+strings of exactly the same length**. Reading the wrong one yields a *sequence*
+k-mer profile labelled as a *structural* one, with nothing in the output to
+indicate it — and the whole point of the block is that it is not a sequence
+measure.
+
+Same shape as the tmalign collision in G3.4, met a second time in three commits.
+The reader asserts what it can (four fields, equal lengths, sequences not
+identical) and names the column index as a constant rather than inlining it.
+
+Worth stating as a pattern, since it has now come up twice in one session:
+**where two adjacent columns have the same type and different meanings, the type
+system is not going to help and neither is a name.** The only defences are an
+assertion that would fail if they were swapped, and a test that swaps them.
+
+### Verification, since G6.1 is about verification
+
+- The shipped `demo/multispace/config.yml` runs to completion: 19/19 steps, two
+  co-registered spaces over one protein index, both block manifests populated.
+- The 3Di block was checked against real foldseek output rather than a fixture:
+  11 demo structures, 3Di lengths matching sequence lengths exactly, pairwise
+  distances spanning 0.020–0.118 with the longest, most divergent structure the
+  outlier in both farthest pairs. Non-degenerate, and it disagrees with TM-score.
+- Parity: 31 slow tests, 0 differing. Cluster DAG 16.
+
 ## Gate D — after commit group 8 (fusion and diagnostics)
 
 *Not yet run.*
