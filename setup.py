@@ -8,6 +8,7 @@ setup(
     packages=[
         "ProteinCartography",
         "ProteinCartography.spaces",
+        "ProteinCartography.diagnostics",
     ],
     version="0.0.2",
     license="MIT",
