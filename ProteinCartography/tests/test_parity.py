@@ -21,6 +21,7 @@ The comparison logic and the reasoning behind each exclusion live in
 ``parity.py``.
 """
 
+from __future__ import annotations
 import os
 import shutil
 import subprocess
@@ -36,7 +37,33 @@ from parity import (
     run_pipeline,
 )
 
-BASELINE_TAG = "multispace-base"
+#: The upstream ref this branch's baseline is derived from. The parity reference
+#: is not a tag: it is the commit this branch forked from upstream, resolved at
+#: runtime as the merge-base. A tag would have to exist in the reader's clone to
+#: be useful, and a tag created on one machine does not.
+BASELINE_REF = "upstream/main"
+
+
+def baseline_commit(repo_dirpath) -> str | None:
+    """The commit a parity baseline checkout should sit at, or None if unresolvable.
+
+    Unresolvable is the normal case for anyone who has not added an `upstream`
+    remote, so it is reported as "here is the ref, work it out" rather than as an
+    error. The caller only uses this to build a copy-pasteable suggestion.
+    """
+    try:
+        completed = subprocess.run(
+            ["git", "merge-base", "HEAD", BASELINE_REF],
+            cwd=str(repo_dirpath),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return None
+    commit = completed.stdout.strip()
+    return commit if completed.returncode == 0 and commit else None
+
 
 #: Files whose content legitimately varies between two runs of identical code.
 #: Anything else that differs run-to-run is a defect, not a fact of life.
@@ -56,17 +83,19 @@ def _run_to_run_expected(relpath: str) -> bool:
 
 @pytest.fixture(scope="module")
 def baseline_repo(repo_dirpath):
-    """The checkout of tag `multispace-base` used as the parity reference.
+    """The unmodified upstream checkout used as the parity reference.
 
-    Conventionally a git worktree at ../pc-baseline. Skipped rather than failed
-    when absent, because a contributor without the worktree should still be able
-    to run the suite.
+    Conventionally a git worktree at ../pc-baseline, detached at the commit this
+    branch forked from upstream. Skipped rather than failed when absent, because
+    a contributor without the worktree should still be able to run the suite.
     """
     candidate = Path(repo_dirpath).parent / "pc-baseline"
     if not (candidate / "Snakefile").exists():
+        commit = baseline_commit(repo_dirpath)
+        target = commit if commit else f"$(git merge-base HEAD {BASELINE_REF})"
         pytest.skip(
             f"no baseline checkout at {candidate}. Create one with:\n"
-            f"  git worktree add ../pc-baseline {BASELINE_TAG}"
+            f"  git worktree add --detach ../pc-baseline {target}"
         )
     return candidate
 
@@ -305,6 +334,27 @@ def test_the_cohort_report_is_deterministic(runs, nondeterminism_floor):
 # --------------------------------------------------------------------------
 # tests of the harness itself
 # --------------------------------------------------------------------------
+
+
+def test_the_baseline_commit_resolves_or_says_it_cannot(repo_dirpath):
+    """Either a real commit, or None -- never a ref nobody else's clone has.
+
+    This used to name a tag that had been created locally and pushed nowhere, so
+    the skip message told a contributor to run a `git worktree add` that could
+    not succeed for them. Resolving the merge-base instead means the suggestion
+    is either a concrete commit or an honest admission that it cannot be worked
+    out from here.
+    """
+    commit = baseline_commit(repo_dirpath)
+    if commit is None:
+        return  # no `upstream` remote; the skip message falls back to the ref
+    assert len(commit) == 40
+    assert all(character in "0123456789abcdef" for character in commit)
+
+
+def test_an_unresolvable_baseline_still_produces_a_usable_suggestion(tmp_path):
+    """A directory that is not a git repository must not raise out of a fixture."""
+    assert baseline_commit(tmp_path) is None
 
 
 def test_plotly_uuid_normalization_is_narrow():
