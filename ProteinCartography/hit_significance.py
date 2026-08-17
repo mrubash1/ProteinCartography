@@ -47,6 +47,48 @@ _AF_MODEL = re.compile(r"AF-(.*)-F1-model")
 OUTPUT_COLUMNS = ["protid", "evalue", "bits", "n_queries", "sources"]
 
 
+class TmalignOutputError(RuntimeError):
+    """The .m8 came from ``--mode tmalign``, where the columns mean something else."""
+
+
+#: Below this, a value is an e-value and not a TM-score. A TM-score is in [0, 1]
+#: by construction and Foldseek does not report structurally meaningless ones, so
+#: in practice they bottom out around 0.3; a useful 3Di-AA search reaches values
+#: many orders of magnitude smaller than this.
+_TMALIGN_EVALUE_FLOOR = 1e-3
+
+#: In tmalign mode the bit-score column holds roughly TM-score times 100, so it
+#: cannot exceed ~100. A 3Di-AA search puts real bit scores in the thousands.
+_TMALIGN_MAX_BITS = 100
+
+
+def _looks_like_tmalign(evalues, bits) -> bool:
+    """Whether this file's `evalue` column is really a TM-score.
+
+    ``foldseek_apiquery.py`` accepts ``--mode tmalign``, and the server returns
+    the *same 21 columns in the same positions* with different meanings: the
+    column ``constants.FOLDSEEK_COLUMN_NAMES`` calls ``evalue`` holds a TM-score,
+    and the one it calls ``bits`` holds roughly that times 100.
+
+    Nothing renames, so nothing errors -- the polarity simply inverts. Verified
+    against a live tmalign query: 938 hits, e-value column spanning 0.402 to
+    0.9999, top hit actin at 0.9999 and bottom hit an unrelated pyrophosphatase
+    at 0.402. Ranking that column ascending selects the pyrophosphatase.
+
+    Two conditions rather than one, because a weak 3Di-AA search really can
+    return only e-values near 1. Requiring the bit scores to *also* be
+    TM-score-shaped makes a false positive very unlikely, and the check is
+    written to err toward not firing.
+    """
+    if evalues.empty or evalues.isna().all():
+        return False
+    finite = evalues.dropna()
+    bounded = bool((finite >= 0).all() and (finite <= 1).all())
+    never_small = bool(finite.min() > _TMALIGN_EVALUE_FLOOR)
+    small_bits = bool(bits.dropna().empty or (bits.dropna() <= _TMALIGN_MAX_BITS).all())
+    return bounded and never_small and small_bits
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -92,12 +134,26 @@ def foldseek_significance(m8_files) -> pd.DataFrame:
         keep = accession.notna()
         if not keep.any():
             continue
+        evalues = pd.to_numeric(frame.loc[keep, "evalue"], errors="coerce")
+        bits = pd.to_numeric(frame.loc[keep, "bits"], errors="coerce")
+        if _looks_like_tmalign(evalues, bits):
+            raise TmalignOutputError(
+                f"{path} looks like `foldseek_apiquery.py --mode tmalign` output: "
+                f"its e-value column runs {evalues.min():.4g} to {evalues.max():.4g}, "
+                "entirely inside [0, 1], with bit scores at TM-score scale. In that "
+                "mode the server reuses the same column positions for different "
+                "quantities -- the 'e-value' is a TM-score -- so ranking it "
+                "ascending would select the *least* similar structures. Refusing "
+                "rather than guessing: the mode is not recorded in the output, so "
+                "this file cannot be interpreted with confidence. The pipeline runs "
+                "3diaa mode, which this does support."
+            )
         rows.append(
             pd.DataFrame(
                 {
                     "protid": accession[keep].values,
-                    "evalue": pd.to_numeric(frame.loc[keep, "evalue"], errors="coerce").values,
-                    "bits": pd.to_numeric(frame.loc[keep, "bits"], errors="coerce").values,
+                    "evalue": evalues.values,
+                    "bits": bits.values,
                     # The query column is `job.pdb` for every web-API result, so
                     # the file itself is the only thing that identifies the query.
                     "query": os.path.abspath(path),

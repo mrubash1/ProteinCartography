@@ -81,33 +81,62 @@ cohort:
   record_truncation: true
 ```
 
-**Correction, made during implementation: `foldseek: best_tmscore` is not
-achievable, and the reason is circular.** The draft above asked for the best
-e-value across queries for BLAST hits and the best TM-score for Foldseek hits.
-The TM-score half cannot be done.
+### Why the measure is an e-value and not a TM-score
 
-Search mode queries the Foldseek **web API**, and its `.m8` output has 21
-columns with no alignment TM-score — `constants.FOLDSEEK_COLUMN_NAMES`, verified
-against a recorded API response. The TM-scores this pipeline is built around
-come from the *local* all-versus-all run in `foldseek_clustering`, which runs on
-the downloaded structures. So ranking the cohort by TM-score would require the
-structures that the ranking exists to choose. There is no ordering of the DAG
-that resolves this; it is a property of where the measurement comes from.
+The draft of this ADR specified `significance_rule: {foldseek: best_tmscore}`.
+It ships ranking by e-value instead. This section went through two versions and
+the first one was wrong, so both are recorded.
 
-What the web API does report is an e-value and a bit score, and those are what
-`hit_significance.py` aggregates: the best value across every query that found
-the hit, so a protein is ranked by the strongest evidence anyone has for it
-rather than by the query that barely found it. `tmscore` remains in the
-vocabulary because the measure is well-defined wherever scores exist — cluster
-mode has real TM-scores — but it is not the default and cannot be used in search
-mode.
+**First correction, and it overclaimed.** It said a TM-score is unobtainable
+because the pipeline's TM-scores come from the *local* all-versus-all run in
+`foldseek_clustering`, which operates on the downloaded structures — so ranking
+the cohort by TM-score would need the structures the ranking exists to choose.
+That circularity is real, but it applies to the **all-versus-all matrix**, and
+cohort ranking does not need the matrix. It needs one score per candidate
+against the query proteins, which is a different and much cheaper thing.
 
-One consequence worth stating plainly: **`significance` is a weaker rule than
-this ADR originally implied.** An e-value is a sequence-and-structure alignment
-significance, not a measure of structural similarity, so ranking by it selects
-for confidently-detected hits rather than for structurally close ones. It is
-still reproducible and still principled, which is more than either alternative
-manages. It is not the TM-score ranking the draft promised.
+**What is actually true.** `foldseek_apiquery.py` accepts `--mode tmalign`, and
+in that mode the web API *does* return a TM-score per hit — query versus
+candidate, before anything is downloaded. Verified by a live query with the demo
+actin structure against `afdb-swissprot`: 938 hits, top hit actin at TM 0.9999,
+bottom hit an unrelated GTP pyrophosphatase at 0.402. So a TM-score-ranked
+cohort is feasible. It is not what ships, for three reasons, and the third is
+the serious one.
+
+1. **The Snakefile never passes `--mode`,** so the pipeline always runs `3diaa`.
+   Making the mode configurable is a change to search behavior in its own right.
+2. **Switching modes changes which hits come back and in what order,** so it
+   changes the cohort, and therefore the map. That cannot land under the
+   byte-identical requirement no matter how much better the ranking is.
+3. **The two modes are indistinguishable from their output.** The server returns
+   the *same 21 columns in the same positions* and puts the TM-score where the
+   e-value goes; `bits` becomes roughly TM×100. Nothing renames, nothing is
+   flagged, and the mode is not recorded anywhere in the results. Any code
+   reading the column named `evalue` silently gets a quantity with the opposite
+   polarity.
+
+That third point is not hypothetical. On the live response above,
+`extract_foldseek_hits.py`'s default filter — `evalue < 0.01` — keeps **0 of 938
+hits**. And a significance ranking that trusted the column name would order the
+cohort worst-first, selecting the pyrophosphatase over the actin.
+
+`hit_significance.py` therefore **refuses** tmalign-shaped input rather than
+guessing at it: bounded in [0, 1], never small, and bit scores at TM-score scale
+together mean the file cannot be interpreted with confidence. Refusing is the
+right call while the mode is unrecorded. **The real fix is to record the mode**
+next to the results, at which point interpreting either mode correctly becomes
+trivial and TM-score ranking becomes available as an opt-in.
+
+`tmscore` stays in `SIGNIFICANCE_MEASURES` because the measure is well-defined
+wherever scores exist — cluster mode has real TM-scores — but it is not the
+default and nothing in search mode can currently supply it safely.
+
+One consequence worth stating plainly: **`significance` as shipped is a weaker
+rule than this ADR originally implied.** An e-value is alignment significance,
+not structural similarity, so it selects for confidently-*detected* hits rather
+than structurally close ones. It is still reproducible and still principled,
+which is more than either alternative manages. It is not the TM-score ranking
+the draft promised, and the path to that ranking is now written down.
 
 | rule | order truncated | reproducible? | principled? |
 |---|---|---|---|
