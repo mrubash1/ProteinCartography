@@ -350,3 +350,126 @@ def assert_critical_outputs_compared(report: ParityReport, analysis_name: str) -
             "these outputs carry the backwards-compatibility promise but were not "
             "compared:\n" + "\n".join(f"  {path}: {why}" for path, why in reasons.items())
         )
+
+
+# ---------------------------------------------------------------------------
+# component-level parity at N > 500
+# ---------------------------------------------------------------------------
+#
+# The end-to-end fixture is 11 proteins, and mutation testing showed that is
+# structurally unable to see several realistic refactor errors: at N=11 the PCA
+# component count, the UMAP neighbour count and Leiden's n_pcs are all clamped
+# to the same value whatever the config says, and the censoring fill token never
+# appears because all 121 pairs are measured.
+#
+# Running the whole pipeline at N>500 would mean synthesizing 750 PDB files and
+# a Foldseek run. But the port only touched the reduction step, and that step
+# takes a matrix -- not structures. So the matrix is generated directly and the
+# reducers are run on it from both checkouts. This reaches the regime the small
+# fixture cannot: above 500 rows, `svd_solver="auto"` would switch to the
+# randomized solver, which is the defect PR #106 fixed.
+#
+# Procedural, seeded, and not committed as data: the seed is the fixture.
+
+CENSORED_FILL = "0.0"
+
+DEFAULT_FIXTURE_N = 750
+DEFAULT_FIXTURE_SEED = 0
+DEFAULT_FIXTURE_CAP = 300
+
+
+def synthetic_matrix(
+    path: Path,
+    *,
+    n: int = DEFAULT_FIXTURE_N,
+    seed: int = DEFAULT_FIXTURE_SEED,
+    cap: int = DEFAULT_FIXTURE_CAP,
+    permute_columns: bool = False,
+) -> Path:
+    """Write a similarity matrix with the statistical shape of a real one.
+
+    Reproduces the three properties measured on production output that matter
+    for the code under test:
+
+    * a per-query cap, so most rows report exactly `cap` partners and the rest
+      are the literal ``"0.0"`` fill -- the censoring of ADR 0009;
+    * scores in Foldseek's ``%.3E`` form with no low tail, so a fill is a value
+      the generator never otherwise emits;
+    * an exact 1.0 on the *label* diagonal.
+
+    `permute_columns` reproduces the PR #106 defect for tests that need it.
+    """
+    import numpy as np
+
+    rng = np.random.RandomState(seed)
+    labels = [f"P{i:05d}" for i in range(n)]
+    columns = list(labels)
+    if permute_columns:
+        columns = [labels[i] for i in rng.permutation(n)]
+
+    # Column label -> the protein's canonical index, so a permuted header still
+    # writes each score into the cell its labels claim. Writing by position here
+    # would generate a matrix that is wrong rather than merely permuted.
+    index_of = {label: i for i, label in enumerate(labels)}
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w") as fh:
+        fh.write("\t".join(["protid"] + columns) + "\n")
+        for i, row_label in enumerate(labels):
+            # Each query reports its own capped set of partners, chosen
+            # independently, so every row sits at exactly the cap while the
+            # columns vary -- the signature of a per-query limit rather than a
+            # score threshold. The self-hit is always reported and is counted
+            # against the cap, so the row totals are exactly uniform.
+            others = [j for j in range(n) if j != i]
+            k = max(0, min(cap, n) - 1)
+            partners = set(rng.choice(others, size=k, replace=False).tolist())
+            partners.add(i)
+            scores = rng.uniform(0.05, 0.99, size=n)
+            cells = []
+            for column_label in columns:
+                j = index_of[column_label]
+                if j == i:
+                    cells.append("1.000E+00")
+                elif j in partners:
+                    cells.append(f"{scores[j]:.3E}")
+                else:
+                    cells.append(CENSORED_FILL)
+            fh.write("\t".join([row_label] + cells) + "\n")
+    return path
+
+
+def run_reducer(
+    repo: Path,
+    matrix_path: Path,
+    workdir: Path,
+    *,
+    mode: str = "pca_umap",
+    python: str | None = None,
+) -> Path:
+    """Run `dim_reduction.py` from `repo` on `matrix_path`, into `workdir`.
+
+    The matrix is copied in first, because the script derives its output paths
+    from its input path.
+    """
+    workdir = Path(workdir)
+    if workdir.exists():
+        shutil.rmtree(workdir)
+    workdir.mkdir(parents=True)
+    local_matrix = workdir / Path(matrix_path).name
+    shutil.copy(matrix_path, local_matrix)
+
+    cmd = [
+        python or sys.executable,
+        str(Path(repo) / "ProteinCartography" / "dim_reduction.py"),
+        "--input",
+        str(local_matrix),
+        "--mode",
+        mode,
+    ]
+    proc = subprocess.run(cmd, cwd=repo, capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"dim_reduction from {repo} failed ({proc.returncode})\n{proc.stderr[-4000:]}"
+        )
+    return workdir
