@@ -1067,6 +1067,225 @@ a p-value of 1e-30, and the top of an enrichment table is entirely made of those
   is deliberately untouched (invariant I6) — its defect is FOLLOWUPS #34, not a drive-by
   fix.
 
+## Group 8, first half — fusion
+
+Phase 5 lists four fusion strategies and nine diagnostics. That is too much for one
+commit group, and the two halves are not symmetric: the diagnostics are independent of
+each other, fusion is not independent of them, and Phase 5's own item 2 (contribution
+share) has no meaning until fusion exists. So fusion first, and the diagnostics are their
+own group.
+
+### G8.1 — the fixture came before the strategy, again, and again it paid
+
+Group 7b's lesson repeated (G7.7). Fusion's failure mode is not a crash; it is a map that
+looks fine and is one block's map wearing several blocks' labels. Neither a shape
+assertion nor the eleven-protein demo can see that.
+
+`tests/fusion_cohort.py` plants **two crossed partitions in two different blocks** —
+`fold` visible only in a 200-column block at scale 10, `chemistry` only in a 4-column
+block at scale 0.01 — with the crossing exact, so all twelve cells hold 20 proteins and
+neither partition carries information about the other. That last property is what makes
+"this fusion recovered `fold` and stayed blind to `chemistry`" a statement about the
+fusion rather than about the draw, and it is why the crossing is built as a repeated
+cross-product and permuted rather than drawn independently.
+
+Measured on the generated cohort, by its own tests: separations 3.43 and 3.71 for the two
+blocks on their own partitions, 0.99 both ways for the partitions they should be blind to,
+and a **7523x** gap in mean pairwise distance between the two blocks. Comparable
+information, incommensurate units — which is the case ADR 0002 exists for, made extreme
+enough that a broken normalization cannot hide in sampling noise.
+
+The fixture's measuring stick (a between-over-within distance ratio) is implemented by
+explicit broadcasting rather than through the Gram identity production code uses. A
+measuring stick that shares an implementation with the thing it measures cannot catch that
+implementation being wrong.
+
+### G8.2 — ADR 0002's contribution-share formula cannot report anything · **ADR corrected**
+
+The formula is `share_i = w_i · mean(d̃_i)² / Σ_j w_j · mean(d̃_j)²`, and the normalization
+contract makes every `mean(d̃)` exactly 1 by construction. So it returns the normalized
+weight vector. It is not wrong; it is empty. "Contribution share is a first-class,
+computed, recorded output" was meant to mean something a config could not have told you.
+
+What a block actually puts into a fused squared distance is `w_i · mean(d̃_i²)`, and
+`mean(d̃²) = 1 + var(d̃)`. Both are now computed. `share` keeps ADR 0002's formula, computed
+from the *measured* means rather than from the weights so that it stops being the weight
+vector the moment normalization breaks; `realized_share` is the fraction of the fused
+quantity the block accounts for, and it is what the dominance warning keys on.
+
+They differ by enough to matter. On the demo cohort, `late` over `tmscore` and `biophys`
+at equal weights: nominal **50/50**, realized **34/66** — the other way round.
+`biophys`'s normalized distances are far more dispersed across these eleven proteins.
+
+ADR 0002 is amended in place with a pointer to ADR 0013 §3.
+
+### G8.3 — the published SNF kernel is not scale-invariant
+
+Wang et al.'s scaled exponential kernel takes `exp(-d² / (μ·ε))` where `ε` is an average
+of local distances. `d²/ε` has units of distance, so the whole exponent scales with the
+block: multiply a block by 1000 and its affinities change entirely.
+
+This is not a defect in the paper — SNF is normally applied to one dataset at a time — but
+it is fatal to a fusion contract whose first clause is that block scale must not decide
+anything. Normalizing to unit mean distance before the kernel, which ADR 0002 requires
+regardless, removes it. Measured against the fixture's `narrow_rescaled` block, which is
+`narrow` times 1000: `late` reproduces the geometry to a relative **1.1e-15** and `graph`
+to an absolute **2.6e-17**.
+
+The fixture is the only reason this was noticed rather than shipped. A block that is
+exactly another block in different units is a strange thing to generate deliberately, and
+it is the only test that can fail this way.
+
+### G8.4 — the affinity diagonal made `graph` produce nothing, twice · **blocks** · fixed
+
+The first `graph` output separated *neither* planted partition: 1.005 and 1.004, against
+1.39 and 1.23 after the fix. The fused affinity matrix was structurally correct — its
+within-partition mean was 2.5x its between-partition mean — and the profile built from it
+carried no structure at all.
+
+Equation 8 pins every protein's self-affinity at exactly 1/2 while its affinities to
+everything else are O(1/N); here, 0.5 against 0.001. Reading rows as feature vectors, that
+single entry sits in a different column for every protein, so the euclidean distance
+between any two rows is about sqrt(2)/2 regardless of what the rest of the row says.
+Every pair equidistant, every partition invisible.
+
+The same defect had the same effect on the per-protein shares, which were computed as an
+inner product between the fused matrix and each block's initial affinity: the shared 0.25
+diagonal term dominated both, and an informative block against a pure noise block came out
+**0.500 / 0.499**. Off-diagonal, it is **0.597 / 0.403**.
+
+Both are fixed by dropping the diagonal, which discards no information — the self-affinity
+is a normalization constant, identical for every protein, and says nothing about who
+anyone is near. What is worth recording is that neither failure would have been visible
+without a fixture carrying a known partition. Every shape was right, every value was
+finite, the matrix was symmetric and row-stochastic, and the answer was noise.
+
+### G8.5 — FOLLOWUPS #16 was about the wrong end of the pipe · **ADR corrected**
+
+ADR 0002 names per-protein weighting as `graph`'s unique advantage. `SpaceSpec.weights` is
+one scalar per block, so #16 recorded the ADR as overclaiming and Gate B deferred it here.
+
+The deferral was right and the framing was not. Per-protein weights are not a config
+input, and could not usefully be one: it would ask the user to know, per protein, which
+kind of evidence deserves trust — which is the output of the analysis, not an input to it.
+They are something SNF *produces*. The fused network gives every protein its own mixture
+of the blocks, recovered afterwards as `BlockContribution.per_protein_share`.
+
+Demonstrated rather than asserted: an informative block against a noise block, both
+weighted 1.0. `late` reports 50/50 because that is what the weights say. `graph` reports
+59.7/40.3, and does so for every protein individually — the informative block wins in
+every one of the 240 rows, with a per-protein range of 0.565 to 0.617.
+
+ADR 0002's second cost — "one optional dependency (`snfpy`)" — is also wrong, and for a
+reason the ADR could not have known: ADR 0006 would make `graph` the one strategy that
+silently disappears in the bare environment. It is 60 lines of numpy instead. The real
+cost is that there is no reference implementation here to check the output against, so the
+tests check the algorithm's properties. Stated in ADR 0013 §4 rather than left implicit.
+
+### G8.6 — the entry point crashed on the demo. Fourth sighting
+
+19 unit tests passed and `snakemake` died at rule 26. `coregister.py` imports
+`features_for` from `reduce_space`, whose return signature had gained a third element —
+and separately read `.features` off what it assumed was a single `BlockResult`, which was
+correct only while spaces were single-block.
+
+Both are the same lesson as G7.8, G6.4 and `compute_block` before them: **a test suite that
+passes is not evidence the entry point works.** The rule is now in CLAUDE.md and it has
+now caught four defects. The fix also improved the thing it broke — a co-registered fused
+space compares its fused geometry rather than one of its blocks, which is what it should
+always have done — and turned up a third defect nobody was looking for: `coregister`'s
+manifest named one block per space as an input, so a changed second block would have
+looked like a cache hit.
+
+`tests/test_reduce_space.py` is new and did not exist before this group. `reduce_space.py`
+had no direct tests at all; the demo was its only exercise.
+
+### G8.7 — the demo's two blocks are in different orders, so the alignment is load-bearing
+
+While diagnosing G8.4 I fused the demo's `tmscore` and `biophys` blocks directly, without
+going through `features_for`, and got a different convergence profile. The cause is that
+the two blocks list the same eleven proteins in different orders — `tmscore` starts at
+`A0A286Q506`, `biophys` at `Q6QAQ1` — because one comes from the similarity matrix and the
+other from `uniprot_features.tsv`.
+
+So the intersection-and-align step inside `reduce_space` is not defensive padding on this
+cohort; without it every fused distance would pair a protein with a different protein, and
+the result would still be a well-formed square matrix of plausible numbers. This is ADR
+0007's rule met in a third place, and `test_a_reordered_block_is_realigned_not_read_
+positionally` is the test that fails when it is removed.
+
+### G8.8 — a params validator, and what it caught in the first second
+
+`SpaceConfig.params` was a free-form mapping, so a misspelled `iteratons` would reach the
+manifest looking configured while the run used the default. `STRATEGY_PARAMS` now declares
+what each strategy consumes and the validator rejects the rest at parse time.
+
+It failed the suite immediately: `test_config_schema.py`'s full example config has carried
+`params: {K: 20}` on a `graph` space since the schema was written — uppercase, matching
+the paper's notation, and read by nothing because nothing read `params` at all. Fifth
+sighting of the pattern behind #29, #32 and G6.4, and the first one caught structurally
+rather than by remembering to look.
+
+### G8.9 — what fusing the demo actually found
+
+Worth reading, and it is not a biological result — the cohort is eleven actins.
+
+`early` gives `tmscore` **73.3%** of the variance against `biophys`'s 26.7%. That is 11
+columns against 4 and nothing else, and it is over the 70% threshold, so both warnings
+fire. (`early` had no dominance warning until this run; only `late` and `graph` did. 73.3%
+is exactly the case where one warning without the other is easy to skim past.)
+
+`graph` needed `iterations: 200`. The paper recommends 10-20, and at N=11 with k=5 the
+last step still moves an affinity by 0.029 after 20 — then 5.4e-07 after 100 and 2.8e-17
+after 500. Convergence is monotone in both `k` and `iterations`, and small `k` on a small
+cohort is the slow corner. The warning is what surfaced it; the demo config now sets a
+value that converges, because a demo should not ship a result its own output calls
+provisional.
+
+The interesting one is the co-registration. `fused_late` sits **between its two parents**:
+it has the highest neighborhood Jaccard of any pair with `structure` (0.789, median 1.0)
+and the highest rank correlation of any pair with `physicochemistry` (0.808). So the two
+"which block dominates" measures point in opposite directions — the realized share says
+`biophys` at 66%, the neighborhoods say `structure`. Both are true and they answer
+different questions: the share is about the magnitude of the distances, the Jaccard is
+about their ordering. A reader who has only one of the two numbers will over-read it,
+which is the argument for printing both.
+
+### Verification, group 8 first half
+
+- Unit suite: 815 passed, 64 skipped (bare env). The 5 new skips are scipy- and
+  sklearn-gated; both files were run where they do not skip — `test_fusion.py` at
+  **59 passed / 0 skipped** and `test_reduce_space.py` at **22 passed / 0 skipped**, in
+  `.snakemake/conda/21cb44d…`, which carries pytest, scipy 1.13.1, scikit-learn 1.2.2 and
+  umap 0.5.3. That env is the full stack, not only scipy — worth knowing, and G7.12
+  understated it.
+- **Parity: 33 slow tests, 0 differing files**, against `upstream/main` at `36a38c7`.
+  Expected and checked rather than assumed: the default configuration defines no spaces,
+  so `reduce_space` does not execute in a parity run at all.
+- Lint: `ruff check`, `ruff format --check`, `snakefmt --check` all clean.
+- Cluster DAG 16 and search DAG 25, both unchanged. Multispace demo 25 → 28 — one rule per
+  fused space — and it runs **28/28** to completion.
+- **The Snakefile needed no change.** The `reduce_space` rule already took every block of
+  its space as input, so fusion is a config-reachable capability rather than new
+  machinery. That is worth noting as evidence the group 5 wiring was general enough.
+- Each of the four commits verified alone in a detached worktree: **735 / 795 / 815 / 815**
+  passed, lint clean, cluster DAG 16 at every point.
+- **Mutation harness exits 0** — 17 mutations across three scales, 12 detected, 5
+  survived as expected with the reason recorded against each, **0 unexplained holes**.
+  Unchanged from group 7b, and the tree was checked restored afterwards: no diff against
+  HEAD in any source file.
+- No new mutation entries, for the reason G7.6 records: the default configuration defines
+  no spaces, so the parity test cannot see any of this output and every mutation to it
+  would survive for a structural reason rather than a real hole. Checked rather than
+  assumed — the parity run below is the same 0 differing files it was before fusion
+  existed.
+- Pre-existing files touched stays at **10**. This half edits no pre-existing file at all
+  — `reduce_space.py`, `coregister.py`, `config_schema.py` and `demo/multispace/config.yml`
+  are all files this work created, and the Snakefile was not touched.
+- Still open for group 8's second half: the nine diagnostics, the four
+  `DiagnosticsConfig` fields that are read by nothing (FOLLOWUPS #36), and the clustering
+  decision that blocks cross-space ARI.
+
 ## Gate D — after commit group 8 (fusion and diagnostics)
 
 *Not yet run.*
