@@ -11,7 +11,7 @@ an allowlist. An allowlist silently ignores files nobody thought to list, which
 is the wrong failure direction: a new output that differs should break the test
 and make someone justify it.
 
-Three kinds of difference are known and are handled openly:
+Four kinds of difference are known and are handled openly:
 
 *Normalized.* Plotly stamps one random ``<div>`` uuid into each HTML figure.
 Strip it and three of the four HTML outputs are byte-identical, so they are
@@ -24,6 +24,14 @@ that excluded far less and failed. Foldseek's `temp/` in particular cannot be
 compared at all -- its scratch subdirectory is named with a random integer, so
 the *set* of files differs between runs, and which shard a record lands in
 depends on thread scheduling.
+
+*Added by this work.* A new diagnostic file that the baseline has no equivalent
+for. Listed by exact path in :data:`ADDITIVE_OUTPUTS` with its reason, and
+allowed to be missing **from the baseline side only** -- which side that is has
+to be named by the caller, because this function is called with the arguments in
+both orders and inferring it would silently accept a deleted file half the time.
+When the file appears in both trees it is compared like anything else, so the
+self-diff still has to prove it is deterministic.
 
 *Genuinely nondeterministic.* The semantic-analysis wordcloud has a stochastic
 layout. Rather than assert in advance that it does not matter, the harness runs
@@ -55,6 +63,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 __all__ = [
+    "ADDITIVE_OUTPUTS",
     "CRITICAL_OUTPUTS",
     "EXCLUSIONS",
     "assert_critical_outputs_compared",
@@ -101,6 +110,28 @@ EXCLUSIONS = (
     ("*.snakemake_timestamp", "snakemake bookkeeping, holds an mtime"),
 )
 
+#: New files this work adds to the output tree, each with the reason it is
+#: allowed to appear where the baseline has nothing.
+#:
+#: This is a much narrower allowance than an exclusion and it runs in one
+#: direction only: a path listed here may be missing from the *baseline* tree,
+#: and that is all. If it exists in both it is compared like anything else, so
+#: the self-diff still has to show it is deterministic. A file missing from the
+#: branch side is never additive and always fails, and when no baseline is named
+#: -- two runs of the same code -- the allowance does not apply at all.
+#:
+#: Adding an entry here is a claim that the file is *new*, not that a difference
+#: in it is acceptable. Keep it short; a long list means the port grew outputs
+#: nobody asked for.
+ADDITIVE_OUTPUTS = (
+    (
+        "protein_features/cohort_report.json",
+        "the cohort diagnostic added by ADR 0008. The baseline truncates the hit "
+        "list silently, so it has no equivalent file. Its presence is the point: "
+        "the retained set was always a choice and now the run says so.",
+    ),
+)
+
 #: The artifacts whose byte-identity *is* the backwards-compatibility promise.
 #: `compare_trees` reports whether each was actually compared, so a future
 #: exclusion cannot quietly remove one of them from the test's reach.
@@ -119,11 +150,19 @@ CRITICAL_OUTPUTS = (
 )
 
 
-def _excluded_by(relpath: str):
-    for pattern, reason in EXCLUSIONS:
+def _matches(relpath: str, table) -> str | None:
+    for pattern, reason in table:
         if fnmatch.fnmatch(relpath, pattern) or fnmatch.fnmatch(f"/{relpath}", f"*/{pattern}"):
             return reason
     return None
+
+
+def _excluded_by(relpath: str):
+    return _matches(relpath, EXCLUSIONS)
+
+
+def _additive_reason(relpath: str):
+    return _matches(relpath, ADDITIVE_OUTPUTS)
 
 
 def normalize_bytes(relpath: str, data: bytes) -> bytes:
@@ -141,6 +180,7 @@ class ParityReport:
     differing: list = field(default_factory=list)
     only_in_a: list = field(default_factory=list)
     only_in_b: list = field(default_factory=list)
+    added: dict = field(default_factory=dict)
     excluded: dict = field(default_factory=dict)
 
     @property
@@ -158,9 +198,12 @@ class ParityReport:
             f"  identical after normalization: {len(self.normalized_identical)}",
             f"  DIFFERING        : {len(self.differing)}",
             f"excluded by rule   : {len(self.excluded)}",
+            f"added by this work : {len(self.added)}",
             f"only in A          : {len(self.only_in_a)}",
             f"only in B          : {len(self.only_in_b)}",
         ]
+        for rel in sorted(self.added):
+            lines.append(f"  + added: {rel}")
         for rel in self.differing[:limit]:
             lines.append(f"  ! {rel}")
         if len(self.differing) > limit:
@@ -180,13 +223,25 @@ def _relative_files(root: Path) -> set:
     }
 
 
-def compare_trees(a: Path, b: Path, *, ignore: set = frozenset()) -> ParityReport:
+def compare_trees(
+    a: Path, b: Path, *, ignore: set = frozenset(), baseline: str | None = None
+) -> ParityReport:
     """Compare two output trees. `ignore` is a set of relpaths to skip entirely.
 
     `ignore` is how the self-diff result is fed back in: paths already shown to
     differ between two runs of identical code cannot be evidence about a code
     change.
+
+    `baseline` names which argument, `"a"` or `"b"`, came from the pre-change
+    checkout. Only that side is allowed to be missing an :data:`ADDITIVE_OUTPUTS`
+    path. It has no default on purpose: callers pass the branch first and the
+    baseline first in roughly equal measure, so guessing would mean a deleted
+    output silently passing whenever the guess was wrong. Leave it unset when
+    both trees come from the same code, which is every self-diff and every
+    mutation run.
     """
+    if baseline not in (None, "a", "b"):
+        raise ValueError(f"baseline must be 'a', 'b', or None; got {baseline!r}")
     a, b = Path(a), Path(b)
     report = ParityReport()
     files_a, files_b = _relative_files(a), _relative_files(b)
@@ -199,11 +254,21 @@ def compare_trees(a: Path, b: Path, *, ignore: set = frozenset()) -> ParityRepor
         if rel in ignore:
             report.excluded[rel] = "known nondeterministic (established by self-diff)"
             continue
+        missing_from = None
         if rel not in files_b:
-            report.only_in_a.append(rel)
-            continue
-        if rel not in files_a:
-            report.only_in_b.append(rel)
+            missing_from = "b"
+        elif rel not in files_a:
+            missing_from = "a"
+        if missing_from is not None:
+            # Additive only when the side that lacks the file is the baseline.
+            # The other direction is a removal, whatever the file is called.
+            additive = _additive_reason(rel) if baseline == missing_from else None
+            if additive is not None:
+                report.added[rel] = additive
+            elif missing_from == "b":
+                report.only_in_a.append(rel)
+            else:
+                report.only_in_b.append(rel)
             continue
 
         if filecmp.cmp(a / rel, b / rel, shallow=False):
@@ -323,7 +388,7 @@ def main(argv=None) -> int:
 
     print("\nrunning the baseline ...")
     base = run_pipeline(baseline, work / "base", conda_prefix=prefix)
-    parity = compare_trees(head_1, base, ignore=set(self_diff.differing))
+    parity = compare_trees(head_1, base, ignore=set(self_diff.differing), baseline="b")
     print("parity vs baseline:\n" + parity.describe())
 
     return 0 if parity.ok else 1

@@ -28,6 +28,7 @@ from pathlib import Path
 
 import pytest
 from parity import (
+    ADDITIVE_OUTPUTS,
     assert_critical_outputs_compared,
     compare_trees,
     normalize_bytes,
@@ -146,7 +147,9 @@ def test_default_output_is_unchanged_from_the_baseline(runs, nondeterminism_floo
     Everything outside the empirically-established nondeterminism floor must be
     identical, byte for byte, after normalizing Plotly's random figure uuid.
     """
-    report = compare_trees(runs["head_a"], runs["base_a"], ignore=nondeterminism_floor)
+    report = compare_trees(
+        runs["head_a"], runs["base_a"], ignore=nondeterminism_floor, baseline="b"
+    )
     assert report.ok, f"default output changed:\n{report.describe()}"
 
     # Guard against the test passing because it compared nothing. A count alone
@@ -205,6 +208,61 @@ def test_the_pivoted_matrix_is_self_consistent(runs):
     assert matrix.is_square
     assert (matrix.aligned_diagonal() == 1.0).all()
     assert matrix.measured_zero_count() == 0
+
+
+@pytest.mark.slow
+def test_the_cohort_report_records_the_truncation_the_baseline_hid(runs):
+    """The demo fixture truncates, and the baseline says nothing about it.
+
+    Worth asserting on the real run rather than a unit fixture, because the
+    numbers here are the pipeline's own: 24 hits, 20 surviving the metadata
+    filter, 10 admitted by `max_structures`. Half the candidates are dropped and
+    before ADR 0008 no file recorded that.
+    """
+    import json
+
+    head, base = Path(runs["head_a"]), Path(runs["base_a"])
+    relpath = "protein_features/cohort_report.json"
+    assert not (base / relpath).exists(), "the baseline is not supposed to have this file"
+
+    payload = json.loads((head / relpath).read_text())
+    assert payload["rule"] == "as_filtered"
+    assert payload["truncation_fired"] is True
+    assert payload["reproducible"] is False
+    assert payload["n_retained"] == payload["max_structures"] == 10
+    assert payload["n_discarded"] > 0
+    assert payload["n_candidates"] == payload["n_retained"] + payload["n_discarded"]
+    assert payload["n_candidates_before_filtering"] >= payload["n_candidates"]
+    assert any("not controlled by this pipeline" in w for w in payload["warnings"])
+
+
+@pytest.mark.slow
+def test_the_cohort_the_report_describes_is_the_cohort_that_was_built(runs):
+    """A report that disagrees with the run is worse than no report.
+
+    The retained count has to match the structures actually downloaded, or the
+    diagnostic is describing a decision the pipeline did not make.
+    """
+    import json
+
+    head = Path(runs["head_a"])
+    payload = json.loads((head / "protein_features" / "cohort_report.json").read_text())
+    matrix = head / "foldseek_clustering_results" / "all_by_all_tmscore_pivoted.tsv"
+    n_in_map = sum(1 for _ in matrix.read_text().splitlines()) - 1
+
+    # The map also carries the search-mode input proteins, which arrive through
+    # `copy_pdb` and were never cohort candidates.
+    assert n_in_map == payload["n_retained"] + 1
+
+
+@pytest.mark.slow
+def test_the_cohort_report_is_deterministic(runs, nondeterminism_floor):
+    """It lands in the output tree, so it must not become a source of churn."""
+    relpath = "protein_features/cohort_report.json"
+    assert relpath not in nondeterminism_floor
+    a = (Path(runs["head_a"]) / relpath).read_bytes()
+    b = (Path(runs["head_b"]) / relpath).read_bytes()
+    assert a == b
 
 
 # --------------------------------------------------------------------------
@@ -267,6 +325,85 @@ def test_ignore_set_is_reported_as_excluded(tmp_path):
     report = compare_trees(a, b, ignore={"noisy.tsv"})
     assert report.ok
     assert "self-diff" in report.excluded["noisy.tsv"]
+
+
+COHORT_REPORT = "protein_features/cohort_report.json"
+
+
+def _trees_where(tmp_path, *, in_a=(), in_b=()):
+    a, b = tmp_path / "a", tmp_path / "b"
+    for root, relpaths in ((a, in_a), (b, in_b)):
+        root.mkdir()
+        for rel in relpaths:
+            path = root / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("{}\n")
+    return a, b
+
+
+def test_an_additive_output_missing_from_the_baseline_is_allowed(tmp_path):
+    """A file this work adds, where the baseline has nothing, is not a failure."""
+    a, b = _trees_where(tmp_path, in_a=[COHORT_REPORT])
+    report = compare_trees(a, b, baseline="b")
+    assert report.ok
+    assert "ADR 0008" in report.added[COHORT_REPORT]
+
+
+def test_the_allowance_follows_the_named_baseline_and_not_the_argument_order(tmp_path):
+    """Both call orders are in use, so the direction cannot be inferred.
+
+    This is the case that got the first version of the allowance wrong: it
+    assumed the second argument was always the new tree, and the parity test
+    passes it first.
+    """
+    a, b = _trees_where(tmp_path, in_b=[COHORT_REPORT])
+    assert compare_trees(a, b, baseline="a").ok
+    assert not compare_trees(a, b, baseline="b").ok
+
+
+def test_an_additive_output_missing_from_the_branch_is_a_removal(tmp_path):
+    """Losing a file is never additive, whatever the file is called."""
+    a, b = _trees_where(tmp_path, in_b=[COHORT_REPORT])
+    report = compare_trees(a, b, baseline="b")
+    assert not report.ok
+    assert report.only_in_b == [COHORT_REPORT]
+
+
+def test_the_allowance_does_not_apply_between_two_runs_of_the_same_code(tmp_path):
+    """With no baseline named, both trees must agree -- self-diffs included."""
+    a, b = _trees_where(tmp_path, in_a=[COHORT_REPORT])
+    report = compare_trees(a, b)
+    assert not report.ok
+    assert report.only_in_a == [COHORT_REPORT]
+
+
+def test_an_additive_output_is_still_compared_when_both_trees_have_it(tmp_path):
+    """The allowance is about absence only. If both runs write it, it must match."""
+    a, b = _trees_where(tmp_path, in_a=[COHORT_REPORT], in_b=[COHORT_REPORT])
+    (a / COHORT_REPORT).write_text('{"n_retained": 10}\n')
+    (b / COHORT_REPORT).write_text('{"n_retained": 11}\n')
+    report = compare_trees(a, b, baseline="b")
+    assert not report.ok
+    assert report.differing == [COHORT_REPORT]
+
+
+def test_an_unlisted_new_file_still_fails(tmp_path):
+    """The allowance is a fixed list, not a rule about new files in general."""
+    a, b = _trees_where(tmp_path, in_a=["protein_features/surprise.json"])
+    report = compare_trees(a, b, baseline="b")
+    assert not report.ok
+    assert report.only_in_a == ["protein_features/surprise.json"]
+
+
+def test_an_unknown_baseline_side_is_rejected():
+    with pytest.raises(ValueError, match="baseline must be"):
+        compare_trees(Path("."), Path("."), baseline="head")
+
+
+def test_every_additive_output_carries_a_reason():
+    for path, reason in ADDITIVE_OUTPUTS:
+        assert path and reason, path
+        assert "*" not in path, f"{path}: additive outputs are exact paths, not globs"
 
 
 def test_a_tree_compared_against_itself_is_clean(tmp_path):
@@ -332,7 +469,7 @@ def test_reduction_at_n750_matches_the_baseline(
     )
     base = run_reducer(baseline_repo, big_matrix, work / "base", mode=mode, python=analysis_python)
 
-    report = compare_trees(head, base)
+    report = compare_trees(head, base, baseline="b")
     assert report.ok, f"{mode} output changed at N=750:\n{report.describe()}"
     # The input matrix, the intermediate PCA, and the final embedding.
     assert report.n_compared == 3, report.describe()
