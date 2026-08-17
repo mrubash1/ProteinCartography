@@ -61,6 +61,15 @@ blocks:
   biophys:
     provider: biophys
 
+  # Curated family membership from Pfam, already present in the UniProt
+  # metadata the pipeline downloads. External evidence rather than another
+  # measurement of these structures, which is what makes it worth co-registering
+  # against them: agreement is confirmation, disagreement is either a remote
+  # homolog the structural map missed or an annotation artifact.
+  domains:
+    provider: domains
+    source: pfam
+
 spaces:
   structure:
     blocks: [tmscore]
@@ -81,6 +90,15 @@ spaces:
   # a co-registered pair of maps shows that where a single fused map hides it.
   physicochemistry:
     blocks: [biophys]
+    strategy: none
+    reducers: [pca_umap]
+
+  # A fourth geometry, from annotation rather than measurement. On this demo's
+  # eleven actins it is nearly degenerate -- they almost all carry the same
+  # single Pfam family -- which is itself the honest result for a cohort this
+  # homogeneous, and a useful thing for the demo to show.
+  families:
+    blocks: [domains]
     strategy: none
     reducers: [pca_umap]
 

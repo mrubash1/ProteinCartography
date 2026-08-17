@@ -32,6 +32,7 @@ CORE_MODULES = [
     "blocks.tmscore",
     "blocks.threedi",
     "blocks.biophys",
+    "blocks.domains",
     "diagnostics.censoring",
 ]
 

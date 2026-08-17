@@ -191,4 +191,4 @@ def test_the_builtin_providers_all_register(monkeypatch, run_dir):
 
     compute_block._register_builtins()
     registered = set(list_providers(BLOCK_GROUP))
-    assert {"tmscore", "threedi", "biophys"} <= registered
+    assert {"tmscore", "threedi", "biophys", "domains"} <= registered
