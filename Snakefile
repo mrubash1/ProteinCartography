@@ -108,7 +108,11 @@ BLAST_DATABASE = config["blast_database"]
 FOLDSEEK_SERVER_URL = config["foldseek_server_url"]
 FOLDSEEK_DATABASES = config["foldseek_databases"]
 MAX_FOLDSEEK_HITS = int(config["max_foldseek_hits"])
-MAX_STRUCTURES = int(config["max_structures"])
+# Read through the cohort config so that `cohort.max_structures` is honored when
+# set, while a legacy config that only knows `max_structures` keeps working --
+# `from_legacy` copies the old key across when the new one is absent.
+MAX_STRUCTURES = MULTISPACE_CONFIG.cohort.max_structures
+COHORT_SELECTION = MULTISPACE_CONFIG.cohort.selection
 MIN_LENGTH = int(config["min_length"])
 MAX_LENGTH = int(config["max_length"])
 UNIPROT_ADDITIONAL_FIELDS = config["uniprot_additional_fields"]
@@ -390,12 +394,26 @@ rule filter_aggregated_hits:
 
 checkpoint download_pdbs:
     """
-    Download all PDB files from AlphaFold
+    Download all PDB files from AlphaFold.
+
+    This rule decides the cohort: the hit list is truncated to `max_structures`
+    here, and every space and diagnostic downstream is conditioned on that cut.
+    The `cohort_report` output records what was discarded and whether the
+    retained set is reproducible. See docs/adr/0008-cohort-selection.md.
+
+    The two metadata inputs are read for the report only. Both are already
+    ancestors of this rule through `filter_aggregated_hits`, so naming them adds
+    an edge the DAG already had and does not add a job. Cluster mode does not
+    run this rule at all -- the user supplies the structures, so there is no
+    cohort decision to report.
     """
     input:
-        rules.filter_aggregated_hits.output.filtered_aggregated_hits,
+        filtered_aggregated_hits=rules.filter_aggregated_hits.output.filtered_aggregated_hits,
+        uniprot_features=rules.fetch_uniprot_metadata.output.uniprot_features,
+        aggregated_hits=rules.aggregate_hits.output.aggregated_hits,
     output:
         protein_structures_dir=directory(DOWNLOADED_PROTEIN_STRUCTURES_DIR),
+        cohort_report=PROTEIN_FEATURES_DIR / "cohort_report.json",
     benchmark:
         BENCHMARKS_DIR / "download_pdbs.txt"
     conda:
@@ -403,9 +421,13 @@ checkpoint download_pdbs:
     shell:
         """
         python ProteinCartography/download_pdbs.py \
-            --input {input} \
+            --input {input.filtered_aggregated_hits} \
             --output {output.protein_structures_dir} \
-            --max-structures {MAX_STRUCTURES}
+            --max-structures {MAX_STRUCTURES} \
+            --selection {COHORT_SELECTION} \
+            --uniprot-features {input.uniprot_features} \
+            --candidates-before-filtering {input.aggregated_hits} \
+            --cohort-report {output.cohort_report}
         """
 
 
