@@ -170,11 +170,193 @@ Recorded so the pass is auditable in both directions:
 
 ## Gate B — after commit group 2 (abstractions)
 
-*Not yet run.*
+**Date:** 2026-08-16
+**Targets:** (1) *will this design survive contact with groups 6–8?* — a reviewer
+tried to specify five hypothetical blocks against the API and report where it
+forces something awkward or impossible. (2) *find an input on which this code
+produces a wrong answer.*
+**Method:** two independent reviewers, each briefed with the diff and the
+contract only, both required to run code rather than speculate. Both were told
+to treat `CLAUDE.md`/`PLAN.md` as untrusted context — the mitigation logged
+after Gate A.
+
+**Outcome: FAIL, then fixed.** Fifteen findings, **two of them "blocks"**: code
+that returned wrong numbers and reported success. Every finding below is fixed
+in the commit it belongs to, with a regression test naming it. The two "blocks"
+findings were both in the guards that the rest of the design leans on, which is
+the argument for having run this gate before four providers were written against
+the API rather than after.
+
+**A test that passed for the wrong reason.** `test_freshness_is_content_based`
+and `test_freshness_ignores_mtime` were green while the cache could never hit
+across processes (B3), because `write_block` mutated the caller's manifest and
+the tests handed the same object to both calls. Worth recording on its own: the
+suite was not merely failing to catch the bug, it was actively asserting the
+broken behavior was correct.
+
+### Blocks
+
+| # | Finding | Fix |
+|---|---|---|
+| **B1** | `repair=True` with a duplicate column label silently produced **wrong numbers**. `assert_same_label_set` compared sets only, so `[A,B]` vs `[A,B,B]` passed; the reorder then built `{label: position}`, keeping the last duplicate. A 2×3 matrix became 2×2, one column was discarded, and cell (A,B) returned 0.7 where the true value was 0.4 — with `is_aligned` reporting True. Its own error text claims to catch this case. | Duplicate and length checks on both axes, before anything reorders. |
+| **B2** | `ProteinIndex.align` silently took the **last duplicate** from the *source* labels. The index rejects duplicates with a paragraph about doubling a protein's weight; the source side, which comes from a data file, had no such check. `align(['A','B','A'], …)` returned source row 2 for A, and the length check still passed. | Duplicate source labels are refused; when a duplicate also masks an absence the error names both. |
+
+### Should-fix, all fixed
+
+| # | Finding | Fix |
+|---|---|---|
+| B3 | `is_fresh` could **never** return True across processes: `write_block` injected the stored values' digest into `manifest.extra`, which feeds `cache_key`, so only a caller who had already computed the block could match. | Output-derived facts moved to `derived`, excluded from `cache_key`; `write_block` copies rather than mutates. |
+| B4 | float32 **underflow** produced a zero that was neither the fill token nor caught by the measured-zero guard — invisible to both checks, on the one file property the loader exists to preserve. | Compared in double against the cast value; underflow and overflow both warn. |
+| B5 | `assert_aligned` raised `TypeError`, not `MatrixAlignmentError`, when the label lists agreed positionally but differed in length. Any caller catching the documented exception crashed. | Length mismatch is rejected earlier, with the documented exception. |
+| B6 | The `fusable` protection was keyed on the **user-chosen block id**, so it protected `taxonomy:` and missed `tax:`, `Taxonomy:`, `lineage:`. The group-2 commit message claimed the opposite; that claim was false and has been corrected. | Keyed on `provider` first, block id case-folded as a fallback. An explicit `fusable: true` on a known signal now requires a written justification. |
+| B7 | `alignment_verified` accepted any truthy value, so the string `"false"` switched the gate **off** — the opposite of what it says, on the gate standing between a user and a 99.92%-wrong read. | Requires a real boolean. |
+
+### Design findings from the API probe, all adopted
+
+| Finding | Fix |
+|---|---|
+| **The single anonymous `mask` field** had no declared polarity (numpy.ma: True=invalid; pandas/sklearn: True=valid) and no declared meaning. Three future providers each need a per-cell annotation — censoring, absence, confidence — and would have filled one slot with three different ideas. The array is written to disk, so the ambiguity would have been permanent. The reviewer demonstrated a 10%-missing block reporting `censoring_rate = 0.9` with no complaint. **Named as the one change to make before any provider ships.** | Named channels with fixed polarity and dtype; unknown names rejected; `mask=` still accepted as the censoring channel. |
+| **Asymmetric pairwise blocks were unrepresentable.** The condensed-triangle shape check made symmetry a type-level assertion, so half of every directed TM measurement had to be discarded with nothing recording that it had been — while ADR 0001 simultaneously required recording a `kept-asymmetric` option that could not exist. | `pairwise_directed` kind, plus a required `symmetrization` on symmetric pairwise blocks. |
+| **`features` dtype was unchecked**, so a ragged object array passed construction and failed much later inside `np.save`. | Rejected at construction, with the storage contract in the message. |
+| **`with_protids` relabelled rows with no checks** — a permuted list would have attached every protein's values to a different protein, the exact failure the design exists to prevent, offered as a convenience method. | Refuses a different-length or duplicated list; points at `align` for reordering. |
+| A NaN with no channel explaining it was accepted, and became a coordinate. | Rejected unless a `censored` or `absent` channel covers it. |
+| `values_digest` hashed the pre-cast array while the file on disk was float32, so it could never verify its own file. | Hashes the array as stored. |
+| `.tmp` staging did `rmtree(target)` then `os.replace`. | Swaps in first, retires the old directory after. |
+| `repair=True` was silently ignored when `require_alignment=False`. | Refused as contradictory. |
+| `cap_detected` false-positived on any matrix with a uniform per-row count — e.g. one censored cell per row. | Requires the columns *not* to show the same pile-up, which is what the docstring always claimed. |
+
+### Deferred, with reasons
+
+| Finding | Why deferred |
+|---|---|
+| No incremental/partial block writes; `is_fresh` is one boolean over a whole block, and `protids_digest` is order-sensitive so a reordered cohort file forces a full recompute. | Real, and it bites the expensive Phase 4 providers (ESM over thousands of proteins), not anything built yet. `store.py` is the only thing that would change. → `docs/FOLLOWUPS.md`. |
+| `SpaceSpec.weights` is `dict[block_id, scalar]`, so the per-protein weights ADR 0002 names as `graph`/SNF's unique advantage have nowhere to live. | Phase 5 concern. ADR 0002 overclaims today and is flagged to be corrected when `graph` is implemented. |
+| `metric: "jaccard"` is only reachable on a fixed-width float matrix, so a variable-length domain architecture must be flattened to a binary indicator that discards order and multiplicity. | Phase 4 (`domains`) concern. The `pairwise`/`distance_metric` route works meanwhile. |
+| `BlockConfig` and `BlockSpec` describe the same concept with different fields and no bridge between them. | The bridge is written in commit group 5, where the first real provider needs it. Noted so it is not forgotten. |
+| Frozen config dataclasses wrap mutable dicts, so post-construction mutation bypasses validation. | Configs are built once from YAML; low value, and the fix is noisy. |
+| `ProteinCartography.spaces` is shipped but not importable by its dotted path, because modules use the repo's flat-import convention. | Matches existing repo convention, so not a regression. Would need the whole package's import style changed. → `docs/FOLLOWUPS.md`. |
 
 ## Gate C — after commit group 5 (the port)
 
-*Not yet run.*
+**Date:** 2026-08-16
+**Target 1:** *construct an input where the ported path and the legacy path
+disagree.*
+**Target 2:** *break the parity test itself* — deliberately mutate the pipeline
+and confirm the test fails.
+
+**Outcome: PASS, after the first run failed and changed the design.**
+
+The headline is target 2, and the first attempt at it produced the most useful
+result of the whole build.
+
+### C1 — the 11-protein fixture is structurally blind to four realistic errors · **blocks** · fixed
+
+The first mutation run scored **4 of 8 detected**. Four survived, and the reason
+was not the parity test — it was the fixture:
+
+| mutation | why it could not be seen at N=11 |
+|---|---|
+| PCA `n_components` 30 → 20 | both clamp to `min(matrix.shape)` = 11, so the two configurations are literally the same computation |
+| UMAP `n_neighbors` 80 → 40 | both clamp to `n − 1` = 10 |
+| Leiden `n_pcs` 30 → 10 | both clamp to `min(n−1, n_vars−1)` = 10 |
+| censoring fill `"0.0"` → `"0.00"` | all 121 pairs are measured, so the fill token is never emitted and cannot differ |
+
+This is `PLAN.md`'s N>500 warning, confirmed by measurement rather than by
+argument, and extended: the plan predicted the *PCA solver* problem, and the
+same fixture turns out to hide three further parameters and the entire censoring
+mechanism. **An end-to-end parity test on the demo fixture is necessary and
+demonstrably not sufficient.**
+
+**Resolution: a component-level parity test at N = 750.** Running the whole
+pipeline at that size would mean synthesizing 750 PDB files and a Foldseek run,
+but the port only touched the reduction step, and that step consumes a matrix
+rather than structures. So the matrix is generated directly — seeded and
+procedural, so the seed is the fixture and nothing derived from internal data is
+committed — and `dim_reduction.py` is run from both checkouts on it.
+
+The generated matrix reproduces the production matrix's measured shape: **60.00%
+censoring** against the real 60.48%, rows uniform at exactly the per-query cap
+while columns vary (256–347 at N=750), an exact 1.0 label diagonal, Foldseek's
+`%.3E` formatting, and no measured zeros. It can also reproduce the PR #106
+column permutation on demand.
+
+**At N = 750, 5 of 5 reducer mutations are detected, with no holes** — including
+`svd_solver="full"` → `"auto"`, which undoes PR #106's determinism fix and is
+invisible at N=11 because the randomized solver only engages above 500 rows.
+
+### C2 — the mutation harness scored a non-applying mutation as a pass · **blocks** · fixed
+
+`pca_solver`'s anchor text had moved into the reducer core during the port, so
+the patch never applied — and the harness reported **DETECTED**, because it
+caught the resulting exception in the same branch as a pipeline crash.
+
+A mutation suite that scores "nothing was mutated" as a pass is a mutation suite
+that will eventually report a perfect score while testing nothing. Outcomes are
+now three-valued — `detected` / `survived` / `did not apply` — and the last is
+reported separately and fails the run.
+
+### C3 — an ambiguous anchor silently mutated the wrong call site · **should-fix** · fixed
+
+Three of the first reducer mutations survived, and all three were *my* errors
+rather than holes in the test:
+
+- `n_components=30` appears **twice** in `main()`, once per branch, and the
+  harness replaced only the first — the `pca_tsne` branch, which a `pca_umap`
+  run never executes.
+- `n_neighbors` and `perplexity` were mutated on the *reducer's* defaults, which
+  nothing reads, because `dim_reduction.py` passes both explicitly.
+- the t-SNE mutation was run under `pca_umap`, which never reaches t-SNE.
+
+Two of those look identical to a hole in the test from the outside, which is
+what makes this worth fixing rather than just correcting. `_patched` now checks
+the occurrence count against a declared expectation and replaces *all* matches;
+an ambiguous anchor is an error. Mutations also declare which `--mode` exercises
+them.
+
+That the report distinguishes "unexplained hole" from "expected to survive" is
+what made these three visible as mistakes rather than findings.
+
+### Target 1 — inputs where the two paths could disagree
+
+Checked, no disagreement found:
+
+- **Permuted columns.** `profile` is invariant to a consistent column
+  permutation, which is why the shipped UMAP survives pre-#106 output. Asserted
+  rather than assumed: `test_profile_distances_are_invariant_to_a_column_permutation`
+  builds the same matrix twice, permuted and not, and compares the full pairwise
+  distance matrix.
+- **N below the UMAP threshold.** The `N < 3` fallback reuses the input's
+  existing `PC` columns instead of running PCA on PCA output. I dropped that
+  behavior on the first pass at the shim and caught it re-reading the original;
+  it would have changed coordinates silently in the one regime nobody inspects.
+  Now covered by `test_umap_falls_back_below_three_points` and preserved through
+  an explicit `input_column_names` argument.
+- **N at the solver boundary.** Covered by the N=750 suite above.
+- **A protein absent from the matrix, and duplicate protids.** Both raise rather
+  than reindex — `ProteinIndex.align`, and the duplicate guards added at Gate B.
+
+### Result
+
+| suite | scale | outcome |
+|---|---|---|
+| end-to-end parity | N=11, 4 pipeline runs | 90 files compared, 87 byte-identical, 3 identical after normalizing Plotly's figure uuid, **0 differing** |
+| reducer parity | N=750, both modes | byte-identical against the baseline |
+| mutation testing | N=11 and N=750, 12 mutations | **8 detected, 4 survived as expected, 0 unexplained holes, 0 did not apply** |
+
+The four expected survivals are the N=11 clamping cases in C1, each carrying the
+reason in the harness; every one of them is covered by a corresponding N=750
+mutation that *is* detected. `mutation_check.py` exits non-zero on any
+unexplained hole or non-applying mutation, so this is a check rather than a
+report.
+
+The eight detections include both regressions that matter most: reintroducing
+PR #106's unsorted column order, and reverting `svd_solver` to `"auto"`.
+
+**Standing consequence.** The four N=11 survivors are recorded in the harness
+with `expected_to_survive` text naming the clamp that hides them, so they read as
+documented limitations rather than as passes. If anyone later shrinks the N=750
+fixture below 500, those annotations are what will explain why the suite
+suddenly proves less.
 
 ## Gate D — after commit group 8 (fusion and diagnostics)
 
