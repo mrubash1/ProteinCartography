@@ -21,6 +21,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
+from enrichment import ENCODINGS
 from spaces.base import (
     METRICS,
     NORMALIZATIONS,
@@ -37,6 +38,7 @@ __all__ = [
     "ConfigError",
     "CoregistrationConfig",
     "DiagnosticsConfig",
+    "EnrichmentConfig",
     "MultispaceConfig",
     "SpaceConfig",
     "from_legacy",
@@ -527,6 +529,112 @@ class CoregistrationConfig:
 
 
 @dataclass(frozen=True)
+class EnrichmentConfig:
+    """What a cluster is made of, and which columns get asked.
+
+    Column-driven on purpose. PLAN Phase 6 names four categories -- taxon, EC,
+    domain architecture, localization -- and the pipeline fetches two of them:
+    `Lineage` and `Pfam`/`InterPro` are in `uniprot_features.tsv`, `ec` and
+    `cc_subcellular_location` are never requested (FOLLOWUPS #35). Naming the
+    columns rather than the categories means the other two arrive the moment
+    the columns do, and means a cohort with its own annotation columns is
+    already supported.
+
+    A requested column that is absent is reported by name, never skipped
+    silently: "no enrichment for localization" and "localization was never in
+    the table" are different facts and only one of them is a finding.
+    """
+
+    #: Which column of the cluster table to enrich on. The pipeline's only
+    #: clustering today is Leiden over the TM-score matrix, so this describes
+    #: the `structure` space rather than the multi-space map -- see ADR 0012.
+    cluster_column: str = "LeidenCluster"
+    categorical: tuple = ()
+    continuous: tuple = ()
+    #: Term-encoding overrides, `column -> one of enrichment.ENCODINGS`. Empty
+    #: means detect from the column, which is right for every column in
+    #: `uniprot_features.tsv` and wrong for a column that is single-valued and
+    #: happens to contain a semicolon.
+    encodings: dict = field(default_factory=dict)
+    #: Terms carried by fewer proteins than this are not tested. A term carried
+    #: by one protein cannot reach significance however concentrated it is, and
+    #: testing it anyway costs every other term in the family a larger
+    #: correction. Dropped terms are counted and reported, not hidden.
+    min_term_count: int = 3
+    #: Recorded on every row as `significant`, and recorded in the manifest. It
+    #: does not filter the table -- the rows that failed it are the evidence
+    #: that the ones that passed are not everything.
+    fdr: float = 0.05
+
+    def __post_init__(self):
+        _require_str("enrichment.cluster_column", self.cluster_column)
+        _require(
+            "enrichment.cluster_column",
+            bool(self.cluster_column.strip()),
+            "must not be empty",
+        )
+        _require_int("enrichment.min_term_count", self.min_term_count)
+        _require(
+            "enrichment.min_term_count",
+            self.min_term_count >= 1,
+            f"must be at least 1, got {self.min_term_count}",
+        )
+        _require_number("enrichment.fdr", self.fdr)
+        _require("enrichment.fdr", 0 < self.fdr <= 1, f"must be in (0, 1], got {self.fdr}")
+        overlap = sorted(set(self.categorical) & set(self.continuous))
+        _require(
+            "enrichment",
+            not overlap,
+            f"{overlap} are listed as both categorical and continuous. A column is "
+            "one or the other; testing it both ways would put two incomparable "
+            "p-values on the same annotation.",
+        )
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.categorical or self.continuous)
+
+    @property
+    def columns(self) -> tuple:
+        return tuple(self.categorical) + tuple(self.continuous)
+
+    def kind_of(self, column: str) -> str:
+        return "categorical" if column in self.categorical else "continuous"
+
+    @classmethod
+    def from_dict(cls, data: Mapping | None) -> EnrichmentConfig:
+        data = _require_mapping("enrichment", data or {})
+        known = {
+            "cluster_column",
+            "categorical",
+            "continuous",
+            "encodings",
+            "min_term_count",
+            "fdr",
+        }
+        _reject_unknown_keys("enrichment", data, known)
+        categorical = _require_sequence("enrichment.categorical", data.get("categorical", []) or [])
+        continuous = _require_sequence("enrichment.continuous", data.get("continuous", []) or [])
+        encodings = _require_mapping("enrichment.encodings", data.get("encodings", {}) or {})
+        for column, encoding in encodings.items():
+            _require_choice(f"enrichment.encodings.{column}", encoding, ENCODINGS)
+            _require(
+                f"enrichment.encodings.{column}",
+                column in categorical,
+                "only a categorical column has a term encoding; "
+                f"{column!r} is not listed under enrichment.categorical",
+            )
+        return cls(
+            cluster_column=data.get("cluster_column", "LeidenCluster"),
+            categorical=tuple(categorical),
+            continuous=tuple(continuous),
+            encodings=dict(encodings),
+            min_term_count=data.get("min_term_count", 3),
+            fdr=data.get("fdr", 0.05),
+        )
+
+
+@dataclass(frozen=True)
 class DiagnosticsConfig:
     bootstrap_replicates: int = 20
     subsample_fraction: float = 0.8
@@ -573,6 +681,7 @@ class MultispaceConfig:
     spaces: dict = field(default_factory=dict)
     cohort: CohortConfig = field(default_factory=CohortConfig)
     coregistration: CoregistrationConfig = field(default_factory=CoregistrationConfig)
+    enrichment: EnrichmentConfig = field(default_factory=EnrichmentConfig)
     diagnostics: DiagnosticsConfig = field(default_factory=DiagnosticsConfig)
     #: True when the legacy `plotting_modes` key produced these spaces, in which
     #: case the pipeline must keep writing the legacy output paths.
@@ -689,6 +798,7 @@ class MultispaceConfig:
             spaces={sid: SpaceConfig.from_dict(sid, sdata) for sid, sdata in spaces_raw.items()},
             cohort=CohortConfig.from_dict(data.get("cohort")),
             coregistration=CoregistrationConfig.from_dict(data.get("coregistration")),
+            enrichment=EnrichmentConfig.from_dict(data.get("enrichment")),
             diagnostics=DiagnosticsConfig.from_dict(data.get("diagnostics")),
             from_legacy_config=bool(data.get("from_legacy_config", False)),
         )
@@ -775,6 +885,12 @@ def from_legacy(config: Mapping | None) -> MultispaceConfig:
                 }
             },
             "cohort": _cohort_from_legacy(config),
+            # Enrichment is carried through the legacy branch as well, because
+            # it needs a cluster table and an annotation table and a legacy run
+            # has both. Dropping it here would silently ignore an `enrichment:`
+            # key in a plain cluster-mode config, which is the exact failure
+            # `_reject_unknown_keys` exists to prevent one level up.
+            "enrichment": config.get("enrichment") or {},
             "from_legacy_config": True,
         }
     )

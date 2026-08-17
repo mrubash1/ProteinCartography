@@ -116,6 +116,38 @@ coregistration:
   compare: [structure, local_structure, physicochemistry, families]
   k: 5
 
+# What each cluster is made of, as a table rather than as stars on a violin
+# plot. The clusters are the pipeline's Leiden clusters over the TM-score
+# matrix, so this describes the `structure` space; see ADR 0012.
+#
+# **What it finds on this cohort is worth reading, and it is not a biological
+# result.** The eleven actins fall into two Leiden clusters: seven canonical
+# 375-385 aa proteins, and four longer ones up to 507 aa. `pdb_confidence`
+# separates them perfectly and `Length` almost perfectly, in opposite
+# directions -- and those two correlate at r = -0.86 across the cohort. So the
+# table has rediscovered, from the other end, exactly the confound
+# `NOT_FUSABLE_REASONS` already refuses to fuse: prediction confidence tracks
+# length, so a map that let it move the points would make protein length an
+# axis. As an overlay it is legitimate and it is informative; as a finding it
+# would be a mistake, which is why the reason lives in the validator.
+#
+# Nothing categorical is significant, and that half is the honest null: `Pfam`
+# has two distinct values across the whole set, four of the proteins have
+# byte-identical sequences, and most of the lineage vocabulary is carried by a
+# single protein. `min_term_count: 2` drops those; the count of what it dropped
+# is in the manifest rather than nowhere.
+#
+# `EC` and subcellular localization are the other two categories worth
+# enriching on and are deliberately absent: the pipeline never requests those
+# fields from UniProt, so naming them here would only produce a line saying
+# they were not in the table.
+enrichment:
+  cluster_column: LeidenCluster
+  categorical: [Lineage, Pfam, Organism]
+  continuous: [Length, pdb_confidence, Annotation]
+  min_term_count: 2
+  fdr: 0.05
+
 # Overlay-only signals may be declared here and used as overlays, but the
 # validator will refuse to fuse them into a geometry, with the circularity
 # reason in the error. See docs/adr/0003-the-fusable-flag.md.
