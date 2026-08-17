@@ -52,6 +52,15 @@ blocks:
     k: 3
     scaling: frequency
 
+  # Bulk physicochemical descriptors from the sequence: hydropathy, charge,
+  # isoelectric point, aromatic content. Not shape at all, which is why it is
+  # worth having beside two blocks that are. Every default descriptor is
+  # intensive -- a mean, a fraction or a pH -- so the block cannot smuggle
+  # protein length in as an axis. `molecular_weight` is available and is
+  # deliberately not a default; see ProteinCartography/blocks/biophys.py.
+  biophys:
+    provider: biophys
+
 spaces:
   structure:
     blocks: [tmscore]
@@ -63,6 +72,15 @@ spaces:
   # explicitly invoked analysis. See docs/adr/0001-block-space-view.md.
   local_structure:
     blocks: [threedi]
+    strategy: none
+    reducers: [pca_umap]
+
+  # A third geometry, over the same protein index and from a different kind of
+  # evidence entirely. Where it agrees with `structure` is the interesting part:
+  # two proteins can be physicochemically alike and structurally unrelated, and
+  # a co-registered pair of maps shows that where a single fused map hides it.
+  physicochemistry:
+    blocks: [biophys]
     strategy: none
     reducers: [pca_umap]
 

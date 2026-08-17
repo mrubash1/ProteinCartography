@@ -30,6 +30,8 @@ CORE_MODULES = [
     "spaces.manifest",
     "spaces.reducers.core",
     "blocks.tmscore",
+    "blocks.threedi",
+    "blocks.biophys",
     "diagnostics.censoring",
 ]
 

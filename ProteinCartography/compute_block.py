@@ -39,7 +39,38 @@ def parse_args():
         action="store_true",
         help="recompute even when the stored block's inputs are unchanged",
     )
+    parser.add_argument(
+        "--provider-input",
+        action="append",
+        default=[],
+        metavar="NAME=PATH",
+        help=(
+            "a named input path for the provider, e.g. "
+            "`--provider-input features_file=path/to/uniprot_features.tsv`. "
+            "Repeatable. Used for inputs whose location depends on the run rather "
+            "than on the config -- the features table lives in the output directory "
+            "in search mode and in the user's input directory in cluster mode. "
+            "These are paths, not parameters: they reach the provider through "
+            "`ctx.extras` and never enter the manifest's params, so a block's cache "
+            "key does not change when the same run is done from a different "
+            "directory. What is recorded is the file's digest."
+        ),
+    )
     return parser.parse_args()
+
+
+def parse_provider_inputs(pairs) -> dict:
+    """Turn `NAME=PATH` strings into a dict for `PipelineContext.extras`."""
+    inputs = {}
+    for pair in pairs:
+        name, separator, path = pair.partition("=")
+        if not separator or not name.strip():
+            raise SystemExit(
+                f"--provider-input expects NAME=PATH, got {pair!r}. A path containing "
+                "an '=' is fine; the split is on the first one."
+            )
+        inputs[name.strip()] = path
+    return inputs
 
 
 def _register_builtins() -> None:
@@ -48,10 +79,11 @@ def _register_builtins() -> None:
     Imports are inside the function and individually guarded: a provider whose
     optional dependency is missing must not stop the others from registering.
     """
-    from blocks import threedi, tmscore
+    from blocks import biophys, threedi, tmscore
 
     tmscore.register()
     threedi.register()
+    biophys.register()
 
 
 def main() -> int:
@@ -80,7 +112,10 @@ def main() -> int:
 
     from blocks.tmscore import PipelineContext
 
-    ctx = PipelineContext(output_dir=args.output_dir)
+    ctx = PipelineContext(
+        output_dir=args.output_dir,
+        extras=parse_provider_inputs(args.provider_input),
+    )
     params = dict(block.params)
     params.setdefault("block_id", block.id)
     if block.representation is not None:
