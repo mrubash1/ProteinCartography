@@ -149,6 +149,47 @@ MUTATIONS = (
         detects="a changed join, which silently drops proteins from the feature table",
     ),
     Mutation(
+        name="cohort_selection_order",
+        path="ProteinCartography/cohort.py",
+        old="        ordered = list(candidates)",
+        new="        ordered = sorted(candidates)",
+        detects=(
+            "the default cohort rule quietly sorting. This is the exact change "
+            "ADR 0008 rejected: it looks like tidying up and it selects a "
+            "different set of proteins, so the map is different and nothing "
+            "downstream would say so"
+        ),
+    ),
+    Mutation(
+        name="cohort_truncation_boundary",
+        path="ProteinCartography/cohort.py",
+        old="        retained, discarded = ordered[:max_structures], ordered[max_structures:]",
+        new=(
+            "        retained, discarded = ordered[: max_structures - 1], "
+            "ordered[max_structures - 1 :]"
+        ),
+        detects="an off-by-one at the truncation point, which drops a protein from the map",
+    ),
+    Mutation(
+        name="cohort_significance_polarity",
+        path="ProteinCartography/cohort.py",
+        old='    sign = 1.0 if better == "lower" else -1.0',
+        new='    sign = -1.0 if better == "lower" else 1.0',
+        detects=(
+            "an inverted significance ranking, which would select the *worst* "
+            "hits while looking entirely normal"
+        ),
+        expected_to_survive=(
+            "the default config uses selection: as_filtered, so this code path "
+            "never runs in the parity fixture. It is a real hole in the *parity* "
+            "test and a deliberate one: making the default exercise significance "
+            "ranking would mean changing the default cohort, which is the one "
+            "thing this work promises not to do. Covered instead by the unit "
+            "tests test_evalue_ranks_lowest_first and test_tmscore_ranks_highest_first, "
+            "which assert the two directions against each other."
+        ),
+    ),
+    Mutation(
         name="transposed_matrix",
         path="ProteinCartography/foldseek_clustering.py",
         old="            csv_writer.writerow(get_line_for_protid(entry, targets))",
