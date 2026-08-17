@@ -47,7 +47,10 @@ ProteinCartography/
 │   ├── biophys.py          # Biopython ProtParam descriptors
 │   └── domains.py          # InterPro/Pfam architecture strings
 ├── fusion.py               # none, early, late, graph (SNF) — ADR 0002, 0013
-├── diagnostics/            # censoring today; stability, redundancy, controls to come
+├── diagnostics/
+│   ├── censoring.py        # rate, asymmetry, cross-cluster retention — ADR 0009
+│   ├── redundancy.py       # do two blocks say the same thing — ADR 0014
+│   └── embedding.py        # trustworthiness / continuity, per protein — ADR 0014
 ├── coregistration.py       # neighborhood Jaccard, Spearman, Procrustes — ADR 0011
 ├── enrichment.py           # cluster-level enrichment statistics — ADR 0012
 └── explorer/               # single-file HTML generator (ADR 0005) — not yet built
@@ -153,6 +156,13 @@ against an unmodified checkout of the commit this branch forked from
 
 **7. Optional dependencies stay optional**, proven by a CI job that installs none
 of them. (ADR 0006)
+
+**8. Every map carries what it cannot be read for.** Diagnostics run for every
+space rather than behind a flag, because a caveat somebody has to opt into is
+read by exactly the people who already suspected the problem. Trustworthiness
+and continuity are reported separately and never averaged; block redundancy is
+reported beside the contribution shares, because a 50/50 share is correct and
+uninformative for two copies of the same block. (ADR 0014)
 
 ---
 
