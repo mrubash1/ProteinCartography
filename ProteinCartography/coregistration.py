@@ -68,6 +68,7 @@ __all__ = [
     "CoregistrationError",
     "CoregistrationReport",
     "PairComparison",
+    "average_ranks",
     "compare_pair",
     "k_nearest",
     "neighborhood_jaccard",
@@ -358,7 +359,7 @@ def neighborhood_jaccard(distances_a: np.ndarray, distances_b: np.ndarray, k: in
     return scores, diagnostics
 
 
-def _average_ranks(row: np.ndarray) -> np.ndarray:
+def average_ranks(row: np.ndarray) -> np.ndarray:
     """Ranks of `row`, with tied values sharing their mean rank.
 
     Tie handling is the whole reason this is not `argsort(argsort(x))`. Censored
@@ -410,8 +411,8 @@ def rank_correlation(distances_a: np.ndarray, distances_b: np.ndarray):
     keep = ~np.eye(n, dtype=bool)  # drop each protein's zero distance to itself
     scores = np.empty(n, dtype=np.float64)
     for row in range(n):
-        a = _average_ranks(distances_a[row][keep[row]])
-        b = _average_ranks(distances_b[row][keep[row]])
+        a = average_ranks(distances_a[row][keep[row]])
+        b = average_ranks(distances_b[row][keep[row]])
         a = a - a.mean()
         b = b - b.mean()
         denominator = np.sqrt(float(a @ a) * float(b @ b))
