@@ -68,8 +68,12 @@ exclude = 'dev'
 [tool.pytest.ini_options]
 # Scripts live in ProteinCartography/ and import as top-level modules
 # (import blast_utils, not ProteinCartography.blast_utils).
-pythonpath = ["ProteinCartography"]
+pythonpath = ["ProteinCartography", "ProteinCartography/tests"]
+# `not live_ted` comes from upstream: `make test` is `pytest -vv -s .`, so
+# without it the default suite hits the live TED HTTP API.
 addopts = ["-m", "not live_ted"]
+
 markers = [
+    "slow: runs the pipeline end to end; skipped unless --runslow is given",
     "live_ted: hits the live TED HTTP API (not run in default CI)",
 ]
