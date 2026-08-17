@@ -75,6 +75,7 @@ FINAL_RESULTS_DIR = OUTPUT_DIR / "final_results"
 BLOCKS_DIR = OUTPUT_DIR / "blocks"
 SPACES_DIR = OUTPUT_DIR / "spaces"
 COREGISTRATION_DIR = OUTPUT_DIR / "coregistration"
+ENRICHMENT_DIR = OUTPUT_DIR / "enrichment"
 
 # Foldseek's 3Di structural alphabet, one row per analyzed structure. Produced
 # only when a block uses the `threedi` provider.
@@ -122,6 +123,12 @@ if COREGISTRATION_ENABLED:
     )
     if shared_reducers:
         COREGISTRATION_REDUCER = sorted(shared_reducers)[0]
+
+# Cluster enrichment is gated on its own key rather than on `spaces`, because it
+# needs neither: it takes a cluster table and an annotation table, and a legacy
+# cluster-mode run produces both. A config that names no annotation column gets
+# no rule, so the default DAG is unchanged.
+ENRICHMENT_ENABLED = MULTISPACE_CONFIG.enrichment.enabled
 
 # search-mode-specific parameters
 # note: although these parameters are only used in search mode, we can assume they exist here
@@ -1035,6 +1042,45 @@ rule aggregate_features:
         """
 
 
+rule enrich_clusters:
+    """
+    Test what each cluster is made of, and write it as a table.
+
+    Additive and opt-in: the rule is unreachable unless `enrichment` names at
+    least one annotation column. It is gated on that key alone rather than on
+    `spaces`, because a legacy cluster-mode run already produces both tables it
+    needs.
+
+    The clusters come from `leiden_features.tsv`, which is the pipeline's only
+    clustering -- Leiden over the TM-score matrix -- so this describes the
+    structure space rather than the multi-space map, however many spaces the
+    run built. The clustering is named in every output row. See ADR 0012.
+
+    `envs/analysis.yml` is reused rather than added to: the script needs only
+    numpy and pandas, but that environment already exists in any run that gets
+    here and adding a new one would be a fresh solve for nothing.
+    """
+    input:
+        clusters=rules.leiden_clustering.output.leiden_features,
+        annotations=rules.aggregate_features.output.aggregated_features,
+        resolved_config=rules.multispace_config.output.resolved,
+    output:
+        table=ENRICHMENT_DIR / "cluster_enrichment.tsv",
+        manifest=ENRICHMENT_DIR / "manifest.json",
+    conda:
+        "envs/analysis.yml"
+    benchmark:
+        BENCHMARKS_DIR / "enrich_clusters.txt"
+    shell:
+        """
+        python ProteinCartography/enrich_clusters.py \
+            --configfile {input.resolved_config} \
+            --output-dir {OUTPUT_DIR} \
+            --clusters {input.clusters} \
+            --annotations {input.annotations}
+        """
+
+
 rule plot_interactive:
     """
     Generate interactive scatter plot HTML programmatically based on user-input parameters
@@ -1205,3 +1251,5 @@ rule all:
         MULTISPACE_TARGETS,
         # Empty again unless `coregistration.compare` names two spaces.
         [str(COREGISTRATION_DIR / "summary.tsv")] if COREGISTRATION_ENABLED else [],
+        # And again unless `enrichment` names an annotation column.
+        [str(ENRICHMENT_DIR / "cluster_enrichment.tsv")] if ENRICHMENT_ENABLED else [],
