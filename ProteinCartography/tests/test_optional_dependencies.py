@@ -24,6 +24,7 @@ CORE_MODULES = [
     "matrix_io",
     "index",
     "config_schema",
+    "coregistration",
     "spaces.base",
     "spaces.registry",
     "spaces.store",
