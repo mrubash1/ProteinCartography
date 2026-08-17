@@ -658,12 +658,18 @@ class EnrichmentConfig:
 
 @dataclass(frozen=True)
 class DiagnosticsConfig:
+    #: Neighborhood size for trustworthiness and continuity. Clamped down to
+    #: the cohort by `diagnostics.embedding.faithfulness` when it does not fit,
+    #: with the request kept and reported.
+    k: int = 15
     bootstrap_replicates: int = 20
     subsample_fraction: float = 0.8
     leiden_resolution_sweep: tuple = ()
     negative_controls: tuple = ()
 
     def __post_init__(self):
+        _require_int("diagnostics.k", self.k)
+        _require("diagnostics.k", self.k >= 1, f"must be at least 1, got {self.k}")
         _require_int("diagnostics.bootstrap_replicates", self.bootstrap_replicates)
         _require(
             "diagnostics.bootstrap_replicates",
@@ -681,6 +687,7 @@ class DiagnosticsConfig:
     def from_dict(cls, data: Mapping | None) -> DiagnosticsConfig:
         data = _require_mapping("diagnostics", data or {})
         known = {
+            "k",
             "bootstrap_replicates",
             "subsample_fraction",
             "leiden_resolution_sweep",
@@ -688,6 +695,7 @@ class DiagnosticsConfig:
         }
         _reject_unknown_keys("diagnostics", data, known)
         return cls(
+            k=data.get("k", 15),
             bootstrap_replicates=data.get("bootstrap_replicates", 20),
             subsample_fraction=data.get("subsample_fraction", 0.8),
             leiden_resolution_sweep=tuple(data.get("leiden_resolution_sweep", []) or []),
@@ -913,6 +921,12 @@ def from_legacy(config: Mapping | None) -> MultispaceConfig:
             # key in a plain cluster-mode config, which is the exact failure
             # `_reject_unknown_keys` exists to prevent one level up.
             "enrichment": config.get("enrichment") or {},
+            # And diagnostics, for the same reason. This key was dropped here
+            # until group 8b, which is the failure the comment above describes
+            # happening one line below itself: a legacy config could set
+            # `diagnostics.k` and be ignored, or misspell it and not be told.
+            # Found by the test FOLLOWUPS #36 asked for, not by a reader.
+            "diagnostics": config.get("diagnostics") or {},
             "from_legacy_config": True,
         }
     )

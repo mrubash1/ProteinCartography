@@ -229,7 +229,9 @@ def main() -> int:
     if embeddings:
         high = pairwise_distances(np.asarray(fused.values, dtype=np.float64))
         report["faithfulness"] = [
-            _faithfulness_for(args.space_id, reducer, path, high, protids, space_dir)
+            _faithfulness_for(
+                args.space_id, reducer, path, high, protids, space_dir, config.diagnostics.k
+            )
             for reducer, path in sorted(embeddings.items())
         ]
 
@@ -254,7 +256,7 @@ def main() -> int:
     return 0
 
 
-def _faithfulness_for(space_id, reducer, path, high, protids, space_dir) -> dict:
+def _faithfulness_for(space_id, reducer, path, high, protids, space_dir, k) -> dict:
     """One reducer's layout, scored and written out per protein."""
     import pandas as pd
 
@@ -267,7 +269,7 @@ def _faithfulness_for(space_id, reducer, path, high, protids, space_dir) -> dict
             "came from disagree about the cohort."
         )
     low = pairwise_distances(frame.loc[list(protids)].to_numpy(dtype=np.float64))
-    result = faithfulness(space_id, reducer, high, low, protids)
+    result = faithfulness(space_id, reducer, high, low, protids, k=k)
     result.to_frame().to_csv(os.path.join(space_dir, "faithfulness_" + reducer + ".tsv"), sep="\t")
     return result.to_dict()
 

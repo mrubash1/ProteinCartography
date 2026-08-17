@@ -1286,6 +1286,209 @@ which is the argument for printing both.
   `DiagnosticsConfig` fields that are read by nothing (FOLLOWUPS #36), and the clustering
   decision that blocks cross-space ARI.
 
+## Group 8, second half — diagnostics
+
+Phase 5's clustering-free diagnostics: block redundancy (item 1), trustworthiness and
+continuity (item 4), self-diff determinism (item 9), plus the wiring of censoring
+(item 5) and cohort reporting (item 6). ADR 0014 records what it decided. Items 3, 7
+and 8 are deferred to group 8c with the clustering decision they depend on.
+
+### G8b.1 — Item 6 was already built, and the plan said it was not
+
+PLAN §0.5's table listed Phase 5 item 6, cohort diagnostics, as "not built". It is
+built. `cohort.CohortReport` records candidates before filtering, candidates before and
+after truncation, the selection rule, whether truncation was reproducible, and the
+taxonomic composition of retained against discarded proteins; `download_pdbs` declares
+`cohort_report.json` as a rule output and writes it. That is item 6's full text.
+
+Checked rather than assumed, which is the only reason it was found — the alternative
+was a second implementation of a report that already existed. Group 8b copies the file
+into the space report instead, and only in search mode, because cluster mode makes no
+cohort decision and the absence there is correct rather than a gap.
+
+Three of Phase 5's nine were therefore already done before this group started: item 2
+(group 8a), item 5 (group 4, unwired), item 6 (group 3, wired).
+
+### G8b.2 — The fixture caught two overclaims in its own commit
+
+`tests/embedding_cohort.py` plants a 2x2 table: one truth, four maps of it, and each of
+the four cells (trustworthy?, continuous?) occupied. The off-diagonal cells are the
+point. Trustworthiness and continuity are near-mirror formulas over the same two
+neighbor sets, so the likeliest defect is computing one of them twice under two names
+or swapping the labels — and neither is visible in a fixture where the map is simply
+good or simply bad, because those give `T == C` and a wrong answer that agrees with
+itself reads as two agreeing answers. This is G8.4's lesson from the other side.
+
+Writing the fixture's own tests, before any statistic existed, falsified two claims the
+fixture's docstring made:
+
+- **"Within-half distances are preserved exactly."** They are not, as *measured*.
+  `split` translates a random half by 500 units, and `(a + 500) - (b + 500)` cancels
+  inexactly for a and b of order 1 — measured residual 8.1e-13 relative. The
+  *translation* is bitwise exact; the recomputed distance is not. The exact claim now
+  sits on the translation, where it is true, with a separate test at the tolerance the
+  recomputation actually needs.
+- **An integer-lattice truth.** The first draft laid the points on a 1-D lattice, where
+  every point is exactly equidistant from its two neighbors. Exact ties make the
+  k-nearest set depend on how the sort breaks them: the isometric case scored 0.9993
+  instead of 1.0 and disagreed with scikit-learn by 2.6e-3. That is a sorting artifact
+  and is indistinguishable from a formula error. Drawn from a continuous distribution
+  there are no ties, the isometric case is exactly 1.0, and agreement with scikit-learn
+  is exact.
+
+Third group running for a fixture built before the thing it measures, and the third
+time it paid before that thing existed (G7.7, G8.4).
+
+### G8b.3 — The tolerance question, answered by measurement rather than by habit
+
+CLAUDE.md's rule is that an absolute tolerance of 1e-12 is vacuous on rows where the
+values are tiny. Both cross-checks here hit the inverse of that problem and it is worth
+recording, because the reflex fix would have been wrong in both.
+
+Trustworthiness lives in `[0, 1]`, so `abs(mine - theirs) < 1e-9` would pass on an
+answer that was wrong by a factor the ties artifact produces. Exact equality was
+available in the prototype and is *not* available in the shipped code, because
+computing per-protein values and averaging associates the sum differently from
+scikit-learn's single global sum. Measured across four cases at k = 5, 10 and 20: exact
+in 7 of 12, one unit in the last place in the other 5, worst relative difference
+2.2e-16 — one machine epsilon. The asserted tolerance is 1e-13 relative: three orders
+above the observed noise, thirteen orders below the 2.6e-3 that a real defect of the
+kind this fixture was built to avoid produces. Where equality *is* available — the
+isometric case, both sides exactly 1.0 — it is asserted separately rather than hidden
+under the tolerance the other cases need.
+
+Redundancy has the opposite shape. A correlation of -0.0039 is an ordinary value here,
+produced by two independent blocks, and an absolute tolerance would pass on an
+implementation that returned zero for it. Relative again, at 1e-12, against scipy's
+`pearsonr` and `spearmanr`.
+
+### G8b.4 — `fusion_cohort` was already the right fixture for redundancy
+
+Group 8a built it for something else and it needed no extension. It plants two exactly
+crossed partitions, so `wide` and `narrow` are independent by construction and must
+correlate at zero — measured -0.009 Pearson, -0.004 Spearman. And it carries
+`narrow_rescaled`, which is `narrow` times 1000, so two of its blocks are the same
+information in different units and must correlate at exactly one — measured Spearman
+exactly 1.0, Pearson within 1.1e-16.
+
+Those are the two ends of the scale the diagnostic measures, both planted, and group 8a
+arranged neither of them for this purpose. Worth recording as an argument for the
+fixture-first discipline that is not "it caught a bug": a fixture built to pin one
+thing's right answer is frequently the only honest test data available for the next
+thing, and a fixture built to pin shapes never is.
+
+### G8b.5 — Two defects the unit tests found, one the entry point found
+
+**Found by a unit test, would have crashed a rule.** `_pearson` returned `np.float64`
+rather than `float`, because `np.sqrt` returns a numpy scalar and dividing a Python
+float by one gives a numpy scalar back. `np.float64 >= threshold` is a `np.bool_`, and
+`json.dump` refuses it. The redundancy report goes into a manifest, so this would have
+surfaced as a crashed rule rather than as a wrong number — but it would have surfaced
+in the demo, not here, if the test had not serialized the report.
+
+**Found by a unit test, and it was the test that was wrong.** The
+translation-invariance test shifted `narrow` — a block whose values are of order 0.01 —
+by a flat 17.5, and asserted `rtol=1e-12`. It failed at 2.6e-10. The invariance is
+exact; the failure was four digits of cancellation in the distance computation, from a
+shift/scale ratio of about 6000. The shift is now a multiple of each block's own scale,
+which puts the test back on the property it names.
+
+**Found by the demo, and nothing else could have found it.** Fifth sighting of "a
+passing test suite is not evidence the entry point works". Every unit test ran at
+N=240. The demo cohort is eleven proteins and `DEFAULT_K` is fifteen, and the statistic
+is undefined for `k >= (2N-1)/3` — so all seven spaces failed at once, in the first
+end-to-end run. `k` is now clamped to the cohort with the request kept and reported
+(ADR 0014 §6), which is the idiom `reduce_pca` already uses for `n_components`. Four
+tests now run at N=11 and N=12; the sixth sighting will not be this.
+
+### G8b.6 — `from_legacy` was dropping the entire `diagnostics:` key
+
+Found by the test PLAN's FOLLOWUPS #36 rule demanded, within minutes of writing it —
+which is the same way ADR 0013 §6's `STRATEGY_PARAMS` validator found a dead
+`params: {K: 20}` (G8.8).
+
+`from_legacy`'s legacy branch — the one a plain cluster-mode config takes — constructs
+its `MultispaceConfig` from a literal dict and carried `cohort` and `enrichment`
+through it but not `diagnostics`. So a legacy config could set `diagnostics.k` and be
+silently ignored, or misspell a diagnostics key and never be told, because the key
+never reached `_reject_unknown_keys`.
+
+The part worth keeping: **three lines above the omission is a comment explaining that
+`enrichment` is carried through here precisely so this does not happen to it**, naming
+`_reject_unknown_keys` and calling it "the exact failure" to prevent. The comment was
+right, was read by whoever wrote it, and the next key added below it was dropped
+anyway. A comment that states an invariant is not an enforcement of it — which is the
+whole argument for `STRATEGY_PARAMS`-style checks, now made twice.
+
+### G8b.7 — What the demo actually reports, and it is a verdict against the demo
+
+The multispace demo runs 35/35 and every map in it scores near chance: trustworthiness
+0.34 to 0.76, continuity 0.24 to 0.78, and between 4 and 10 of the 11 proteins flagged
+as having positions that should not be read.
+
+That is the correct answer, not a defect, and it is the first time this work has
+produced a number that criticizes its own demo. Eleven proteins cannot support a 2-D
+embedding: `k` clamps from 15 to 6, which is more than half the cohort, so
+"neighborhood" has stopped meaning anything local. Every picture the demo draws is a
+picture of eleven points and these are the numbers that say so. Recorded in
+`demo/multispace/config.yml` rather than left in a log.
+
+Two more measured, both recorded there:
+
+- `tmscore` and `biophys` correlate at Spearman **0.883** over their pairwise
+  distances — just under the 0.90 threshold. The three fused spaces report an honest
+  50/50 contribution split, and the pair of numbers is the point: the split is correct
+  arithmetic about two blocks that are closer to saying the same thing than their names
+  suggest. This is exactly the gap ADR 0002's `early` warning gestures at and cannot
+  itself fill.
+- The censoring rate on the demo matrix is exactly **0.000**. At N=11 Foldseek's
+  per-query cap of 1000 cannot bind, so there is no fill. Independent confirmation of
+  the mutation-testing finding that the demo fixture cannot exercise the censoring path
+  (§0.1), arriving from the other direction.
+
+### G8b.8 — Exactness that does not survive the store
+
+`narrow` against `narrow_rescaled` correlates at exactly 1.0 in the unit test and at
+0.9999999999949 through the entry point. The block store writes float32 (ADR 0004), and
+quantizing two copies of the same data at scales 0.01 and 10 is not a proportional
+operation: measured deviation 9.7e-8 relative, one float32 epsilon, which is enough to
+swap a handful of the 28,680 distance ranks.
+
+Not a defect in either place. Recorded because the two tests assert different things
+about the same pair of blocks and the entry-point one asserts *less*, which looks like
+carelessness unless the reason is written down. The exactness is a property of the
+arrays; asserting it after a round trip through the store would be asserting that the
+store does something ADR 0004 says it deliberately does not.
+
+### G8b.9 — The determinism guard carries its own negative control
+
+A determinism check is the easiest kind of test to write in a form that cannot fail,
+because the thing it looks for is usually absent. scikit-learn picks its SVD solver from
+the input shape, and only the randomized solver it selects above 500 samples is
+nondeterministic without a seed — so the identical guard on a 400-protein fixture
+passes unconditionally and forever.
+
+`test_the_guard_can_actually_fail_at_this_fixture_size` configures PCA the way this
+repository deliberately does not, `auto` and unseeded, and requires the two runs to
+disagree. They do, at N=750, which independently reconfirms the measurement the fixture
+size was chosen from. Its failure message says what its own passing would mean.
+
+This is the general form of the rule PLAN states as "a diagnostic that can never fire is
+decoration": for a *guard*, the corresponding check is a test that the guard's subject
+can actually occur.
+
+### Verification
+
+- Unit suite: **949 passed, 89 skipped** (bare env, no sklearn/scipy/umap).
+- Gated tests where they do not skip, in `.snakemake/conda/21cb44d…`:
+  `test_diagnostics_embedding.py` + `test_diagnostics_redundancy.py` **92 passed,
+  0 skipped**; `test_determinism.py` **8 passed, 0 skipped** with `--runslow`, 42s.
+- Lint: `ruff check`, `ruff format --check`, `snakefmt --check` all clean.
+- DAGs: cluster **16**, search **25**, both unchanged. Multispace **28 → 35**, one rule
+  per space, and it runs **35/35** end to end.
+- Pre-existing files touched: still **10**. This group edits none — `Snakefile` is the
+  only pre-existing file in the diff and it was already in the count from group 5.
+
 ## Gate D — after commit group 8 (fusion and diagnostics)
 
 *Not yet run.*
