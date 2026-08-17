@@ -148,7 +148,8 @@ versions, weights, normalization, metric, reducer params, seeds, input hashes.
 (ADR 0001)
 
 **6. Default behavior is byte-identical to today's**, proven by the parity test
-against tag `multispace-base`. (commit group 5)
+against an unmodified checkout of the commit this branch forked from
+`upstream/main`. (commit group 5)
 
 **7. Optional dependencies stay optional**, proven by a CI job that installs none
 of them. (ADR 0006)
