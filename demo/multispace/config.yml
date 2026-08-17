@@ -102,6 +102,20 @@ spaces:
     strategy: none
     reducers: [pca_umap]
 
+# Co-registration is the product, not a diagnostic. Four independent geometries
+# over one protein index are only worth building if you can ask where they
+# disagree, and these are the four the demo asks about. Each pair gets a
+# per-protein neighborhood Jaccard and rank correlation, plus a Procrustes
+# disparity between the two `pca_umap` layouts.
+#
+# `structure` is the reference, so the shared index inherits its protein order --
+# the order the similarity matrix was written in, which is the order every
+# legacy output already uses.
+coregistration:
+  reference_space: structure
+  compare: [structure, local_structure, physicochemistry, families]
+  k: 5
+
 # Overlay-only signals may be declared here and used as overlays, but the
 # validator will refuse to fuse them into a geometry, with the circularity
 # reason in the error. See docs/adr/0003-the-fusable-flag.md.

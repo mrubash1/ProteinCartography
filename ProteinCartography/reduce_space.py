@@ -47,7 +47,7 @@ def parse_args():
     return parser.parse_args()
 
 
-def _features_for(space, store: BlockStore, config):
+def features_for(space, store: BlockStore, config):
     """The feature matrix a space reduces, plus its protid index."""
     if len(space.blocks) != 1 or space.strategy != "none":
         raise SystemExit(
@@ -96,7 +96,7 @@ def main() -> int:
 
     space = config.spaces[args.space_id]
     store = BlockStore(args.output_dir)
-    block, index = _features_for(space, store, config)
+    block, index = features_for(space, store, config)
 
     try:
         random_state = int(args.random_state)
