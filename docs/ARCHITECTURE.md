@@ -34,7 +34,7 @@ them.
 ProteinCartography/
 ├── matrix_io.py            # the single labeled-matrix loader (ADR 0007)
 ├── index.py                # canonical protid index; align() raises, never reindexes
-├── config_schema.py        # pydantic v2 models + from_legacy()
+├── config_schema.py        # frozen dataclasses + from_legacy() — ADR 0010
 ├── spaces/
 │   ├── base.py             # BlockSpec, BlockResult, BlockProvider, SpaceSpec
 │   ├── registry.py         # entry-point discovery
@@ -46,11 +46,11 @@ ProteinCartography/
 │   ├── threedi.py          # foldseek 3Di k-mer profile
 │   ├── biophys.py          # Biopython ProtParam descriptors
 │   └── domains.py          # InterPro/Pfam architecture strings
-├── fusion/
-│   ├── none.py  early.py  late.py  graph.py
-├── diagnostics/            # censoring, stability, contribution, redundancy, controls
-├── crossspace/             # neighborhood Jaccard, Procrustes, ARI
-└── explorer/               # single-file HTML generator (ADR 0005)
+├── fusion.py               # none, early, late, graph (SNF) — ADR 0002, 0013
+├── diagnostics/            # censoring today; stability, redundancy, controls to come
+├── coregistration.py       # neighborhood Jaccard, Spearman, Procrustes — ADR 0011
+├── enrichment.py           # cluster-level enrichment statistics — ADR 0012
+└── explorer/               # single-file HTML generator (ADR 0005) — not yet built
 ```
 
 Everything above is new. The existing scripts keep their names, their CLIs, and

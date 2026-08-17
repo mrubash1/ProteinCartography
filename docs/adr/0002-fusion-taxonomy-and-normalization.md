@@ -1,7 +1,14 @@
 # ADR 0002 — Fusion taxonomy and the normalization contract
 
-Status: accepted
+Status: accepted, **amended 2026-08-17 by ADR 0013**
 Date: 2026-08-16
+
+> **Two claims below were corrected when this was implemented.** The share
+> formula in "Contribution share" returns the weight vector and cannot report
+> anything the config did not state (ADR 0013 §3), and the per-protein weights
+> named as `graph`'s advantage are an *output* rather than a config input
+> (ADR 0013 §5). Both are marked in place. Everything else stands as written and
+> was implemented as written.
 
 ## Context
 
@@ -48,6 +55,14 @@ It is computed, written to the manifest, logged at runtime, and **rendered on th
 panel** in the explorer. Shares must sum to 1 under every strategy; this is
 asserted, not assumed.
 
+> **Corrected 2026-08-17 — this formula is not enough.** Normalization makes
+> every `mean(d̃)` exactly 1 by construction, so the expression returns the
+> normalized weight vector and reports nothing the config did not already say.
+> What a block actually contributes to a fused squared distance is
+> `w_i · mean(d̃_i²)` = `w_i · (1 + var(d̃_i))`. Both are now computed and
+> recorded, as `share` and `realized_share`; the dominance warning keys on the
+> second. On the demo cohort they are 50/50 and 34/66 respectively. ADR 0013 §3.
+
 **Above ~70% share for any single block, warn loudly.** The map is that block's
 map, and the output should say so rather than let the config's block list imply
 otherwise.
@@ -74,8 +89,20 @@ slider that silently snaps to the nearest preset is worse than labeled buttons.
   will look for it, but it is never a default and never silent.
 - `graph` (SNF) gives per-protein rather than global weights, which is its real
   advantage over `late` — a protein whose structure is well determined and whose
-  function prediction is garbage gets weighted accordingly. Cost is one optional
-  dependency (`snfpy`) and less interpretable weights.
+  function prediction is garbage gets weighted accordingly. ~~Cost is one optional
+  dependency (`snfpy`) and less interpretable weights.~~
+
+  > **Corrected 2026-08-17, twice.** The advantage is real and the two costs
+  > named here are not what it cost. There is **no optional dependency**: SNF is
+  > implemented in numpy, because ADR 0006 would otherwise make `graph` the one
+  > strategy that vanishes in the bare environment. And the per-protein weights
+  > are an **output**, not an input — `SpaceSpec.weights` is one scalar per
+  > block, and FOLLOWUPS #16 correctly read the sentence above as claiming
+  > otherwise. Nobody can configure, per protein, which evidence to trust; that
+  > is what the analysis is for. SNF's fused network produces the mixture and
+  > `BlockContribution.per_protein_share` records it. The real cost is that
+  > there is no reference implementation to check the output against.
+  > ADR 0013 §4 and §5.
 - Every fusion path must produce contribution shares, so adding a strategy means
   implementing that computation. This is deliberate.
 - Normalization by mean distance is undefined for a degenerate block where all
