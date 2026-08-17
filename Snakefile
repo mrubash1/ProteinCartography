@@ -100,6 +100,16 @@ if MULTISPACE_ENABLED:
             # format` rewrites the doubled braces that make a literal wildcard.
             MULTISPACE_TARGETS.append(SPACES_DIR / space_id / ("embedding_" + reducer + ".tsv"))
 
+# Diagnostics run for every space a config defines, rather than behind their own
+# key. They are the caveats on a map, and a caveat nobody opted into is the only
+# kind worth having -- an opt-in diagnostic is read by exactly the people who
+# already suspected the problem. Empty when there are no spaces, so the default
+# DAG is untouched.
+DIAGNOSTICS_TARGETS = []
+if MULTISPACE_ENABLED:
+    for space_id in sorted(MULTISPACE_CONFIG.spaces):
+        DIAGNOSTICS_TARGETS.append(SPACES_DIR / space_id / "diagnostics.json")
+
 # Co-registration compares spaces pairwise. Empty unless `coregistration.compare`
 # names at least two of them, so asking for spaces does not silently buy a
 # comparison as well.
@@ -843,6 +853,49 @@ rule reduce_space:
         """
 
 
+def get_cohort_report_input(wildcards):
+    """The cohort report, in search mode only.
+
+    Cluster mode makes no cohort decision -- the user supplies the structures --
+    so there is no report to read and its absence is correct rather than a gap.
+    """
+    if MODE != config_utils.Mode.SEARCH:
+        return []
+    return [str(PROTEIN_FEATURES_DIR / "cohort_report.json")]
+
+
+def get_cohort_report_arg(wildcards):
+    paths = get_cohort_report_input(wildcards)
+    return "--cohort-report " + paths[0] if paths else ""
+
+
+def get_space_embeddings(wildcards):
+    """Every layout this space produced, for the faithfulness diagnostic."""
+    space = MULTISPACE_CONFIG.spaces[wildcards.space_id]
+    return [
+        str(SPACES_DIR / wildcards.space_id / ("embedding_" + reducer + ".tsv"))
+        for reducer in sorted(space.reducers)
+    ]
+
+
+def get_space_embedding_args(wildcards):
+    """`--embedding REDUCER=PATH` per reducer.
+
+    Named rather than positional, for the reason `coregister --embedding` is:
+    snakemake hands the shell a bare list of paths and working out which
+    reducer produced which by position is the same defect as reading a labeled
+    matrix by position (ADR 0007).
+    """
+    space = MULTISPACE_CONFIG.spaces[wildcards.space_id]
+    return " ".join(
+        "--embedding "
+        + reducer
+        + "="
+        + str(SPACES_DIR / wildcards.space_id / ("embedding_" + reducer + ".tsv"))
+        for reducer in sorted(space.reducers)
+    )
+
+
 def get_coregistration_block_inputs(wildcards):
     """Every block behind every compared space."""
     needed = []
@@ -928,6 +981,45 @@ rule leiden_clustering:
         python ProteinCartography/leiden_clustering.py \
             --input {input} \
             --output {output.leiden_features}
+        """
+
+
+rule diagnose_space:
+    """
+    Say what this space's map can and cannot be read for.
+
+    Censoring, cohort fairness, block redundancy and embedding faithfulness,
+    written next to the map they qualify rather than into a log nobody keeps.
+
+    The Leiden clustering is an input because cross-cluster edge retention is
+    the censoring number worth reading, and it needs a partition to be about.
+    It comes from the legacy path, which is the pipeline's only clustering
+    today; when spaces cluster in their own right this should take that
+    instead.
+    """
+    input:
+        blocks=get_space_block_inputs,
+        embeddings=get_space_embeddings,
+        clusters=rules.leiden_clustering.output.leiden_features,
+        cohort=get_cohort_report_input,
+        resolved_config=rules.multispace_config.output.resolved,
+    output:
+        diagnostics=SPACES_DIR / "{space_id}" / "diagnostics.json",
+    params:
+        embeddings=get_space_embedding_args,
+        cohort=get_cohort_report_arg,
+    conda:
+        "envs/analysis.yml"
+    benchmark:
+        BENCHMARKS_DIR / "diagnose_space_{space_id}.txt"
+    shell:
+        """
+        python ProteinCartography/diagnose_space.py \
+            --configfile {input.resolved_config} \
+            --space-id {wildcards.space_id} \
+            --output-dir {OUTPUT_DIR} \
+            --clusters {input.clusters} \
+            {params.embeddings} {params.cohort}
         """
 
 
@@ -1249,6 +1341,8 @@ rule all:
         # Empty unless the config defines `spaces`, so the default DAG is
         # exactly the one it has always been.
         MULTISPACE_TARGETS,
+        # One per space, and empty for the same reason MULTISPACE_TARGETS is.
+        DIAGNOSTICS_TARGETS,
         # Empty again unless `coregistration.compare` names two spaces.
         [str(COREGISTRATION_DIR / "summary.tsv")] if COREGISTRATION_ENABLED else [],
         # And again unless `enrichment` names an annotation column.

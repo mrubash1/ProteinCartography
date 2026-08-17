@@ -47,6 +47,7 @@ __all__ = [
     "DISTORTED_THRESHOLD",
     "FAITHFUL_THRESHOLD",
     "EmbeddingFaithfulness",
+    "largest_valid_k",
     "continuity",
     "faithfulness",
     "trustworthiness",
@@ -164,6 +165,15 @@ def continuity(high: np.ndarray, low: np.ndarray, k: int = DEFAULT_K) -> np.ndar
     return _penalties(np.asarray(low, dtype=np.float64), np.asarray(high, dtype=np.float64), k)
 
 
+def largest_valid_k(n: int) -> int:
+    """The biggest neighborhood size defined for ``n`` proteins.
+
+    ``k`` must be strictly below ``(2n-1)/3`` or the normalizing constant is
+    not positive. Below three proteins there is no valid k at all.
+    """
+    return int(np.ceil((2 * n - 1) / 3)) - 1
+
+
 @dataclass(frozen=True)
 class EmbeddingFaithfulness:
     """What a 2-D layout kept and what it invented."""
@@ -174,6 +184,12 @@ class EmbeddingFaithfulness:
     protids: tuple
     trustworthiness: np.ndarray
     continuity: np.ndarray
+    #: What the caller asked for, before clamping to the cohort. Equal to `k`
+    #: in the ordinary case. Recorded for the reason
+    #: `ReducerResult.params_used` records post-clamp values: two runs with
+    #: identical configs and different N are not the same run, and a manifest
+    #: that reports only the request cannot tell them apart.
+    k_requested: int = 0
 
     @property
     def n_proteins(self) -> int:
@@ -210,6 +226,7 @@ class EmbeddingFaithfulness:
             "space_id": self.space_id,
             "reducer": self.reducer,
             "k": self.k,
+            "k_requested": self.k_requested,
             "n_proteins": self.n_proteins,
             "trustworthiness_mean": self.mean_trustworthiness,
             "trustworthiness_min": float(self.trustworthiness.min()),
@@ -263,6 +280,14 @@ class EmbeddingFaithfulness:
                 f"{DISTORTED_THRESHOLD} on one of the two measures; their individual "
                 f"positions should not be read: {shown}{suffix}"
             )
+        if self.k_requested and self.k_requested != self.k:
+            notes.append(
+                f"k was reduced from {self.k_requested} to {self.k}: with "
+                f"{self.n_proteins} proteins, {self.k_requested} neighbors is above "
+                "the (2N-1)/3 ceiling at which these statistics stop being defined. "
+                "Both numbers below describe a smaller neighborhood than was asked "
+                "for."
+            )
         if self.k >= self.n_proteins / 2:
             notes.append(
                 f"k={self.k} is at least half of the {self.n_proteins} proteins, so "
@@ -296,16 +321,31 @@ def faithfulness(
         k: neighborhood size.
     """
     protids = tuple(protids)
-    if len(protids) != np.asarray(high).shape[0]:
+    n = np.asarray(high).shape[0]
+    if len(protids) != n:
         raise EmbeddingDiagnosticError(
-            f"{len(protids)} protids but the distance matrix is "
-            f"{np.asarray(high).shape[0]}x{np.asarray(high).shape[0]}."
+            f"{len(protids)} protids but the distance matrix is {n}x{n}."
         )
+    # Clamped rather than refused, and the request is kept. A cohort smaller
+    # than the configured k is ordinary -- the demo has eleven proteins and the
+    # default k is fifteen -- and it is the same situation `reduce_pca` handles
+    # by clamping `n_components` with a warning. Raising here would mean a
+    # small cohort gets no diagnostics at all, which is the cohort that needs
+    # them most.
+    ceiling = largest_valid_k(n)
+    if ceiling < 1:
+        raise EmbeddingDiagnosticError(
+            f"a space of {n} protein(s) has no valid neighborhood size: k must be "
+            "at least 1 and below (2N-1)/3, which needs at least 3 proteins. There "
+            "is no map to be faithful to."
+        )
+    used = min(k, ceiling)
     return EmbeddingFaithfulness(
         space_id=space_id,
         reducer=reducer,
-        k=k,
+        k=used,
         protids=protids,
-        trustworthiness=trustworthiness(high, low, k),
-        continuity=continuity(high, low, k),
+        trustworthiness=trustworthiness(high, low, used),
+        continuity=continuity(high, low, used),
+        k_requested=k,
     )

@@ -209,3 +209,32 @@ enrichment:
 # Overlay-only signals may be declared here and used as overlays, but the
 # validator will refuse to fuse them into a geometry, with the circularity
 # reason in the error. See docs/adr/0003-the-fusable-flag.md.
+
+# Diagnostics need no key. They run for every space a config defines, because a
+# caveat somebody had to opt into is read by exactly the people who already
+# suspected the problem. Output lands in `spaces/{space_id}/diagnostics.json`
+# alongside a per-protein `faithfulness_{reducer}.tsv`.
+#
+# **What they report on this cohort is the most useful thing in this file, and
+# it is a verdict against the demo.** Every map here scores near chance:
+# trustworthiness runs 0.34 to 0.76 and continuity 0.24 to 0.78, and 4 to 10 of
+# the 11 proteins are flagged as having positions that should not be read. That
+# is the correct answer rather than a defect. Eleven proteins cannot support a
+# 2-D embedding: `k` is clamped from the default 15 to 6, which is more than
+# half the cohort, so "neighborhood" has stopped meaning anything local. Every
+# picture the demo draws is a picture of eleven points, and these numbers are
+# what says so.
+#
+# Two more measured results worth keeping:
+#
+# * `tmscore` and `biophys` correlate at Spearman 0.883 over their pairwise
+#   distances -- just under the 0.90 redundancy threshold. The three fused
+#   spaces divide their contribution shares 50/50 and that split is honest
+#   arithmetic, but the two blocks are closer to saying the same thing than
+#   their names suggest. This is the number ADR 0002's `early` warning gestures
+#   at and cannot itself provide.
+# * The censoring rate on this matrix is exactly 0.000. Nothing is being hidden:
+#   at N=11 Foldseek's per-query cap of 1000 cannot bind, so there is no fill to
+#   report. It is the same reason mutation testing found the demo fixture cannot
+#   exercise the censoring path at all, and it is why the censoring section here
+#   reads "no problems detected" rather than being absent.
