@@ -79,11 +79,12 @@ def _register_builtins() -> None:
     Imports are inside the function and individually guarded: a provider whose
     optional dependency is missing must not stop the others from registering.
     """
-    from blocks import biophys, threedi, tmscore
+    from blocks import biophys, domains, threedi, tmscore
 
     tmscore.register()
     threedi.register()
     biophys.register()
+    domains.register()
 
 
 def main() -> int:
