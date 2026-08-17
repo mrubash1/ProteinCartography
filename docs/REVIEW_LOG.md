@@ -341,16 +341,59 @@ Checked, no disagreement found:
 |---|---|---|
 | end-to-end parity | N=11, 4 pipeline runs | 90 files compared, 87 byte-identical, 3 identical after normalizing Plotly's figure uuid, **0 differing** |
 | reducer parity | N=750, both modes | byte-identical against the baseline |
-| mutation testing | N=11 and N=750, 12 mutations | **8 detected, 4 survived as expected, 0 unexplained holes, 0 did not apply** |
+| mutation testing | N=11, 200 and 750; 14 mutations | **10 detected, 4 survived as expected, 0 unexplained holes, 0 did not apply** |
 
-The four expected survivals are the N=11 clamping cases in C1, each carrying the
-reason in the harness; every one of them is covered by a corresponding N=750
-mutation that *is* detected. `mutation_check.py` exits non-zero on any
-unexplained hole or non-applying mutation, so this is a check rather than a
-report.
+`mutation_check.py` exits non-zero on any unexplained hole or non-applying
+mutation, so this is a check rather than a report.
 
-The eight detections include both regressions that matter most: reintroducing
-PR #106's unsorted column order, and reverting `svd_solver` to `"auto"`.
+The detections include both regressions that matter most: reintroducing PR
+#106's unsorted column order, and reverting `svd_solver` to `"auto"`.
+
+### C4 — a claim in the first draft of this entry was wrong · corrected
+
+That draft said "every one of them is covered by a corresponding N=750 mutation
+that *is* detected." **That was false for two of the four.** The N=750 suite
+runs the *reducer*, which starts from a matrix, so it never exercised:
+
+- `censoring_fill_value` — the fill is written by `pivot_foldseek_results`,
+  upstream of any matrix;
+- `leiden_n_pcs` — Leiden forks from the matrix independently and the reducer
+  suite never touches it.
+
+Both were covered by nothing at all. Two further component runners now close
+that: `run_pivot` drives the pivot from a synthetic *raw pair list* (which is
+where fills are created), and `run_leiden` drives Leiden on the N=750 matrix.
+Both mutations are now detected.
+
+### C5 — the fixture was statistically realistic and biologically empty · fixed
+
+`component_leiden_n_pcs` still survived after being added, and the reason is a
+second kind of fixture inadequacy, distinct from size:
+
+**the generated matrix was uniform noise.** Its censoring, cap signature,
+diagonal and number formatting all matched production, so it looked realistic —
+but it had no cluster structure, and a clustering-parameter mutation therefore
+had nothing to bite on. Leiden at 30 principal components and at 10 returned the
+*same partition of noise*.
+
+The generator now plants `n_clusters` contiguous groups, within-cluster scores
+0.70–0.95 and between-cluster 0.10–0.45 (measured on the fixture: 0.825 vs
+0.275). Real TM matrices look like this; noise does not.
+
+**A fixture can be statistically faithful and still test nothing.** Matching the
+marginal distributions is not the same as matching the structure the code is
+looking for.
+
+### C6 — the same mutation-design error, three times · noted in the harness
+
+`component_leiden_n_pcs` survived once more even after the structure was
+planted, because I anchored it on `def scanpy_leiden_cluster(..., n_pcs=30)` —
+a default that `main()` always overrides from argparse. The same mistake had
+already happened twice in the reducer suite.
+
+Each time it presents as "survived", indistinguishable from a genuine hole. The
+`Mutation` docstring now warns about it explicitly: anchor on the value the
+executed path actually reads, never on a default the caller passes over.
 
 **Standing consequence.** The four N=11 survivors are recorded in the harness
 with `expected_to_survive` text naming the clamp that hides them, so they read as

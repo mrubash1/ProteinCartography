@@ -376,6 +376,7 @@ CENSORED_FILL = "0.0"
 DEFAULT_FIXTURE_N = 750
 DEFAULT_FIXTURE_SEED = 0
 DEFAULT_FIXTURE_CAP = 300
+DEFAULT_FIXTURE_CLUSTERS = 6
 
 
 def synthetic_matrix(
@@ -384,6 +385,7 @@ def synthetic_matrix(
     n: int = DEFAULT_FIXTURE_N,
     seed: int = DEFAULT_FIXTURE_SEED,
     cap: int = DEFAULT_FIXTURE_CAP,
+    n_clusters: int = DEFAULT_FIXTURE_CLUSTERS,
     permute_columns: bool = False,
 ) -> Path:
     """Write a similarity matrix with the statistical shape of a real one.
@@ -395,7 +397,16 @@ def synthetic_matrix(
       are the literal ``"0.0"`` fill -- the censoring of ADR 0009;
     * scores in Foldseek's ``%.3E`` form with no low tail, so a fill is a value
       the generator never otherwise emits;
-    * an exact 1.0 on the *label* diagonal.
+    * an exact 1.0 on the *label* diagonal;
+    * **block structure** -- `n_clusters` groups that are mutually similar and
+      dissimilar across groups.
+
+    That last one was added after mutation testing: a matrix of uniform noise is
+    statistically realistic in its censoring and completely unrealistic as
+    biology, and a clustering-parameter mutation has nothing to bite on. Leiden
+    at 30 principal components and at 10 produced the *same* partition of pure
+    noise, so the mutation survived a test that was working correctly. Planting
+    real structure is what makes clustering parameters observable.
 
     `permute_columns` reproduces the PR #106 defect for tests that need it.
     """
@@ -412,6 +423,11 @@ def synthetic_matrix(
     # would generate a matrix that is wrong rather than merely permuted.
     index_of = {label: i for i, label in enumerate(labels)}
 
+    # Contiguous, equal-sized groups. Deterministic given the seed, and simple
+    # enough that a test can reconstruct the ground truth with `i * k // n`.
+    n_clusters = max(1, min(n_clusters, n))
+    cluster_of = np.arange(n) * n_clusters // n
+
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w") as fh:
         fh.write("\t".join(["protid"] + columns) + "\n")
@@ -425,7 +441,14 @@ def synthetic_matrix(
             k = max(0, min(cap, n) - 1)
             partners = set(rng.choice(others, size=k, replace=False).tolist())
             partners.add(i)
-            scores = rng.uniform(0.05, 0.99, size=n)
+            # Within-cluster pairs score high, between-cluster pairs low, with
+            # enough spread that the groups are findable but not trivial.
+            same = cluster_of == cluster_of[i]
+            scores = np.where(
+                same,
+                rng.uniform(0.70, 0.95, size=n),
+                rng.uniform(0.10, 0.45, size=n),
+            )
             cells = []
             for column_label in columns:
                 j = index_of[column_label]
@@ -472,4 +495,88 @@ def run_reducer(
         raise RuntimeError(
             f"dim_reduction from {repo} failed ({proc.returncode})\n{proc.stderr[-4000:]}"
         )
+    return workdir
+
+
+def synthetic_pair_list(
+    path: Path,
+    *,
+    n: int = 200,
+    seed: int = DEFAULT_FIXTURE_SEED,
+    cap: int = 80,
+) -> Path:
+    """Write a raw Foldseek pair list: the *input* to `pivot_foldseek_results`.
+
+    The pivoted matrix is where the censoring fill is introduced, so testing
+    anything about that fill means exercising the pivot step, which starts from
+    this file rather than from a matrix. Pairs outside each query's cap are
+    simply absent -- which is exactly how Foldseek reports, and is what makes
+    the fill appear.
+    """
+    import numpy as np
+
+    rng = np.random.RandomState(seed)
+    labels = [f"P{i:05d}" for i in range(n)]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w") as fh:
+        for i, query in enumerate(labels):
+            others = [j for j in range(n) if j != i]
+            k = max(0, min(cap, n) - 1)
+            partners = sorted(set(rng.choice(others, size=k, replace=False).tolist()) | {i})
+            for j in partners:
+                score = 1.0 if j == i else rng.uniform(0.05, 0.99)
+                fh.write(f"{query}.pdb\t{labels[j]}.pdb\t{score:.3E}\n")
+    return path
+
+
+def run_pivot(repo: Path, pair_list: Path, workdir: Path, *, python: str | None = None) -> Path:
+    """Run `pivot_foldseek_results` from `repo` on a raw pair list.
+
+    Invoked as a subprocess against the given checkout so the baseline's copy of
+    the function is used, not the one already imported into this process.
+    """
+    workdir = Path(workdir)
+    if workdir.exists():
+        shutil.rmtree(workdir)
+    workdir.mkdir(parents=True)
+    out = workdir / "all_by_all_tmscore_pivoted.tsv"
+    script = (
+        "import sys; sys.path.insert(0, 'ProteinCartography');"
+        "from foldseek_clustering import pivot_foldseek_results;"
+        f"pivot_foldseek_results(input_file={str(pair_list)!r}, output_file={str(out)!r})"
+    )
+    proc = subprocess.run(
+        [python or sys.executable, "-c", script], cwd=repo, capture_output=True, text=True
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(f"pivot from {repo} failed ({proc.returncode})\n{proc.stderr[-3000:]}")
+    return workdir
+
+
+def run_leiden(repo: Path, matrix_path: Path, workdir: Path, *, python: str | None = None) -> Path:
+    """Run `leiden_clustering.py` from `repo` on a matrix.
+
+    Leiden forks from the matrix independently of the reduction path, so it
+    needs its own comparison; nothing in the reducer suite touches it.
+    """
+    workdir = Path(workdir)
+    if workdir.exists():
+        shutil.rmtree(workdir)
+    workdir.mkdir(parents=True)
+    out = workdir / "leiden_features.tsv"
+    proc = subprocess.run(
+        [
+            python or sys.executable,
+            str(Path(repo) / "ProteinCartography" / "leiden_clustering.py"),
+            "--input",
+            str(matrix_path),
+            "--output",
+            str(out),
+        ],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(f"leiden from {repo} failed ({proc.returncode})\n{proc.stderr[-3000:]}")
     return workdir
