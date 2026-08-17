@@ -401,6 +401,101 @@ documented limitations rather than as passes. If anyone later shrinks the N=750
 fixture below 500, those annotations are what will explain why the suite
 suddenly proves less.
 
+## Group 3 — cohort selection
+
+No gate is scheduled here; group 3 rides on Gate C's parity machinery. Three
+findings came out of building it anyway, and two are defects in already-reviewed
+code.
+
+### G3.1 — a config key that parsed, validated, and did nothing · **blocks** · fixed
+
+`from_legacy` has two branches. The modern one, taken when a config has
+`blocks`/`spaces`, passes the user's `cohort:` mapping through. The legacy one,
+taken by **every existing config**, rebuilt that mapping from scratch and copied
+only `max_structures` into it. So `cohort: {selection: accession}` in a
+plain `config.yml` was silently discarded, and the DAG used the default rule.
+
+The failure mode is the bad one: the key parses, `CohortConfig` validates it,
+`_reject_unknown_keys` accepts it, and nothing anywhere reports that it was
+dropped. It shipped in commit group 2 and survived Gate B, because every test
+exercised the modern branch — `minimal()` in `test_config_schema.py` defines
+`blocks` and `spaces`, so the whole cohort section of that file tested the path
+almost no user takes.
+
+Found by writing a config with `selection: significance` and noticing the rule
+count did not change. Both branches now share `_cohort_from_legacy`, and there is
+a regression test on each branch rather than on one.
+
+**Generalization worth carrying: a test helper that always takes the same branch
+is a blind spot with a name.** `minimal()` is convenient precisely because it is
+the modern shape, which is why nothing tested the legacy shape.
+
+### G3.2 — the additive-output allowance was direction-blind · **blocks** · fixed
+
+`cohort_report.json` is the first file this work adds to the output tree, so
+`compare_trees` needed a fourth category beside compared / excluded /
+nondeterministic. The first version allowed an `ADDITIVE_OUTPUTS` path to be
+missing from the *second* argument, on the assumption that the second argument is
+the baseline.
+
+It is not. `test_default_output_is_unchanged_from_the_baseline` calls
+`compare_trees(head, base)` and `mutation_check` calls
+`compare_trees(reference, mutated)` — the orders are opposite. The real parity
+run failed with `only in A: protein_features/cohort_report.json`, which is the
+good outcome; the bad one was live in the other call sites, where the allowance
+would have excused a **deleted** output.
+
+`compare_trees` now requires `baseline="a"` or `baseline="b"` to be named, with
+no default, and the allowance does not apply at all when neither is given — which
+is the correct behavior for every self-diff and every mutation run. A test pins
+both orders, and another proves no additive pattern can match a `CRITICAL_OUTPUTS`
+path.
+
+### G3.3 — ADR 0008 asked for a measurement that cannot exist · corrected
+
+The ADR specified `significance_rule: {foldseek: best_tmscore}`. Search mode
+queries the Foldseek **web API**, and its `.m8` output has 21 columns with no
+alignment TM-score — checked against a recorded API response in the test
+fixtures, not inferred from `constants.FOLDSEEK_COLUMN_NAMES`. The TM-scores this
+pipeline is built around come from the *local* all-versus-all run, which operates
+on the downloaded structures.
+
+So ranking the cohort by TM-score requires the structures the ranking exists to
+choose. This is not a DAG-ordering problem; it is a property of where the
+measurement comes from, and no implementation resolves it.
+
+The ADR is corrected in place, including the consequence it would have been
+easier to leave out: an e-value is alignment significance, not structural
+similarity, so `significance` selects **confidently-detected** hits rather than
+structurally close ones. That is weaker than the ADR promised. It is still the
+only rule of the three that is both reproducible and principled.
+
+### What the demo fixture turned out to show
+
+Not a finding, but the most useful number group 3 produced. On the repo's own
+11-protein search-mode fixture: 24 hits, 20 surviving the metadata filter, 10
+admitted by `max_structures`. Half the candidates dropped, and the discarded half
+is taxonomically different from the kept half — every Chiroptera hit discarded
+(0% retained vs 40% discarded), 4 of 5 Artiodactyla kept.
+
+The demo the project ships to explain itself already exhibits the bias ADR 0008
+is about, and no file recorded it before this group.
+
+### Mutation testing after group 3
+
+17 mutations: **12 detected, 5 survived-as-expected, 0 unexplained holes.**
+
+Two new mutations, both detected: the default rule quietly sorting (the exact
+change ADR 0008 rejected), and an off-by-one at the truncation point.
+
+One new deliberate hole, recorded rather than closed. Inverting the significance
+polarity survives, because the default config never executes that path — and
+making it do so would mean changing the default cohort, which is the one thing
+this work promises not to do. It is covered by unit tests that assert the e-value
+and TM-score directions against each other. Recording it is the point: the
+parity test cannot see anything the default configuration does not run, and that
+limit should be written down rather than discovered later.
+
 ## Gate D — after commit group 8 (fusion and diagnostics)
 
 *Not yet run.*
