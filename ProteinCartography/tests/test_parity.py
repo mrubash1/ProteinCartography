@@ -23,6 +23,7 @@ The comparison logic and the reasoning behind each exclusion live in
 
 import os
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -275,3 +276,125 @@ def test_a_tree_compared_against_itself_is_clean(tmp_path):
     b = tmp_path / "b"
     shutil.copytree(a, b)
     assert compare_trees(a, b).ok
+
+
+# ==========================================================================
+# Component parity at N > 500
+# ==========================================================================
+#
+# Mutation testing showed the 11-protein end-to-end fixture cannot see several
+# realistic refactor errors, because at that size the PCA component count, the
+# UMAP neighbour count and Leiden's n_pcs are all clamped to the same value
+# whatever the config says, and the censoring fill never appears at all. These
+# tests run the reduction step alone on a seeded 750-protein matrix, which is
+# above the 500-row threshold where `svd_solver="auto"` would switch to the
+# randomized solver -- the regime PR #106 exists for.
+#
+# The fixture is generated, not stored: the seed is the fixture. That also keeps
+# it clear of the publishability question hanging over the real-data slice.
+
+
+@pytest.fixture(scope="module")
+def big_matrix(tmp_path_factory):
+    from parity import synthetic_matrix
+
+    return synthetic_matrix(tmp_path_factory.mktemp("big") / "all_by_all_tmscore_pivoted.tsv")
+
+
+@pytest.fixture(scope="module")
+def analysis_python(repo_dirpath):
+    """An interpreter with scikit-learn and umap-learn.
+
+    The reduction step runs in `envs/analysis.yml`, not in the test environment,
+    so the test has to find that environment rather than use its own.
+    """
+    for candidate in sorted((Path(repo_dirpath) / ".snakemake" / "conda").glob("*/bin/python")):
+        probe = subprocess.run([str(candidate), "-c", "import sklearn, umap"], capture_output=True)
+        if probe.returncode == 0:
+            return str(candidate)
+    pytest.skip(
+        "no environment with scikit-learn and umap-learn was found under "
+        ".snakemake/conda; run the pipeline once so snakemake builds them"
+    )
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("mode", ["pca_umap", "pca_tsne"])
+def test_reduction_at_n750_matches_the_baseline(
+    mode, runs, big_matrix, baseline_repo, repo_dirpath, analysis_python, tmp_path_factory
+):
+    """The port must preserve the reduction at a size where clamping does not hide it."""
+    from parity import compare_trees, run_reducer
+
+    work = tmp_path_factory.mktemp(f"reduce_{mode}")
+    head = run_reducer(
+        Path(repo_dirpath), big_matrix, work / "head", mode=mode, python=analysis_python
+    )
+    base = run_reducer(baseline_repo, big_matrix, work / "base", mode=mode, python=analysis_python)
+
+    report = compare_trees(head, base)
+    assert report.ok, f"{mode} output changed at N=750:\n{report.describe()}"
+    # The input matrix, the intermediate PCA, and the final embedding.
+    assert report.n_compared == 3, report.describe()
+
+
+@pytest.mark.slow
+def test_reduction_at_n750_is_deterministic(
+    big_matrix, repo_dirpath, analysis_python, tmp_path_factory
+):
+    """Above 500 rows is exactly where determinism used to fail."""
+    from parity import compare_trees, run_reducer
+
+    work = tmp_path_factory.mktemp("reduce_det")
+    a = run_reducer(
+        Path(repo_dirpath), big_matrix, work / "a", mode="pca_umap", python=analysis_python
+    )
+    b = run_reducer(
+        Path(repo_dirpath), big_matrix, work / "b", mode="pca_umap", python=analysis_python
+    )
+    report = compare_trees(a, b)
+    assert report.ok, f"reduction is not reproducible at N=750:\n{report.describe()}"
+
+
+def test_the_synthetic_fixture_has_the_shape_it_claims(tmp_path):
+    """The fixture is only useful if it reproduces the real matrix's structure.
+
+    Cheap enough to run in the normal suite, and it fails loudly if a change to
+    the generator quietly makes the N>500 tests test something else.
+    """
+    from matrix_io import load_labeled_matrix, summarize_censoring
+    from parity import synthetic_matrix
+
+    matrix = load_labeled_matrix(synthetic_matrix(tmp_path / "m.tsv", n=200, cap=80))
+    summary = summarize_censoring(matrix)
+
+    assert matrix.is_aligned
+    assert (matrix.aligned_diagonal() == 1.0).all()
+    # A per-query cap: rows uniform at the cap, columns free to vary.
+    assert summary["cap_detected"]
+    assert summary["measured_per_row"]["min"] == summary["measured_per_row"]["max"]
+    assert summary["measured_per_col"]["min"] < summary["measured_per_col"]["max"]
+    # No measured zeros, so every zero is unambiguously the fill.
+    assert summary["measured_zero_count"] == 0
+    assert 0.5 < summary["censoring_rate"] < 0.7
+
+
+def test_the_synthetic_fixture_can_reproduce_the_106_defect(tmp_path):
+    from matrix_io import MatrixAlignmentError, load_labeled_matrix
+    from parity import synthetic_matrix
+
+    path = synthetic_matrix(tmp_path / "p.tsv", n=50, cap=20, permute_columns=True)
+    with pytest.raises(MatrixAlignmentError):
+        load_labeled_matrix(path)
+
+    # Permuted, but not corrupt: read by label, the diagonal is still exact.
+    matrix = load_labeled_matrix(path, require_alignment=False)
+    assert (matrix.aligned_diagonal() == 1.0).all()
+
+
+def test_the_synthetic_fixture_is_reproducible(tmp_path):
+    from parity import synthetic_matrix
+
+    a = synthetic_matrix(tmp_path / "a.tsv", n=40, cap=10).read_bytes()
+    b = synthetic_matrix(tmp_path / "b.tsv", n=40, cap=10).read_bytes()
+    assert a == b
