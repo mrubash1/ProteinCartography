@@ -73,6 +73,41 @@ def test_legacy_max_structures_reaches_the_cohort():
     assert config.cohort.max_structures == 10
 
 
+def test_a_cohort_block_in_a_legacy_config_is_not_discarded():
+    """Regression: `selection:` used to parse, validate, and do nothing.
+
+    The legacy branch of `from_legacy` rebuilt the cohort mapping from scratch
+    and copied only `max_structures` across, so a `cohort:` block in a config
+    with no `blocks`/`spaces` keys -- which is every existing config -- was
+    dropped on the floor. The DAG then silently used the default rule.
+    """
+    config = from_legacy({"plotting_modes": ["pca_umap"], "cohort": {"selection": "accession"}})
+    assert config.cohort.selection == "accession"
+
+
+def test_a_cohort_block_survives_alongside_blocks_and_spaces():
+    """The same must hold on the modern branch, which took a different path."""
+    config = from_legacy(minimal(cohort={"selection": "accession"}))
+    assert config.cohort.selection == "accession"
+
+
+def test_the_nested_max_structures_wins_over_the_top_level_one():
+    """So a config can adopt `cohort:` without first deleting the old key."""
+    config = from_legacy(
+        {
+            "plotting_modes": ["pca_umap"],
+            "max_structures": 10,
+            "cohort": {"max_structures": 99},
+        }
+    )
+    assert config.cohort.max_structures == 99
+
+
+def test_a_typo_in_the_cohort_block_is_rejected_rather_than_ignored():
+    with pytest.raises(ConfigError, match="cohort"):
+        from_legacy({"plotting_modes": ["pca_umap"], "cohort": {"selecton": "accession"}})
+
+
 def test_legacy_rejects_an_unknown_plotting_mode():
     with pytest.raises(ConfigError, match="plotting_modes"):
         from_legacy({"plotting_modes": ["pca_magic"]})
@@ -330,6 +365,25 @@ def test_significance_selection_accepted():
         )
     )
     assert config.cohort.selection == "significance"
+
+
+def test_the_default_significance_measure_is_the_one_search_mode_can_produce():
+    """TM-score is not obtainable before the structures are downloaded (ADR 0008)."""
+    config = MultispaceConfig.from_dict(minimal(cohort={"selection": "significance"}))
+    assert config.cohort.measure == "evalue"
+
+
+def test_a_named_significance_measure_is_used():
+    config = MultispaceConfig.from_dict(
+        minimal(cohort={"selection": "significance", "significance_rule": {"measure": "bits"}})
+    )
+    assert config.cohort.measure == "bits"
+
+
+def test_an_unknown_significance_measure_is_rejected_at_parse_time():
+    """Where it is *used* is after the searches have run, which is too late."""
+    with pytest.raises(ConfigError, match="significance_rule.measure"):
+        MultispaceConfig.from_dict(minimal(cohort={"significance_rule": {"measure": "pvalue"}}))
 
 
 def test_subsample_fraction_bounds():
