@@ -773,6 +773,159 @@ config, it gets a mutation entry.
   17 mutations. Unit suite 500 passed / 40 skipped; cluster DAG 16, search DAG 25, both
   unchanged from the baseline.
 
+## Group 7 — co-registration
+
+### G7.1 — the co-registered spaces were never checked to be over the same proteins · **blocks** · fixed
+
+Recorded as FOLLOWUPS #30 during group 6 and fixed here, because it is the precondition
+for everything else in this group rather than a defect group 7 happened to notice.
+
+The four blocks draw their protid sets from three different files — `tmscore` from the
+similarity matrix, `threedi` from the 3Di descriptor table, `biophys` and `domains` from
+the UniProt features table — written by different rules at different points in a run.
+
+The failure mode has no symptom. Two spaces over sets differing by a handful of proteins
+reduce cleanly, plot cleanly, and produce a per-protein comparison silently conditioned
+on the overlap. Shapes match, so nothing downstream can notice.
+
+`coregistration.shared_index` intersects in a named reference space's order and
+**enumerates** every protein each space lost, rather than counting them. A count says
+something happened; the list says whether it matters. Intersecting rather than refusing
+is the deliberate half — a provider legitimately has no data for a protein — and is
+argued in ADR 0011 §1.
+
+### G7.2 — the boundary-tie counter earned itself on the first real run
+
+Neighborhood Jaccard breaks a k-th-neighbor tie by protein index order: reproducible,
+and arbitrary. The count of such ties is reported beside every score.
+
+That looked like defensive decoration until the demo ran. The `families` space has
+**two distinct points across eleven proteins** — ten actins carry one Pfam family and
+the fusion carries two — so all eleven rows tie, and its Jaccard of 0.18 against
+`structure` is largely a measurement of protein index order. Read alone, 0.18 is a weak
+biological signal. `boundary_ties_b = 11` is what says it is not a biological signal at
+all.
+
+The same run surfaced a second one: **four of the eleven demo proteins have
+byte-identical 375-residue sequences** under four accessions (Q6QAQ1, P60709, D7RIF5,
+P60713), so every sequence-derived space is degenerate on them too. Checked against the
+features table rather than assumed to be a float32 storage artifact — the sequences are
+identical, so this is real conservation, not a fixture defect.
+
+**The transferable form: a diagnostic that can never fire is decoration, and one that
+always fires is noise. This one fires on the exact cohorts where the score it qualifies
+is meaningless.** `test_no_boundary_ties_are_reported_when_every_distance_is_distinct`
+guards the second half.
+
+### G7.3 — a normalization declared everywhere and applied nowhere · recorded, not fixed
+
+Found while deciding what geometry the comparison should measure. `spec.normalization`
+is validated on every `BlockSpec`, written into every manifest on disk, and read by
+nothing: `reduce_space` feeds `block.features` straight into PCA. Exactly the shape of
+#29 for `spec.metric`, and found the same way — by needing the value and discovering
+nothing consumed it.
+
+It matters most for `biophys`, whose four columns are a pH beside a per-residue charge.
+Unnormalized, the euclidean distance between two of its rows is the isoelectric point
+and almost nothing else.
+
+**Deliberately not fixed here.** Applying it would change the default map, which the
+byte-identical requirement forbids. Applying it *only* in co-registration would be
+worse: the disagreement metrics would then describe a geometry no map is drawn from, and
+nothing on either the metric or the plot would say so. So co-registration shares the
+defect on purpose, and states it in `geometry_caveats` on every comparison and in the
+manifest. FOLLOWUPS #32; ADR 0011 §4.
+
+This is the third instance of one pattern in two groups — a recorded field that no
+caller consults (#29, #32) or a default no caller can reach (G6.4). **A value written to
+a manifest is not thereby honored, and a manifest is where that goes unnoticed longest,
+because it looks like evidence.**
+
+### G7.4 — the claim B audit found no circular comparison
+
+PLAN.md §Phase 6 required, on claim B being confirmed, an audit of every comparison
+using `struclusters` as a structural reference: a "structure versus sequence" contrast
+built on a sequence-derived label is circular.
+
+Audited, and the answer is that there is no such comparison to fix. `struclusters`
+appears in three places — the aggregated features table, `plot_similarity_strucluster`,
+and the fusion path. The first two use it as an **overlay**, which ADR 0003 explicitly
+permits: looking at a layout colored by it is fine, letting it move the points is not.
+The third is already blocked by `NOT_FUSABLE_REASONS["struclusters"]`, whose text is the
+circularity argument.
+
+The one live problem is naming, not circularity — the repo presents amino-acid identity
+as structural clustering — and that is FOLLOWUPS #9, a standalone upstream PR.
+
+Recording a **negative** audit result matters as much as a positive one: without this
+entry the next reader re-derives it, and the plan's instruction to audit stays
+permanently open.
+
+### G7.5 — cross-checked against scipy rather than merely plausible
+
+Spearman and Procrustes are reimplemented in numpy, because ADR 0006 requires the
+default configuration to run with neither scipy nor scikit-learn installed. A
+reimplemented statistic that is subtly wrong is worse than a missing one; it is
+plausible.
+
+Both were checked against `scipy.stats.spearmanr` and `scipy.spatial.procrustes` in an
+environment that has them, and agree to **3.3e-16** over twenty random cases. The
+Spearman check includes a **60% censored** matrix, because that is the production
+censoring rate (ADR 0009) and it makes tie handling the common case rather than an edge
+case: ranking tied zeros by position would manufacture an ordering out of file order,
+and two spaces would then correlate on that artifact.
+
+Both checks are in the suite behind `importorskip`, so they run wherever scipy happens
+to be installed and skip in the bare environment — the same opportunistic pattern as the
+Biopython cross-checks in `test_biophys_block.py`.
+
+### G7.6 — why the new metrics get no mutation entry, stated rather than skipped
+
+PLAN §0.1 sets a standing rule: **any new numeric component gets a mutation entry**, and
+if it survives, work through three causes in order — fixture too small, fixture lacks
+the structure the component reads, or the mutation is anchored where the code never
+executes.
+
+Group 7 adds three numeric components (neighborhood Jaccard, rank correlation,
+Procrustes disparity) and none of them gets an entry. The reason is a **fourth cause not
+on that list**, and it is structural rather than a hole:
+
+> The mutation harness measures whether the **parity test** notices a change. The parity
+> test compares this branch's output against the baseline's. Co-registration output does
+> not exist in the baseline — it is additive, which is the whole point — so no mutation
+> to `coregistration.py` can ever be detected, no matter how large. Every entry would
+> survive, and each would be indistinguishable in the report from a real hole.
+
+Adding them would therefore make the harness *worse*: five survivals with reasons
+attached is a report someone eventually stops reading.
+
+This is the same shape as the one deliberate survivor already recorded in §0.1 — the
+significance-polarity inversion survives because the default config never executes that
+path — and it generalizes to a limit worth stating plainly: **the parity test cannot see
+anything the baseline does not produce, and everything additive is by construction
+invisible to it.** Additive work has to be covered by direct tests instead, which is why
+the three metrics carry 33 unit tests and are cross-checked against scipy (G7.5) rather
+than being defended by the harness.
+
+### Verification, group 7
+
+- Unit suite: 567 passed, 42 skipped. The two extra skips are the scipy cross-checks,
+  which is ADR 0006 behaving as designed.
+- **Parity: 33 slow tests, 0 differing files**, against `upstream/main` at `36a38c7`.
+  Up from 31 because `test_parity.py` gained two non-slow tests of `baseline_commit`.
+- **Mutation harness exits 0** — no unexplained holes. See G7.6 for why group 7's own
+  components are deliberately not in it.
+- Every one of the five commits verified alone in a detached worktree:
+  502 / 519 / 551 / 567 / 567 pass, lint clean, cluster DAG 16 at every point.
+- Lint: `ruff check`, `ruff format --check`, `snakefmt --check` all clean.
+- Cluster DAG 16 and search DAG 25, both unchanged. Multispace demo 23 → 24, the one new
+  rule, and it runs 24/24 to completion.
+- Co-registration is opt-in twice: unreachable without `spaces`, and unreachable again
+  unless `coregistration.compare` names two of them.
+- Pre-existing files touched rises 9 → 10. `calculate_concordance.py` gains a module
+  docstring and no behavior change, because PLAN.md requires the superseded metric be
+  kept and marked rather than removed (invariant I6).
+
 ## Gate D — after commit group 8 (fusion and diagnostics)
 
 *Not yet run.*
