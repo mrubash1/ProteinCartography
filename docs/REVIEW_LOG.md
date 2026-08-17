@@ -451,24 +451,84 @@ is the correct behavior for every self-diff and every mutation run. A test pins
 both orders, and another proves no additive pattern can match a `CRITICAL_OUTPUTS`
 path.
 
-### G3.3 — ADR 0008 asked for a measurement that cannot exist · corrected
+### G3.4 — `tmalign` mode reuses the column positions for different quantities · **blocks** · guarded
 
-The ADR specified `significance_rule: {foldseek: best_tmscore}`. Search mode
-queries the Foldseek **web API**, and its `.m8` output has 21 columns with no
-alignment TM-score — checked against a recorded API response in the test
-fixtures, not inferred from `constants.FOLDSEEK_COLUMN_NAMES`. The TM-scores this
-pipeline is built around come from the *local* all-versus-all run, which operates
-on the downloaded structures.
+Found while checking G3.3, which turned out to be wrong (see below).
 
-So ranking the cohort by TM-score requires the structures the ranking exists to
-choose. This is not a DAG-ordering problem; it is a property of where the
-measurement comes from, and no implementation resolves it.
+`foldseek_apiquery.py` accepts `--mode tmalign`. A live query against
+`afdb-swissprot` with the demo actin structure returns the **same 21 columns in
+the same positions** as `3diaa`, with different meanings:
 
-The ADR is corrected in place, including the consequence it would have been
-easier to leave out: an e-value is alignment significance, not structural
-similarity, so `significance` selects **confidently-detected** hits rather than
-structurally close ones. That is weaker than the ADR promised. It is still the
-only rule of the three that is both reproducible and principled.
+| column | 3diaa (recorded fixture) | tmalign (live, 938 hits) |
+|---|---|---|
+| `evalue` | `1.647e-79`, spans 79 orders | `0.402 … 0.9999`, all in [0, 1] |
+| `bits` | up to 3274 | 22–99, ≈ TM×100 (r = 0.93) |
+
+The column named `evalue` holds a **TM-score**. Nothing renames, nothing errors,
+and the mode is recorded nowhere in the output — so the polarity silently
+inverts for any consumer.
+
+Two consequences, one pre-existing and one mine:
+
+- `extract_foldseek_hits.py` filters `evalue < 0.01`. On that live response it
+  keeps **0 of 938 hits**. → `docs/FOLLOWUPS.md` #25.
+- `hit_significance.py`, written two commits earlier, ranks `evalue` ascending.
+  It would have put the unrelated GTP pyrophosphatase (TM 0.402) above actin
+  (TM 0.9999) — the exact inversion `SIGNIFICANCE_MEASURES` exists to prevent,
+  arriving through the *data* rather than through the code.
+
+`hit_significance.py` now refuses tmalign-shaped input instead of guessing:
+values bounded in [0, 1], never small, *and* bit scores at TM-score scale. Two
+conditions rather than one because a weak 3Di-AA search really can return only
+e-values near 1; requiring TM-shaped bit scores alongside makes a false positive
+very unlikely, and the check errs toward not firing. Verified against both real
+files: it fires on the live tmalign response and stays quiet on the recorded
+3diaa fixture (810 accessions scored).
+
+**Refusing is deliberate and temporary.** The correct fix is to record the mode
+next to the results, after which either mode can be read with confidence. That
+is in PLAN.md as a scoped exploration, not done here, because making the mode
+configurable changes search behavior and therefore the cohort.
+
+**The generalization is the value here.** The project already has the rule
+*never index a labeled matrix positionally* (ADR 0007). This is the same defect
+one level up: **a column name is not a contract when its meaning depends on a
+run mode that is not recorded.** ADR 0007 protects against columns moving. This
+is columns staying exactly where they are and meaning something else.
+
+### G3.3 — ADR 0008 asked for a measurement that cannot exist · **the correction was itself wrong** · re-corrected
+
+The ADR specified `significance_rule: {foldseek: best_tmscore}`. I corrected it
+to say that a TM-score is unobtainable, because the pipeline's TM-scores come
+from the local all-versus-all run, which operates on the downloaded structures —
+so ranking the cohort by TM-score would need the structures the ranking exists to
+choose. I called it "not a DAG-ordering problem" and "no implementation resolves
+it", and committed that in `1ac5dcd`.
+
+**That was an overclaim, and the argument had a hole in it.** The circularity is
+real for the **all-versus-all matrix**. Cohort ranking does not need the matrix;
+it needs one score per candidate against the queries, which is a different and
+much cheaper object. Checking `--mode tmalign` — which I had read past in
+`foldseek_apiquery.py` before writing the correction — showed the web API returns
+exactly that, before anything is downloaded.
+
+What generalized from one verified fact ("the recorded 3diaa fixture has no
+TM-score column") to a claim about the whole API ("the web API reports no
+TM-score") was an inference, not a measurement, and it was stated with the same
+confidence as the measurement. **The tell was available: I had already read the
+`SET_MODES = ["3diaa", "tmalign"]` line in the same file.**
+
+The ADR is re-corrected. The decision does not change — the default measure is
+still the e-value — but the reason does, and the new reason is more useful than
+the old one: TM-score ranking is *feasible* and blocked by an unrecorded mode
+plus a column-semantics collision (G3.4), not by a law of the DAG. That turns a
+dead end into a scoped piece of work, now in PLAN.md.
+
+The honest consequence stands either way: an e-value is alignment significance,
+not structural similarity, so `significance` as shipped selects
+**confidently-detected** hits rather than structurally close ones. Weaker than
+the ADR promised, and still the only rule of the three that is both reproducible
+and principled.
 
 ### What the demo fixture turned out to show
 

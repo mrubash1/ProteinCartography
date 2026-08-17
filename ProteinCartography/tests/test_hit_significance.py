@@ -15,6 +15,7 @@ on the wrong key.
 import constants
 import pytest
 from hit_significance import (
+    TmalignOutputError,
     aggregate_significance,
     blast_significance,
     foldseek_significance,
@@ -174,6 +175,65 @@ def test_two_refseqs_mapping_to_one_accession_are_reduced_together(tmp_path):
     assert len(table) == 1
     assert table.loc["P12345", "evalue"] == pytest.approx(1e-90)
     assert table.loc["P12345", "bits"] == 900
+
+
+# ---------------------------------------------------------------------------
+# tmalign mode reuses the column positions for different quantities
+# ---------------------------------------------------------------------------
+#
+# `foldseek_apiquery.py --mode tmalign` returns the same 21 columns and the
+# server puts a TM-score where the e-value goes. Nothing renames, so nothing
+# errors; the polarity just inverts and the worst structures rank first.
+#
+# The numbers below are from a live tmalign query against afdb-swissprot with
+# the demo actin structure: 938 hits, e-value column 0.402 to 0.9999, bit scores
+# 22 to 99.
+
+
+def tmalign_row(accession, tmscore):
+    """A row shaped like real tmalign output: TM-score in the e-value column."""
+    return foldseek_row(accession, tmscore, int(round(tmscore * 100)))
+
+
+def test_tmalign_output_is_refused_rather_than_ranked_backwards(tmp_path):
+    path = write_m8(
+        tmp_path / "a.m8",
+        [tmalign_row("P1", 0.9999), tmalign_row("P2", 0.71), tmalign_row("P3", 0.402)],
+    )
+    with pytest.raises(TmalignOutputError, match="tmalign"):
+        foldseek_significance([path])
+
+
+def test_the_refusal_explains_the_polarity_consequence(tmp_path):
+    path = write_m8(tmp_path / "a.m8", [tmalign_row("P1", 0.99), tmalign_row("P2", 0.42)])
+    with pytest.raises(TmalignOutputError, match="least"):
+        foldseek_significance([path])
+
+
+def test_a_normal_search_is_not_mistaken_for_tmalign(tmp_path):
+    """The real 3diaa fixture reaches e-values many orders below any TM-score."""
+    path = write_m8(
+        tmp_path / "a.m8", [foldseek_row("P1", 1.647e-79, 3274), foldseek_row("P2", 1e-20, 300)]
+    )
+    assert list(foldseek_significance([path])["protid"]) == ["P1", "P2"]
+
+
+def test_a_weak_search_with_large_bit_scores_is_not_mistaken_for_tmalign(tmp_path):
+    """Both conditions are required, so a weak 3diaa run is not refused.
+
+    E-values near 1 are plausible for a weak search; TM-score-scale bit scores
+    alongside them are not.
+    """
+    path = write_m8(tmp_path / "a.m8", [foldseek_row("P1", 0.8, 900), foldseek_row("P2", 0.5, 750)])
+    assert list(foldseek_significance([path])["protid"]) == ["P1", "P2"]
+
+
+def test_a_search_reaching_small_evalues_is_not_refused_despite_small_bits(tmp_path):
+    """The other half of the pair: small bit scores alone are not enough."""
+    path = write_m8(
+        tmp_path / "a.m8", [foldseek_row("P1", 1e-30, 90), foldseek_row("P2", 1e-8, 40)]
+    )
+    assert list(foldseek_significance([path])["protid"]) == ["P1", "P2"]
 
 
 # ---------------------------------------------------------------------------
