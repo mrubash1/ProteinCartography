@@ -312,9 +312,9 @@ def test_a_reversed_ordering_gives_minus_one():
 def test_ties_share_a_mean_rank_rather_than_being_ordered_by_position():
     """Censored TM-scores arrive as exact zeros in their thousands. Ranking
     those by position manufactures an ordering out of file order."""
-    from coregistration import _average_ranks
+    from coregistration import average_ranks
 
-    ranks = _average_ranks(np.array([5.0, 1.0, 1.0, 1.0, 9.0]))
+    ranks = average_ranks(np.array([5.0, 1.0, 1.0, 1.0, 9.0]))
     assert ranks.tolist() == [3.0, 1.0, 1.0, 1.0, 4.0]
 
 
