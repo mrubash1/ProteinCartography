@@ -287,6 +287,89 @@ def test_manifest_written_beside_the_arrays(tmp_path):
     assert data["derived"]["spec"]["metric"] == "precomputed"
 
 
+def test_the_providers_manifest_reaches_disk(tmp_path):
+    """Regression: `write_block` used to rebuild a minimal manifest and drop it.
+
+    Everything a provider records about what it computed *from* -- input
+    digests, the seed, its own notes -- lived only on `result.manifest`, and
+    `write_block` replaced it with one built from the spec alone. Every block on
+    disk therefore had `inputs: {}`, which meant a changed input produced an
+    unchanged `cache_key` and a stale block looked fresh.
+    """
+    store = BlockStore(str(tmp_path))
+    provider_manifest = Manifest.build(
+        "block",
+        "tmscore",
+        provider="tmscore",
+        params={"representation": "profile"},
+        inputs={"similarity_matrix": "sha256:abc"},
+        protids=["A", "B"],
+        seed=99,
+        extra={"censoring": {"rate": 0.6}},
+    )
+    store.write_block(
+        BlockResult(
+            spec=spec(),
+            protids=["A", "B"],
+            distances=np.zeros(1),
+            manifest=provider_manifest.to_dict(),
+        )
+    )
+    data = json.loads((tmp_path / "blocks" / "tmscore" / "manifest.json").read_text())
+    assert data["inputs"] == {"similarity_matrix": "sha256:abc"}
+    assert data["seed"] == 99
+    assert data["extra"] == {"censoring": {"rate": 0.6}}
+    # Still stamped with the output-derived facts, which the provider cannot know.
+    assert "values_digest" in data["derived"]
+
+
+def test_an_input_change_changes_the_cache_key_of_a_written_block(tmp_path):
+    """The consequence of the above, stated as the property that was broken."""
+    store = BlockStore(str(tmp_path))
+    keys = []
+    for digest in ("sha256:aaa", "sha256:bbb"):
+        manifest = Manifest.build(
+            "block", "tmscore", provider="tmscore", inputs={"m": digest}, protids=["A", "B"]
+        )
+        store.write_block(
+            BlockResult(
+                spec=spec(), protids=["A", "B"], distances=np.zeros(1), manifest=manifest.to_dict()
+            )
+        )
+        keys.append(
+            json.loads((tmp_path / "blocks" / "tmscore" / "manifest.json").read_text())["cache_key"]
+        )
+    assert keys[0] != keys[1]
+
+
+def test_an_explicit_manifest_still_wins_over_the_results_own(tmp_path):
+    store = BlockStore(str(tmp_path))
+    explicit = Manifest.build("block", "tmscore", protids=["A", "B"], extra={"from": "caller"})
+    carried = Manifest.build("block", "tmscore", protids=["A", "B"], extra={"from": "provider"})
+    store.write_block(
+        BlockResult(
+            spec=spec(), protids=["A", "B"], distances=np.zeros(1), manifest=carried.to_dict()
+        ),
+        explicit,
+    )
+    data = json.loads((tmp_path / "blocks" / "tmscore" / "manifest.json").read_text())
+    assert data["extra"] == {"from": "caller"}
+
+
+def test_manifest_from_dict_round_trips_and_ignores_the_cache_key():
+    manifest = Manifest.build("block", "x", provider="p", inputs={"a": "1"}, protids=["A"])
+    restored = Manifest.from_dict(manifest.to_dict())
+    assert restored.cache_key == manifest.cache_key
+    assert restored.inputs == {"a": "1"}
+
+
+def test_manifest_from_dict_drops_unknown_keys():
+    """So a manifest written by a newer version stays readable."""
+    data = Manifest.build("block", "x", protids=["A"]).to_dict()
+    data["a_field_from_the_future"] = 1
+    assert Manifest.from_dict(data).id == "x"
+
+
 def test_freshness_is_content_based(tmp_path):
     store = BlockStore(str(tmp_path))
     manifest = Manifest.build("block", "tmscore", params={"v": 1}, protids=["A", "B"])

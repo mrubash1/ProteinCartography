@@ -206,12 +206,21 @@ class Manifest:
             fh.write("\n")
 
     @classmethod
+    def from_dict(cls, data: dict) -> Manifest:
+        """Rebuild from :meth:`to_dict` output, ignoring the derived cache key.
+
+        Unknown keys are dropped rather than raising, so a manifest written by a
+        newer version stays readable.
+        """
+        data = dict(data)
+        data.pop("cache_key", None)
+        known = set(cls.__dataclass_fields__)
+        return cls(**{k: v for k, v in data.items() if k in known})
+
+    @classmethod
     def read(cls, path) -> Manifest:
         with open(path) as fh:
-            data = json.load(fh)
-        data.pop("cache_key", None)
-        known = {f for f in cls.__dataclass_fields__}
-        return cls(**{k: v for k, v in data.items() if k in known})
+            return cls.from_dict(json.load(fh))
 
     def matches(self, other: Manifest) -> bool:
         return self.cache_key == other.cache_key

@@ -16,7 +16,7 @@ import argparse
 import json
 import sys
 
-import yaml
+from config_io import load_config
 from config_schema import from_legacy
 from spaces.manifest import Manifest
 from spaces.registry import BLOCK_GROUP, ProviderNotFoundError, ProviderUnavailableError
@@ -26,7 +26,12 @@ from spaces.store import BlockStore
 
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("-c", "--configfile", required=True, help="the pipeline config yaml")
+    parser.add_argument(
+        "-c",
+        "--configfile",
+        required=True,
+        help="the pipeline config, as JSON or YAML (see config_io.load_config)",
+    )
     parser.add_argument("-b", "--block-id", required=True, help="which block to compute")
     parser.add_argument("-o", "--output-dir", required=True, help="the run's output directory")
     parser.add_argument(
@@ -50,8 +55,7 @@ def _register_builtins() -> None:
 
 def main() -> int:
     args = parse_args()
-    with open(args.configfile) as fh:
-        config = from_legacy(yaml.safe_load(fh))
+    config = from_legacy(load_config(args.configfile))
 
     if args.block_id not in config.blocks:
         raise SystemExit(
