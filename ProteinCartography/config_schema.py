@@ -22,6 +22,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
 from enrichment import ENCODINGS
+from fusion import STRATEGY_PARAMS
 from spaces.base import (
     METRICS,
     NORMALIZATIONS,
@@ -470,6 +471,27 @@ class SpaceConfig:
         unknown = sorted(set(self.weights) - set(self.blocks))
         _require(f"{path}.weights", not unknown, f"weights for blocks not in this space: {unknown}")
         _require(f"{path}.reducers", bool(self.reducers), "at least one reducer is required")
+        self._validate_params(path)
+
+    def _validate_params(self, path: str) -> None:
+        """Reject a parameter the chosen strategy will not read.
+
+        `params` is a free-form mapping, so a misspelled `iteratons` would be
+        carried all the way into the manifest, where it would look configured
+        while the run used the default. That is the failure behind FOLLOWUPS #29
+        and #32 -- a value written down and honored by nothing -- and the cheap
+        place to catch it is here, at parse time, rather than four hours into a
+        run or never.
+        """
+        allowed = STRATEGY_PARAMS.get(self.strategy, frozenset())
+        unknown = sorted(set(self.params) - set(allowed))
+        if not unknown:
+            return
+        listed = ", ".join(sorted(allowed)) or "(none)"
+        raise ConfigError(
+            f"{path}.params: strategy {self.strategy!r} does not read {unknown}. "
+            f"Parameters it does read: {listed}."
+        )
 
     @classmethod
     def from_dict(cls, space_id: str, data: Mapping) -> SpaceConfig:

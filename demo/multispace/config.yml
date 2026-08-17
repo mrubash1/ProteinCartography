@@ -102,6 +102,59 @@ spaces:
     strategy: none
     reducers: [pca_umap]
 
+  # ----------------------------------------------------------------------------
+  # Fusion: the same two blocks, three ways.
+  #
+  # Co-registration is the default product and fusion is the explicitly invoked
+  # analysis (ADR 0001), so these three exist to be *compared with each other*
+  # rather than to be the answer. They are deliberately built from the same pair
+  # of blocks -- `tmscore`, which describes global shape, and `biophys`, which
+  # describes bulk chemistry -- so that the only thing separating their outputs
+  # is the strategy. What each one reports is in the manifest beside its
+  # embedding, under `extra.fusion`, and on stderr while it runs.
+  #
+  # ADR 0002's scale warning is not hypothetical on this cohort: `tmscore`'s
+  # profile has one column per protein and `biophys` has four, so `early` hands
+  # `tmscore` most of the geometry on column count alone. `late` normalizes each
+  # block to unit mean distance first and reports an even split. That
+  # disagreement is the point of running both.
+  #
+  # **What this cohort actually reports, measured rather than predicted.**
+  # `early` gives `tmscore` 73.3% of the variance against `biophys`'s 26.7`%`,
+  # which is 11 columns against 4 and nothing else -- it is over the 70%
+  # threshold, so both warnings fire. `late` reports a nominal 50/50, because
+  # that is what the weights say once each block is at unit mean distance, and a
+  # *realized* 34/66 the other way: `biophys`'s normalized distances are far more
+  # dispersed on these eleven proteins, so it puts more into the fused squared
+  # distance than its weight suggests. Two numbers that would be one number if
+  # ADR 0002's formula were the only one computed.
+  #
+  # `graph` needs both of its parameters set for a cohort this small. `k: 5`
+  # because eleven proteins cannot support the default neighborhood of twenty,
+  # and `iterations: 200` because the paper's recommended 10-20 does not
+  # converge here: measured, the last step still moves an affinity by 0.029
+  # after 20 iterations, 5.4e-07 after 100 and 2.8e-17 after 500. Convergence is
+  # monotone in both `k` and `iterations`, and small `k` on a small cohort is the
+  # slow corner. The warning would have said so either way -- that is what it is
+  # for -- but a demo should not ship a result its own output calls provisional.
+  fused_early:
+    blocks: [tmscore, biophys]
+    strategy: early
+    reducers: [pca_umap]
+
+  fused_late:
+    blocks: [tmscore, biophys]
+    strategy: late
+    reducers: [pca_umap]
+
+  fused_graph:
+    blocks: [tmscore, biophys]
+    strategy: graph
+    params:
+      k: 5
+      iterations: 200
+    reducers: [pca_umap]
+
 # Co-registration is the product, not a diagnostic. Four independent geometries
 # over one protein index are only worth building if you can ask where they
 # disagree, and these are the four the demo asks about. Each pair gets a
@@ -111,9 +164,14 @@ spaces:
 # `structure` is the reference, so the shared index inherits its protein order --
 # the order the similarity matrix was written in, which is the order every
 # legacy output already uses.
+#
+# `fused_late` is in the comparison and the other two fused spaces are not.
+# One fused space is enough to answer the question worth asking -- does fusing
+# move the map away from the block that dominates it -- and adding all three
+# would take the pair count from ten to twenty-one on an eleven-protein demo.
 coregistration:
   reference_space: structure
-  compare: [structure, local_structure, physicochemistry, families]
+  compare: [structure, local_structure, physicochemistry, families, fused_late]
   k: 5
 
 # What each cluster is made of, as a table rather than as stars on a violin

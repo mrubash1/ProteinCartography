@@ -66,6 +66,7 @@ from coregistration import pairwise_distances
 __all__ = [
     "DOMINANCE_THRESHOLD",
     "FUSION_STRATEGIES",
+    "STRATEGY_PARAMS",
     "BlockContribution",
     "FusionError",
     "FusionInput",
@@ -472,7 +473,7 @@ def fuse_early(inputs) -> FusionResult:
         for block, variance in zip(inputs, variances)
     )
 
-    warnings = []
+    warnings = list(_dominance_warning(contributions))
     if len(inputs) > 1:
         ranked = sorted(contributions, key=lambda c: -c.realized_share)
         top, bottom = ranked[0], ranked[-1]
