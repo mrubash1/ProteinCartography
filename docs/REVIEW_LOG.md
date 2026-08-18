@@ -2096,16 +2096,20 @@ same session as GE.2.
 Exercised through a throwaway PR inside the personal fork, which is what the
 `pull_request: branches: [main]` trigger requires. Results on the first run:
 
-| job | first run |
-|---|---|
-| `end-to-end-with-no-optional-dependencies` | **pass** |
-| `determinism` | **pass** |
-| `parity` (new, GE.1) | **fail — correctly** |
+| job | first run | after the fixes |
+|---|---|---|
+| `end-to-end-with-no-optional-dependencies` | **pass** | pass |
+| `determinism` | **pass** | pass |
+| `parity` (new, GE.1) | **fail — correctly** | **pass**, 38 tests in 482 s |
 
 The two pre-written jobs were green on their first execution, which is the
 opposite of what was expected and worth recording as such. The `parity` job
 failed because the GE.2 fix had broken four `slow` tests that no local loop
-runs. **It also exposed a hole in its own step**: `pytest … | tee` under
+runs. The second run is green on all three, and the parity job is not green by
+skipping: its log shows `baseline is 36a38c71072e…`, the merge-base resolved
+from an `upstream` remote the runner added itself, and `38 passed`.
+
+**Its first run also exposed a hole in its own step**: `pytest … | tee` under
 `micromamba-shell` does not inherit `pipefail`, so the pytest step reported
 success on a failing run and only the follow-up "must have run, not skipped"
 step caught it. The guard written to catch a *vacuous* pass caught a *masked
@@ -2174,7 +2178,8 @@ of them changed which files a default run produces.
 | **parity `--runslow`** | **38 passed, 0 differing files, 185 s** — and the default tree is now byte-identical *file for file*, not "byte-identical plus two new files" |
 | **mutation harness** | **exit 0**, no unexplained holes. Read it as narrowly as FOLLOWUPS #44 says: it covers six pipeline scripts and none of the modules this gate touched |
 | multispace demo | rebuilt from scratch, 36/36, seven manifests and shares on the three fused panels |
-| `.github/workflows/multispace.yml` | executed for the first time; see GE.13 |
+| `.github/workflows/multispace.yml` | executed for the first time, then green on all three jobs; see GE.13 |
+| every commit alone | **8/8 since `202497f`**, monotonic 1112 → 1126, lint clean and cluster DAG 16 at each |
 
 The `mutation_check` tree-restore check came back clean — only the gate's own
 documentation edits were outstanding, which is what it should say.
