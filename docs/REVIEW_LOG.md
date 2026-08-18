@@ -2190,6 +2190,52 @@ of them changed which files a default run produces.
 The `mutation_check` tree-restore check came back clean — only the gate's own
 documentation edits were outstanding, which is what it should say.
 
+### GE.17 — Disagreement mode has never worked, and only a browser could say so
+
+**Severity: should-fix. FIXED.**
+
+ADR 0005 item 4 names disagreement mode a headline feature — "colour by
+cross-space neighbourhood Jaccard. One click, not buried in a menu." Opening
+the page and pressing it: every point in all seven panels coloured `null`.
+
+The template averages each protein's Jaccard across the pairs it appears in,
+reading `row.per_protein` off each comparison row. The payload builds those rows
+from `coregistration/summary.tsv`, which is **aggregate only** — `jaccard_mean`,
+`jaccard_median`, `procrustes_disparity`, one row per pair. No row has ever
+carried `per_protein`, so the loop's `if (!row.per_protein) continue` fired ten
+times out of ten, the map came back empty, and `colourFor` returned `null` for
+every protein.
+
+The data existed the whole time, one file away:
+`coregistration/{space_a}__vs__{space_b}.tsv` carries `protid`,
+`neighborhood_jaccard`, `rank_correlation`, eleven rows per pair. The payload
+read the summary and never the details.
+
+Fixed by attaching `per_protein` in `_read_comparisons`. Measured after: 10 of 10
+rows carry it, 11 of 11 proteins get a value, nine distinct values spanning
+`1 − mean Jaccard` of 0.431 to 0.548, and the gradient renders — with the same
+protein the same colour in every panel, which is right, because disagreement is
+a property of the protein rather than of the space.
+
+**NaN is dropped rather than carried as zero.** A protein whose Jaccard is
+undefined for one pair must not be averaged in at 0.0, which would report
+*maximal* disagreement for a pair that was never measured — the substituted-zero
+defect this codebase already has once in `plot_cluster_distributions`
+(FOLLOWUPS #34).
+
+**This is the fourth defect of one family in the explorer**, after the readable
+mask reading `trustworthiness` from the wrong file, the aggregated-features path
+being wrong, and GE.5's `manifest.json`. Every one is a reader and a writer that
+are each individually reasonable and were never compared. The regression test
+that generalizes is the last of the four added here: render the template and
+assert that the key the JavaScript reads is the key the Python wrote. That is
+the manifest-versus-honored rule across a language boundary, where no type
+checker and no import graph can help.
+
+**And it is the answer to whether the browser check was worth doing.** Payload
+parsing, `node --check`, 1126 unit tests and a green CI run all passed over this.
+What found it was pressing the button.
+
 ### GE.16 — §0.8 E: the vestigial refs are not safe to delete, and the plan assumed they were
 
 **Severity: note. Deliberately NOT done.**
