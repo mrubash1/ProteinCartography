@@ -364,7 +364,7 @@ def _read_comparisons(path: str) -> list:
     it built was empty, and every protein coloured `null` -- so ADR 0005 item
     4's headline "one click, not buried in a menu" toggled a button that
     conveyed nothing. Found by opening the page, which is the only thing that
-    could find it (REVIEW_LOG GE.17).
+    could find it.
     """
     if not os.path.exists(path):
         return []
@@ -458,7 +458,7 @@ def _provenance(output_dir: str, config, spaces: list) -> dict:
         # `manifest_{reducer}.json`, not `manifest.json`. The store has never
         # written the latter, so this block silently produced `{}` and the
         # provenance footer rendered an empty list -- visible only by opening
-        # the file and looking, which is how it was found (REVIEW_LOG GE.5).
+        # the file and looking, which is how it was found.
         manifest = _space_manifest(
             os.path.join(output_dir, "spaces", space.space_id), space.embeddings
         )

@@ -174,7 +174,7 @@ space manifest does not restate the block-level fields; follow the digests.
 against an unmodified checkout of the commit this branch forked from
 `upstream/main`, run by the `parity` job in `.github/workflows/multispace.yml`.
 Until that job existed the test was real and unrun, which is a weaker thing than
-this sentence used to claim. (commit group 5, REVIEW_LOG GE.1)
+this sentence used to claim. (commit group 5)
 
 **7. Optional dependencies stay optional**, proven by a CI job that installs none
 of them. (ADR 0006)

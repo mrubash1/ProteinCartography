@@ -44,7 +44,7 @@ constrains the solution:
 > it is the `end-to-end-with-no-optional-dependencies` job in
 > `.github/workflows/multispace.yml`. Items marked **(deferred)** below arrive
 > with the phase that needs them and do not exist yet; a reviewer following one
-> of them today reaches nothing (REVIEW_LOG GE.6).
+> of them today reaches nothing.
 
 **1. Nothing heavy or licensed enters an existing env file.**
 `envs/cartography_tidy.yml` and `envs/analysis.yml` are untouched. New capability

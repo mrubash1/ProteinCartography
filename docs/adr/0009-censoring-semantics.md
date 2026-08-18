@@ -21,8 +21,7 @@ return [protid] + scores
 The docstring states the intent plainly (`:237`):
 *"This allows setting 0.0 as fillna(0.0) did with pandas."*
 
-**Measured on a production run of 2530 proteins** (independently derived twice;
-see `docs/REVIEW_LOG.md` Gate A):
+**Measured on a production run of 2530 proteins**, independently derived twice:
 
 | | |
 |---|---|
@@ -88,7 +87,7 @@ censored iff its token is exactly `"0.0"`. This works on **any matrix this
 pipeline has ever written, including archived output** — no Foldseek re-run and
 no `.m8` files needed.
 
-> This supersedes `PLAN.md`'s group 4 design, which proposed reconstructing the
+> This supersedes the original group 4 design, which proposed reconstructing the
 > mask from the raw `.m8` alignment files. That is unnecessary for output this
 > code path produced, and it is also the *wrong source* — the `.m8` files are
 > search-mode web-API hits, a different artifact from the local all-versus-all
@@ -124,7 +123,7 @@ symmetrization choice in the manifest (ADR 0001).
   practical win than it first appears.
 - The censoring rate becomes a reportable property of every map, which will
   sometimes be unflattering. That is the point.
-- Group 4's cost drops substantially versus the `PLAN.md` estimate, because
+- Group 4's cost drops substantially versus the original estimate, because
   string-form detection replaces `.m8` reconstruction.
 
 ## Alternatives rejected

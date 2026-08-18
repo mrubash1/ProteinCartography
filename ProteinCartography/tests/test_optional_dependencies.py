@@ -57,7 +57,7 @@ CORE_MODULES = [
     # `coregister` and `enrich_clusters` was inconsistent with the list's own
     # convention, and they are the modules whose import graph is most likely to
     # grow an optional dependency by accident -- each one is where a rule
-    # decides whether it can run at all (REVIEW_LOG GE.9).
+    # decides whether it can run at all.
     "compute_block",
     "reduce_space",
     "diagnose_space",

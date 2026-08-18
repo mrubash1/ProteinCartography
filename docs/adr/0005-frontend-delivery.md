@@ -68,7 +68,7 @@ client-side at realistic N. The mixer switches between **precomputed named
 presets**. A slider that silently snaps to the nearest preset is worse than
 labeled buttons, because it implies a continuity that does not exist. **None are
 shipped in this PR** — "six of them shipped" described an intended end state and
-was read, reasonably, as a description of the page (REVIEW_LOG GE.5).
+was read, reasonably, as a description of the page.
 
 **`plot_interactive.py` keeps working and keeps emitting its existing
 filenames.** The explorer is additive.

@@ -12,7 +12,7 @@ Two levels, deliberately:
   *wrong* map rather than no map.
 * `main()`, behind `importorskip("sklearn")`, because reducing needs a reducer.
   Group 6 twice shipped code whose unit tests passed and whose entry point had
-  never run (REVIEW_LOG G6.4, and `compute_block` before it), so the entry point
+  never run (`compute_block` did the same before it), so the entry point
   gets driven end to end here as well as through the demo.
 
 The sklearn-gated tests do not run in `cartography_tidy`. Run them somewhere

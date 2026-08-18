@@ -61,8 +61,7 @@ config-load time rather than after an expensive computation.
 | **`struclusters`** | **see below** |
 
 **`struclusters` is added to this list as a result of the Phase 0.5 claim B
-finding.** The evidence, verified twice and recorded in
-`docs/EXPLORATION.md` §4.2:
+finding.** The evidence, verified twice against the pinned Foldseek binary:
 
 - `foldseek clust` is handed `foldseek_out`, the **search alignment** database.
   It is never handed `foldseek_tmscore`. The two branches diverge and never
@@ -118,9 +117,9 @@ implies. **Consequences:**
 thousands of lines are not read, and the failure mode is a *confidently wrong
 scientific claim*, not a degraded plot.
 
-**Document the guidance in the README and let users decide.** Rejected for the
-same reason `PLAN.md` insists these invariants live in code: an invariant that
-is only documented is an invariant that is violated. The circularity is
+**Document the guidance in the README and let users decide.** Rejected on the
+rule this work applies throughout: an invariant that is only documented is an
+invariant that is violated. The circularity is
 non-obvious enough that a well-intentioned user will get it wrong.
 
 **Allow fusion with an explicit `i_know_what_im_doing: true` escape hatch.**

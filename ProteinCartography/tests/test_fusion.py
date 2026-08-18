@@ -13,7 +13,8 @@
    degenerate block. Each of those is a test rather than a sentence.
 
 The scipy-gated tests do not run in `cartography_tidy`, which has no scipy. Run
-them somewhere they do not skip -- see PLAN §0.4 and REVIEW_LOG G7.12.
+them somewhere they do not skip: a gated test can be written, be correct, and
+never execute.
 """
 
 from __future__ import annotations

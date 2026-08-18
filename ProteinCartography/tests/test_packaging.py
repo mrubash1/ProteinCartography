@@ -102,7 +102,7 @@ def test_every_subpackage_is_listed_in_setup_py():
     # directory name. The non-recursive version passed for the right reason
     # today and would have missed a second nested subpackage entirely; naming a
     # nested one by its leaf would have looked for `ProteinCartography.reducers`
-    # rather than `ProteinCartography.spaces.reducers` (REVIEW_LOG GE.10).
+    # rather than `ProteinCartography.spaces.reducers`.
     expected = set()
     for path in PACKAGE_DIRPATH.glob("**/__init__.py"):
         parts = path.parent.relative_to(PACKAGE_DIRPATH).parts
@@ -187,7 +187,7 @@ def test_dim_reduction_is_importable_as_a_package_module():
 
     Run in a subprocess from a directory outside the repository, because a test
     process started from the repo root already has both paths available and so
-    cannot tell the two import forms apart (REVIEW_LOG GE.11).
+    cannot tell the two import forms apart.
     """
     repo_root = PACKAGE_DIRPATH.parent
     completed = subprocess.run(

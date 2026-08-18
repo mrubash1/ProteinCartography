@@ -4,7 +4,7 @@
 Written because the pattern has now cost four defects: a passing unit suite is
 not evidence the entry point works. Group 8a's most recent was a signature
 change that nineteen passing tests could not see, because the caller lived in
-another file (REVIEW_LOG G8.6).
+another file.
 
 So these tests write real blocks through the real :class:`~spaces.store.BlockStore`,
 write a real config, and call :func:`diagnose_space.main` with real arguments.

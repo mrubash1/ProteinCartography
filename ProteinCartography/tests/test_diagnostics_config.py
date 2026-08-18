@@ -5,7 +5,7 @@ A value written into a config and honored by nothing is the most persistent
 defect shape in this work. `spec.metric` is recorded and never consulted
 (FOLLOWUPS #29); `spec.normalization` is recorded and applied nowhere (#32);
 every provider's `normalization` default was unreachable for three commit
-groups because its caller always passed the parameter (REVIEW_LOG G6.4). Each
+groups because its caller always passed the parameter. Each
 looked like evidence, which is why each survived so long.
 
 Group 8a's fix for the fusion half of this was a validator that enumerates the
@@ -84,7 +84,7 @@ def test_every_field_is_either_consumed_or_explained():
             f"DiagnosticsConfig.{name} is read by nothing outside config_schema.py. "
             "Either add the code that reads it, or add it to NOT_YET_CONSUMED with "
             "the Phase 5 item that will. A field honored by nothing is the defect "
-            "shape of FOLLOWUPS #29, #32 and REVIEW_LOG G6.4."
+            "shape of FOLLOWUPS #29 and #32."
         )
 
 
