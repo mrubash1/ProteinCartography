@@ -376,3 +376,43 @@ def test_a_cohort_too_small_for_any_neighborhood_is_refused(n):
     high = np.zeros((n, n))
     with pytest.raises(EmbeddingDiagnosticError, match="no valid neighborhood size"):
         faithfulness("s", "pca_umap", high, high, [f"P{i}" for i in range(n)], k=1)
+
+
+# --- Gate D: non-finite input --------------------------------------------------
+
+
+def test_a_nan_distance_is_refused_rather_than_ranked():
+    """Gate D produced a trustworthiness of 0.489 from one NaN cell.
+
+    `argsort` sorts NaN last rather than raising, so one non-finite feature
+    makes one protein's distances all NaN, that protein sorts last for
+    everybody, and the statistic returns a plausible number for a neighbor list
+    that is an artifact of the sort. 0.489 is indistinguishable from "this is a
+    mediocre map".
+    """
+    from diagnostics.embedding import EmbeddingDiagnosticError, faithfulness, require_finite
+
+    high = np.abs(np.random.RandomState(0).normal(size=(20, 20)))
+    high = (high + high.T) / 2
+    np.fill_diagonal(high, 0.0)
+    low = high.copy()
+    high[3, 7] = np.nan
+    with pytest.raises(EmbeddingDiagnosticError, match="NaN or infinite"):
+        faithfulness("s", "pca", high, low, [f"P{i}" for i in range(20)], k=4)
+    assert require_finite(low, "fine") is not None
+
+
+def test_an_infinite_distance_is_refused_too():
+    from diagnostics.embedding import EmbeddingDiagnosticError, require_finite
+
+    matrix = np.zeros((4, 4))
+    matrix[1, 2] = np.inf
+    with pytest.raises(EmbeddingDiagnosticError, match="NaN or infinite"):
+        require_finite(matrix, "test")
+
+
+def test_require_finite_passes_a_clean_matrix_through_unchanged():
+    from diagnostics.embedding import require_finite
+
+    matrix = np.arange(16, dtype=np.float64).reshape(4, 4)
+    assert np.array_equal(require_finite(matrix, "test"), matrix)

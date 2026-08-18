@@ -166,6 +166,9 @@ def silhouette(distances: np.ndarray, labels) -> np.ndarray:
         raise PartitionError(
             f"distances must be square over the {n} labeled proteins, got {distances.shape}"
         )
+    from diagnostics.embedding import require_finite
+
+    require_finite(distances, "the distances the silhouette is computed over")
     n_clusters = int(codes.max()) + 1
     if n_clusters < 2:
         raise PartitionError(

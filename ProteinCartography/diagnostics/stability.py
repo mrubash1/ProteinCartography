@@ -51,7 +51,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
-from diagnostics.embedding import neighbor_ordering
+from diagnostics.embedding import neighbor_ordering, require_finite
 
 __all__ = [
     "COIN_FLIP_THRESHOLD",
@@ -126,6 +126,18 @@ def jaccard_rows(left: np.ndarray, right: np.ndarray) -> np.ndarray:
     k = left.shape[1]
     if k == 0:
         raise StabilityError("cannot take the Jaccard of empty neighbor sets")
+    # The 2k - shared identity assumes each row is a *set*. A repeated index
+    # inside one row is counted as an intersection with itself and the result
+    # comes back too high -- [1,1,2] against [1,2,3] returns 1.0 where the sets
+    # give 0.667. Every caller here passes `neighbor_ordering` output, which
+    # cannot repeat, but this is exported and the failure is silent.
+    if (np.diff(np.sort(left, axis=1), axis=1) == 0).any() or (
+        np.diff(np.sort(right, axis=1), axis=1) == 0
+    ).any():
+        raise StabilityError(
+            "neighbor rows must hold distinct indices; a repeated index makes the "
+            "2k - shared identity overcount and the Jaccard comes back too high."
+        )
     together = np.sort(np.concatenate([left, right], axis=1), axis=1)
     shared = (together[:, 1:] == together[:, :-1]).sum(axis=1)
     return shared / (2 * k - shared)
@@ -313,6 +325,7 @@ def neighborhood_stability(
         raise StabilityError(
             f"distances must be square over the {n} protids, got shape {distances.shape}"
         )
+    require_finite(distances, f"space {space_id!r}")
     if not 0 < subsample_fraction <= 1:
         raise StabilityError(f"subsample_fraction must be in (0, 1], got {subsample_fraction}")
     if noise < 0:

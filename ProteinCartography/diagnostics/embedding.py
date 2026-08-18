@@ -58,6 +58,7 @@ __all__ = [
     "largest_valid_k",
     "continuity",
     "neighbor_ordering",
+    "require_finite",
     "faithfulness",
     "trustworthiness",
 ]
@@ -78,6 +79,34 @@ DISTORTED_THRESHOLD = 0.70
 
 class EmbeddingDiagnosticError(ValueError):
     """Raised when the two spaces cannot be compared at all."""
+
+
+def require_finite(distances: np.ndarray, what: str) -> np.ndarray:
+    """Refuse a distance matrix with a NaN or an infinity in it.
+
+    Every diagnostic in this package ranks neighbors with ``argsort``, which
+    sorts NaN to the *end* rather than raising. One NaN cell in a feature matrix
+    therefore makes one protein's distances all NaN, that protein sorts last for
+    everybody, and the statistic returns a finite, plausible number computed over
+    a neighbor list that is an artifact of the sort. Gate D produced a
+    trustworthiness of 0.489 that way -- indistinguishable from "this is a
+    mediocre map" and meaning nothing at all.
+
+    Checked here rather than in each caller so that the three diagnostics that
+    consume distances cannot disagree about it.
+    """
+    distances = np.asarray(distances, dtype=np.float64)
+    if not np.isfinite(distances).all():
+        bad = int((~np.isfinite(distances)).sum())
+        rows = np.flatnonzero(~np.isfinite(distances).all(axis=1))
+        raise EmbeddingDiagnosticError(
+            f"{what}: {bad} of {distances.size} distances are NaN or infinite, "
+            f"affecting {rows.size} protein(s) starting at position {rows[:5].tolist()}. "
+            "Ranking them would sort the missing ones last and return a plausible "
+            "number for a neighbor list that is an artifact of the sort. Find the "
+            "block whose features are not finite."
+        )
+    return distances
 
 
 def neighbor_ordering(distances: np.ndarray) -> np.ndarray:
@@ -115,6 +144,8 @@ def _check(high: np.ndarray, low: np.ndarray, k: int) -> int:
             f"{high.shape} and {low.shape}. Align the two to a shared protein "
             "index before comparing them."
         )
+    require_finite(high, "the space being represented")
+    require_finite(low, "the 2-D layout")
     n = high.shape[0]
     # Above this the normalizing constant 2n - 3k - 1 is zero or negative and
     # the statistic is not defined. It is a real ceiling, not a safety margin:

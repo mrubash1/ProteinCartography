@@ -77,6 +77,7 @@ __all__ = [
     "fuse_late",
     "fuse_none",
     "standardize",
+    "NOISE_FLOOR",
     "unit_mean_distance",
 ]
 
@@ -301,11 +302,18 @@ class FusionResult:
 # ---------------------------------------------------------------------------
 
 
+#: A block's mean pairwise distance must exceed this fraction of the block's own
+#: largest absolute value, or it is treated as carrying no geometry. Set by what
+#: float32 can represent rather than by float64: blocks are stored as float32
+#: (ADR 0004), whose epsilon is 1.2e-07. See :func:`unit_mean_distance`.
+NOISE_FLOOR = 1e-6
+
+
 def _off_diagonal(matrix: np.ndarray) -> np.ndarray:
     return matrix[~np.eye(matrix.shape[0], dtype=bool)]
 
 
-def unit_mean_distance(distances: np.ndarray, block_id: str = "?") -> np.ndarray:
+def unit_mean_distance(distances: np.ndarray, block_id: str = "?", scale=None) -> np.ndarray:
     """Scale a distance matrix so its mean off-diagonal entry is exactly 1.
 
     The whole of ADR 0002's normalization contract, in one function. The
@@ -316,6 +324,23 @@ def unit_mean_distance(distances: np.ndarray, block_id: str = "?") -> np.ndarray
     one protein, or a provider that returned a constant for all of them --
     carries no geometry at all, and the alternative to this error is a matrix of
     NaN coordinates that reaches a plot.
+
+    **Zero is not the only value that has to be caught, and testing for it alone
+    is not enough.** ``pairwise_distances`` uses the Gram identity for the memory
+    reason its docstring gives, and that identity loses about ``sqrt(eps)``
+    relative precision near zero: a block whose rows are *bitwise identical* can
+    come back with a mean distance of 4e-08 rather than 0. Dividing by that
+    amplifies pure cancellation noise into a unit-mean geometry, and Gate D
+    caught it doing exactly that -- a constant block taking a **46.7%**
+    contribution share of a fused map. Whether it happened depended on the
+    magnitude of the block's values, so the N=240 fixture raised and an N=60 one
+    did not.
+
+    So the caller passes ``scale``, the largest absolute value in the block, and
+    anything below ``NOISE_FLOOR * scale`` is refused. The threshold is not
+    arbitrary: blocks are stored as float32 (ADR 0004), whose epsilon is 1.2e-07,
+    so variation below roughly 1e-06 of a block's own magnitude is not
+    representable on disk and cannot be geometry whatever the arithmetic says.
     """
     distances = np.asarray(distances, dtype=np.float64)
     if distances.shape[0] < 2:
@@ -323,13 +348,23 @@ def unit_mean_distance(distances: np.ndarray, block_id: str = "?") -> np.ndarray
             f"block {block_id!r}: fusion needs at least two proteins, got " f"{distances.shape[0]}."
         )
     mean = float(_off_diagonal(distances).mean())
-    if mean <= 0.0:
+    floor = NOISE_FLOOR * float(scale) if scale else 0.0
+    if mean <= floor:
+        detail = (
+            "every pairwise distance is zero"
+            if mean <= 0.0
+            else (
+                f"its mean pairwise distance is {mean:.3g}, which is below "
+                f"{NOISE_FLOOR:g} of the block's own scale ({float(scale):.3g}). That is "
+                "cancellation noise from the distance computation, not geometry -- and "
+                "below what float32 storage can represent in the first place (ADR 0004)"
+            )
+        )
         raise FusionError(
-            f"block {block_id!r}: every pairwise distance is zero, so its mean "
-            "distance is zero and the block cannot be normalized to unit mean "
-            "distance (ADR 0002). Every protein has identical values in this "
-            "block, which means it carries no geometry -- drop it from the space, "
-            "or find out why the provider returned a constant."
+            f"block {block_id!r}: {detail}, so the block cannot be normalized to unit "
+            "mean distance (ADR 0002). Every protein has effectively identical values "
+            "in this block, which means it carries no geometry -- drop it from the "
+            "space, or find out why the provider returned a constant."
         )
     return distances / mean
 
@@ -515,7 +550,11 @@ def _normalized_distances(inputs) -> tuple:
     for block in inputs:
         distances = pairwise_distances(block.values)
         means.append(float(_off_diagonal(distances).mean()))
-        normalized.append(unit_mean_distance(distances, block.block_id))
+        # The block's own magnitude, so `unit_mean_distance` can tell a real
+        # small distance from cancellation noise. See its docstring: without
+        # this a constant block took 46.7% of a fused map.
+        scale = float(np.abs(np.asarray(block.values, dtype=np.float64)).max())
+        normalized.append(unit_mean_distance(distances, block.block_id, scale=scale))
     return normalized, means
 
 
