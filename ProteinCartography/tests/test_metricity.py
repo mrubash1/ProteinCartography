@@ -148,13 +148,16 @@ def test_an_unknown_denominator_is_refused(non_euclidean):
 
 
 def test_it_reports_and_does_not_gate(non_euclidean):
-    """No threshold is set until a second protein family exists to set it from.
-    A verdict field that quietly acquired a value would be a threshold derived
-    from one family, which is the mistake this whole diagnostic exists to avoid
-    repeating."""
+    """A verdict field that quietly acquired a value would be a threshold
+    derived from one cohort, which is the mistake this diagnostic exists to
+    avoid repeating. The note has to say *why* it refuses, because the first
+    reason given -- "no second family yet" -- turned out to be the wrong one:
+    the archive had a second family all along, and the statistic still moves
+    more between two runs of one query than it does between families."""
     report = metricity_report(non_euclidean)
     assert report["verdict"] is None
-    assert "second protein family" in report["verdict_note"]
+    assert "property of the cohort" in report["verdict_note"]
+    assert "#49" in report["verdict_note"]
 
 
 def test_the_cohort_that_produced_the_number_travels_with_it(non_euclidean):

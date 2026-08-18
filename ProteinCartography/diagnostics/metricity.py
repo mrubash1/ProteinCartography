@@ -14,11 +14,18 @@ the positive mass -- so roughly a third of the structure in that matrix is not
 embeddable in any number of Euclidean dimensions, and every reducer that
 consumes it is discarding it. This module reports that number.
 
-**It reports; it does not gate.** The threshold at which the fraction should
-worry a reader is not knowable from one protein family, and this repository has
-one (see ``docs/FOLLOWUPS.md`` #49). Emitting the number without a verdict is
-deliberate, and matches how ``docs/INTERPRETING.md`` handles the other
-statistics whose thresholds are not yet earned.
+**It reports; it does not gate.** Measured across four dense cohorts the
+fraction spans 36% to 65% -- and the widest gap is between two runs of the *same
+query*, not between families. Cohort composition moves it further than family
+identity does, so a threshold fitted to any one cohort would be a constant
+derived from that cohort (see ``docs/FOLLOWUPS.md`` #49). Emitting the number
+without a verdict is deliberate, and matches how ``docs/INTERPRETING.md``
+handles the other statistics whose thresholds are not yet earned.
+
+What *is* robust is the comparison to zero: a genuinely Euclidean distance
+matrix double-centres to a positive semi-definite Gram matrix and returns under
+1e-9 here. Every real cohort measured is many orders of magnitude away from
+that, so "``1 - TM`` is not Euclidean" is safe to say and "it is 44.6%" is not.
 
 **Every number here is meaningless without its convention, so the convention
 travels with it.** "Negative eigenvalue mass" has appeared in this project's
@@ -159,7 +166,9 @@ def metricity_report(
         },
         "verdict": None,
         "verdict_note": (
-            "reported, not gated: no threshold is set until a second protein family "
-            "exists to set it from. See docs/FOLLOWUPS.md #49."
+            "reported, not gated: across the cohorts measured this spans 36-65%, with "
+            "the widest gap between two runs of one query, so the value is a property "
+            "of the cohort rather than of the metric. Compare it to zero, not to "
+            "another cohort's figure. See docs/FOLLOWUPS.md #49 and #51."
         ),
     }
