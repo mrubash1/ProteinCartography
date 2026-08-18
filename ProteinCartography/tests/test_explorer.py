@@ -292,3 +292,119 @@ def test_the_per_protein_mask_reaches_the_payload(built):
     space = built.spaces[0]
     assert space.readable[0] is False
     assert all(space.readable[1:])
+
+
+# ==========================================================================
+# GE.5 -- the provenance footer read a filename the store never writes, and
+# ADR 0002's "rendered on the panel" was the one verb that was not true
+# ==========================================================================
+
+
+def _write_space_manifest(directory, reducer, contributions=None):
+    """A manifest under the name the store actually uses."""
+    extra = {"fusion": {"contributions": contributions}} if contributions else {}
+    (directory / f"manifest_{reducer}.json").write_text(
+        json.dumps(
+            {
+                "cache_key": "deadbeef",
+                "provider": "fusion",
+                "params": {"strategy": "early"},
+                "versions": {"numpy": "1.23.5"},
+                "extra": extra,
+            }
+        )
+    )
+
+
+def test_the_provenance_footer_finds_a_manifest_under_its_real_name(tmp_path):
+    """`manifest.json` is never written; `manifest_{reducer}.json` is.
+
+    The footer collected `{}` for every space and rendered an empty list, and
+    nothing failed -- the only symptom was a blank section in a 3.7 MB file.
+    """
+    from explorer.payload import _space_manifest
+
+    _write_space_manifest(tmp_path, "pca_umap")
+    assert _space_manifest(str(tmp_path), ["pca_umap"])["cache_key"] == "deadbeef"
+    # the name the code used to look for must not start working by accident
+    assert not (tmp_path / "manifest.json").exists()
+
+
+def test_a_manifest_under_the_old_name_is_not_what_is_read(tmp_path):
+    from explorer.payload import _space_manifest
+
+    (tmp_path / "manifest.json").write_text(json.dumps({"cache_key": "wrong"}))
+    assert _space_manifest(str(tmp_path), ["pca_umap"]) == {}
+
+
+def test_the_diagnostics_manifest_is_the_fallback(tmp_path):
+    from explorer.payload import _space_manifest
+
+    _write_space_manifest(tmp_path, "diagnostics")
+    assert _space_manifest(str(tmp_path), ["pca_umap"])["cache_key"] == "deadbeef"
+
+
+def test_a_fused_space_carries_both_the_asked_and_the_realized_share(tmp_path):
+    """ADR 0002 requires the share to be displayed, not merely recorded.
+
+    Both numbers, because `early` concatenates features: an even request over
+    blocks of unequal width realizes unevenly, and the demo's `fused_early`
+    asks 50/50 and lands at 73/27.
+    """
+    from explorer.payload import _contributions
+
+    _write_space_manifest(
+        tmp_path,
+        "pca_umap",
+        [
+            {"block_id": "tmscore", "weight": 1.0, "share": 0.5, "realized_share": 0.733},
+            {"block_id": "biophys", "weight": 1.0, "share": 0.5, "realized_share": 0.267},
+        ],
+    )
+    rows = _contributions(str(tmp_path), ["pca_umap"])
+    assert [r["block_id"] for r in rows] == ["tmscore", "biophys"]
+    assert [r["share"] for r in rows] == [0.5, 0.5]
+    assert [r["realized_share"] for r in rows] == [0.733, 0.267]
+
+
+def test_a_single_block_space_apportions_nothing(tmp_path):
+    """ "tmscore 100%" on every unfused panel is noise, not provenance."""
+    from explorer.payload import _contributions
+
+    _write_space_manifest(
+        tmp_path,
+        "pca_umap",
+        [{"block_id": "tmscore", "weight": 1.0, "share": 1.0, "realized_share": 1.0}],
+    )
+    assert _contributions(str(tmp_path), ["pca_umap"]) == []
+
+
+def test_the_rendered_page_both_carries_and_draws_the_share():
+    """The last verb in ADR 0002. Carrying the number is not displaying it.
+
+    Two assertions, because they fail for different reasons: the payload can be
+    right while the panel ignores it, which is the state this fixed.
+    """
+    from explorer.template import render
+
+    html = render(
+        {
+            "spaces": [
+                {
+                    "space_id": "fused",
+                    "contributions": [
+                        {"block_id": "tmscore", "share": 0.5, "realized_share": 0.733},
+                        {"block_id": "biophys", "share": 0.5, "realized_share": 0.267},
+                    ],
+                }
+            ]
+        },
+        plotly_js="",
+        title="t",
+    )
+    assert '"realized_share": 0.733' in html, "the share did not reach the page"
+    assert "space.contributions" in html, (
+        "the panel must read `space.contributions`; ADR 0002 requires the share "
+        "to be visible on a fused map, and recording it was already true."
+    )
+    assert 'className = "shares"' in html

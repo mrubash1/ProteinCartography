@@ -73,6 +73,9 @@ button.on { background: var(--ink); color: #fff; border-color: var(--ink); }
 .verdict.level-caution { color: var(--caution); background: #fdf7e8; }
 .verdict.level-unreadable { color: var(--bad); background: #fdf1f0; font-weight: 600; }
 .verdict ul { margin: 5px 0 0; padding-left: 17px; font-weight: 400; }
+.shares { padding: 6px 12px; font-size: 12px; color: #333;
+  border-bottom: 1px solid var(--line); background: #fbfbfc; }
+.shares .drift { color: var(--caution); }
 .plot { height: 330px; }
 table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
 th, td { text-align: left; padding: 5px 9px; border-bottom: 1px solid var(--line); }
@@ -314,7 +317,27 @@ function draw() {
       const plot = document.createElement("div");
       plot.className = "plot";
       plot.id = `plot-${space.space_id}`;
-      panel.append(title, verdict, plot);
+      panel.append(title, verdict);
+      // ADR 0002: a fused map does not render without its contribution shares
+      // visible. Both numbers, because they differ -- `early` concatenates
+      // features, so an even request over blocks of unequal width realizes
+      // unevenly, and showing only the request would misreport the map.
+      if (space.contributions && space.contributions.length) {
+        const shares = document.createElement("div");
+        shares.className = "shares";
+        shares.innerHTML =
+          "contribution: " +
+          space.contributions
+            .map((c) => {
+              const asked = c.share == null ? "?" : (100 * c.share).toFixed(0);
+              const got = c.realized_share == null ? "?" : (100 * c.realized_share).toFixed(0);
+              const drift = asked !== got ? ` <span class="drift">(asked ${asked}%)</span>` : "";
+              return `<b>${escapeHtml(String(c.block_id))}</b> ${got}%${drift}`;
+            })
+            .join(" · ");
+        panel.append(shares);
+      }
+      panel.append(plot);
       grid.append(panel);
     });
     grid.dataset.built = "1";
