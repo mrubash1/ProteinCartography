@@ -50,7 +50,10 @@ ProteinCartography/
 ├── diagnostics/
 │   ├── censoring.py        # rate, asymmetry, cross-cluster retention — ADR 0009
 │   ├── redundancy.py       # do two blocks say the same thing — ADR 0014
-│   └── embedding.py        # trustworthiness / continuity, per protein — ADR 0014
+│   ├── embedding.py        # trustworthiness / continuity, per protein — ADR 0014
+│   ├── stability.py        # per-protein kNN Jaccard under resampling — ADR 0015
+│   └── partition.py        # ARI, silhouette, resolution sweep, controls — ADR 0015
+├── clustering.py           # scanpy Leiden per space, the pipeline's own — ADR 0015
 ├── coregistration.py       # neighborhood Jaccard, Spearman, Procrustes — ADR 0011
 ├── enrichment.py           # cluster-level enrichment statistics — ADR 0012
 └── explorer/               # single-file HTML generator (ADR 0005) — not yet built
@@ -76,7 +79,8 @@ OUTPUT_DIR/
 │   ├── distance.npy
 │   ├── embedding_{reducer}.tsv        # protid, dim_1, dim_2[, dim_3]
 │   ├── neighbors_k{K}.parquet
-│   ├── clusters_{algo}_r{res}.tsv
+│   ├── clusters.tsv                   # this space's own Leiden (ADR 0015)
+│   ├── faithfulness_{reducer}.tsv
 │   ├── diagnostics.json
 │   └── manifest.json
 ├── crossspace/
@@ -163,6 +167,21 @@ read by exactly the people who already suspected the problem. Trustworthiness
 and continuity are reported separately and never averaged; block redundancy is
 reported beside the contribution shares, because a 50/50 share is correct and
 uninformative for two copies of the same block. (ADR 0014)
+
+**9. A diagnostic says when it could not discriminate.** Reporting a number is
+not the same as reporting evidence, and the failure that matters here is not a
+wrong value but a confident one computed where nothing could have come out
+differently. `stability` carries `informative`, false when `k` is at least half
+the candidates a replicate offers — at the demo's eleven proteins every
+protein's k nearest are all the others and the Jaccard is 1.0 by construction. A
+requested negative control that could not run is named under `skipped` with its
+reason rather than omitted, because a shorter list reads as "ran and found
+nothing". (ADR 0015)
+
+**10. A partition-dependent number says which partition it is about.** A space
+clusters in its own right where it can, and where it cannot the legacy
+structural partition is used and the report says so. The same move ADR 0012 §1
+makes for the enrichment table. (ADR 0015)
 
 ---
 

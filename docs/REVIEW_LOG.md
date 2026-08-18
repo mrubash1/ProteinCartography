@@ -1491,6 +1491,190 @@ can actually occur.
   and no other pre-existing file. Everything else it touches is a file this work
   created.
 
+## Group 8c — neighborhood stability, the cluster stability tree, negative controls
+
+The three of Phase 5's nine that needed a partition, plus the partition itself.
+
+### G8c.1 — The clustering decision, and the argument that actually settled it
+
+The question §0.5 posed was numpy-only against optional-scanpy, with two data
+points pulling opposite ways: group 8a hand-rolled SNF and lost its reference
+implementation (G8.2), while group 8b's exact agreement with scikit-learn was
+the strongest evidence in that group.
+
+Both turned out to be secondary, and the dependency framing was wrong on the
+facts. **`scanpy=1.9.3` and `leidenalg=0.9.1` are already pinned in
+`envs/analysis.yml`**, already run in the default 16-rule DAG, and
+`rule diagnose_space` already declares that environment. There was no dependency
+to add. ADR 0006 governs optional and licensed dependencies and this is neither.
+
+What settles it is a meaning argument, not a cost one: **a diagnostic about a
+partition must be about the partition that ships.** A hand-rolled clusterer
+makes the resolution sweep sweep an algorithm that never produces
+`leiden_features.tsv`. Approximately the pipeline's clustering is worse than no
+clustering, because the numbers would look comparable and would not be.
+
+Checking the environments before deciding also corrected `CLAUDE.md`:
+`.snakemake/conda/21cb44d…` was described as "pytest + scipy + sklearn + umap +
+pandas", and it also carries **scanpy 1.9.3 and leidenalg 0.9.1 at exactly the
+pinned versions**. The claim that a scanpy-backed clustering would be untestable
+here was false, and it would have been the strongest argument against it.
+
+### G8c.2 — What replaces a reference implementation
+
+Hand-writing buys something to check against. Calling scanpy means the reference
+*is* the implementation. What replaces the cross-implementation check is a
+cross-**path** one: `clustering.leiden_partition` and
+`leiden_clustering.scanpy_leiden_cluster` must return **identical labels** for
+the same matrix — not a high ARI, identical — verified at N=250 and again above
+500 where scanpy's graph construction changes. They do.
+
+`clustering._clamped` duplicates the legacy clamping rather than importing it,
+because importing would pull scanpy in at module scope and break the bare
+environment. That agreement test is the only thing keeping the duplication
+honest, and it is stated as such in both files.
+
+### G8c.3 — The fixture inverted the answer before the statistic existed
+
+Fourth group running, and this one falsified the design rather than a docstring.
+
+The first `stability_cohort` separated its three groups by 100x so they could
+not interfere. The noise level is a fraction of the median pairwise distance;
+with separated groups that median is a *between-group* distance, and the
+resulting sigma was twenty times the tight clusters' radius. **The tight,
+well-separated group scored 0.298 and the structureless one 0.443** — the
+diagnostic read as backwards. Nothing was wrong with it. The fixture had
+confounded local structure with global scale.
+
+The rebuild puts all three bands at one distance scale and separates them purely
+by the size of the rank-k gap. Two further construction facts were then measured
+rather than assumed: cluster centers are rejection-sampled at least 2.0 apart,
+because i.i.d. draws are usually well separated and occasionally not; and the
+blob radius is 0.01 rather than 0.04, because what bounds the rank-k gap is not
+the spacing between clusters but the nearest `diffuse` point, which can land
+anywhere. At 0.04 the closest interloper left a gap ratio of 5.9 against 8.6
+elsewhere.
+
+### G8c.4 — A band pinned by a closed form rather than by a measurement
+
+The `tied` band is forty mutually equidistant proteins. `argsort` resolves exact
+ties by index, deterministically, so a diagnostic that perturbs nothing calls
+them perfectly stable — reporting confidence in an arbitrary answer, which is
+the failure mode the whole fixture exists against.
+
+`chance_jaccard(pool, k)` predicts what a neighborhood carrying no information
+must score: two independent uniform k-subsets of a pool of p share `k^2/p`
+elements in expectation, giving a Jaccard of `k^2/p / (2k - k^2/p)`. At the
+defaults it predicts **0.1923** and the statistic measures **0.1968**. The band
+is also *flat in the noise level* — any sigma above zero randomizes an exact tie
+completely — where `diffuse` decays smoothly. Both are asserted.
+
+The complementary invariant is that **resampling alone scores exactly 1.0 for
+every protein**, bitwise. The reference neighbor set is recomputed inside each
+subsample, so both sides lose the same proteins and promote the same
+replacement. That makes the subsample a genuine null and every departure
+attributable to the noise term.
+
+### G8c.5 — The demo found two defects that 1061 unit tests could not
+
+Sixth sighting of the rule, and the first where the statistic was not wrong but
+**vacuous**.
+
+At eleven proteins `k` clamps to 8 and an 80% subsample holds 9, so every
+protein's eight nearest are *all* the others and the Jaccard is 1.0 whatever the
+noise. **All seven spaces reported a perfect 1.000 under a sigma half the size
+of the data.** Clamping correctly is not enough; clamping silently is its own
+defect. `NeighborhoodStability` gained `informative` and a warning naming the
+fraction, and the demo now reports `informative: false` for every space.
+
+The second: `fused_early`'s random-distance control **silently vanished**. Its
+random matrix clusters into one group, which has no silhouette, so that space's
+report carried a shorter control list than its six neighbours. A reader
+comparing them cannot tell "ran and found nothing" from "never ran", and the
+shorter list reads as the former. Requested controls that could not be produced
+are now named with their reason under `skipped`.
+
+FOLLOWUPS #43 records that trustworthiness has the same exposure — the demo's
+`k` is 6 of 11, over half the cohort, reported without qualification — and that
+it was left alone deliberately, because changing a shipped diagnostic is a
+different decision from qualifying a new one.
+
+### G8c.6 — The consumption check was grepping, and prose kept tripping it
+
+`test_diagnostics_config.py`'s `_consumers` searched committed files for the
+literal string `diagnostics.<field>`. It fired **twice in this group on prose**:
+once on a docstring telling the user which config key to raise, once on a
+comment naming the keys a validator enumerates. Both were false positives, and
+the pressure they create is to word documentation around the test — exactly
+backwards, since the fields that most need explaining are the ones the list
+covers.
+
+It now parses: an `Attribute` node named for the field whose own value is an
+`Attribute` named `diagnostics`. Narrower on purpose — it cannot see
+`getattr(config.diagnostics, name)` — and still catches the case that has
+recurred three times, which is a field no code anywhere reaches.
+
+The fix also required spelling `config.diagnostics.x` at each use site in
+`diagnose_space` rather than aliasing it to a local, which is clearer anyway:
+the config source is visible where the value is read.
+
+`NOT_YET_CONSUMED` is now **empty**, which discharges FOLLOWUPS #36. Both tests
+stay: the first fails if a future field arrives dead, the second if the list is
+ever refilled with something that is not.
+
+### G8c.7 — FOLLOWUPS #41 closed, and the fallback made explicit
+
+Cross-cluster edge retention was computed for every space from the `structure`
+space's Leiden — the right partition for one space and the wrong one for the
+other six. Spaces now cluster in their own right and the retention uses their
+own partition, written to `spaces/{space_id}/clusters.tsv`.
+
+The fallback is where the care went. A space that cannot be clustered still uses
+the legacy partition, and the report records `partition.source` plus a `caveat`
+saying that every partition-dependent number below describes the structural
+clustering applied to this space's distances rather than this space's own
+grouping. ADR 0012 §1 makes the same move for enrichment.
+
+`clusters.tsv` is deliberately **not** a declared snakemake output. Whether it
+exists depends on scanpy being importable and on the space having three
+proteins, and a rule that promises a file it cannot always write fails the run
+instead of degrading it. The three DAGs are unchanged at 16 / 25 / 35, and this
+group adds no rule.
+
+### G8c.8 — A reproducibility limit the demo exposed and did not cause
+
+The same space returns **different two-cluster memberships in two conda
+environments** that agree on scanpy 1.9.3, leidenalg 0.9.1, igraph 0.11.9, numpy
+1.23.5 and scikit-learn 1.2.2, and differ only in **scipy 1.13.1 against
+1.15.2**. `sc.tl.pca(svd_solver="arpack")` goes through scipy's sparse
+eigensolver; at N=11 with `n_neighbors` clamped to 10 of 11 the graph is nearly
+complete and Leiden's optimum is degenerate, so a tiny change in the principal
+components decides the tie.
+
+**At N=250 the two environments agree exactly**, and both agree with the legacy
+path. So this is small-N degeneracy rather than a general instability — but it
+applies to the pre-existing `leiden_clustering` rule identically, and
+`envs/analysis.yml` does not pin scipy at all. Same drift shape ADR 0006's
+context section describes for matplotlib and setuptools. FOLLOWUPS #42.
+
+Worth stating what this means for the parity test: it would not catch a scipy
+upgrade changing `leiden_features.tsv`, because both sides of the comparison
+run in the same environment. That is a fifth cause to add to §0.1's list of why
+a mutation can survive, and the first that is about the *environment* rather
+than the fixture.
+
+### G8c.9 — Where the bare environment earned its keep
+
+`test_optional_dependencies.py` gained `clustering`, `diagnostics.stability` and
+`diagnostics.partition` — and `diagnostics.embedding` and `.redundancy`, which
+group 8b added and never listed.
+
+Running the new tests there immediately found a real ordering defect: argument
+validation and the below-three-proteins short circuit sat *behind* the
+availability check, so a two-protein space needed scanpy installed to be told it
+has one cluster. That is an optional dependency made load-bearing for an answer
+that does not depend on it. Both now come first.
+
 ## Gate D — after commit group 8 (fusion and diagnostics)
 
 *Not yet run.*
