@@ -88,6 +88,9 @@ class SpacePayload:
     readable: list
     verdict: dict
     diagnostics: dict = field(default_factory=dict)
+    #: Per-block nominal and realized contribution, for fused spaces only.
+    #: Empty for an unfused space, which has nothing to apportion.
+    contributions: list = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -98,6 +101,7 @@ class SpacePayload:
             "readable": self.readable,
             "verdict": self.verdict,
             "diagnostics": self.diagnostics,
+            "contributions": self.contributions,
         }
 
 
@@ -305,6 +309,7 @@ def build_payload(config, output_dir: str, analysis_name: str = "analysis") -> E
                 readable=_readable_mask(directory, diagnostics, protids),
                 verdict=space_verdict(diagnostics, len(protids)),
                 diagnostics=summary,
+                contributions=_contributions(directory, embeddings),
             )
         )
         index_order = index_order or protids
@@ -356,6 +361,48 @@ def _read_comparisons(path: str) -> list:
     return rows
 
 
+def _space_manifest(directory: str, reducers) -> dict:
+    """A space's manifest, under whichever reducer wrote one.
+
+    The store writes one manifest per reducer (`manifest_pca_umap.json`) and one
+    for the diagnostics run, never a bare `manifest.json`. Any of them carries
+    the provenance this needs; the reducers are tried in the order the panel
+    would draw them so the reported `params` match what is on screen.
+    """
+    for reducer in list(reducers) + ["diagnostics"]:
+        manifest = _read_json(os.path.join(directory, f"manifest_{reducer}.json"))
+        if manifest:
+            return manifest
+    return {}
+
+
+def _contributions(directory: str, reducers) -> list:
+    """What each block actually contributed to a fused space.
+
+    ADR 0002 requires this to be computed, recorded, logged *and* displayed --
+    "no fused map renders without it visible". It was the first three only. The
+    nominal and realized shares are both carried because they differ: `early`
+    concatenates features, so a 50/50 request over blocks of 11 and 4 columns
+    realizes 73/27, and showing only the request would misreport the map.
+    """
+    fusion = _space_manifest(directory, reducers).get("extra", {}).get("fusion", {})
+    entries = fusion.get("contributions", [])
+    # One block contributes all of itself. Rendering "tmscore 100%" on every
+    # unfused panel is the noise half of the rule that a diagnostic which always
+    # fires says nothing, and it is what the docstring above promises not to do.
+    if len(entries) < 2:
+        return []
+    return [
+        {
+            "block_id": entry.get("block_id"),
+            "weight": entry.get("weight"),
+            "share": entry.get("share"),
+            "realized_share": entry.get("realized_share"),
+        }
+        for entry in entries
+    ]
+
+
 def _provenance(output_dir: str, config, spaces: list) -> dict:
     """The footer. Always visible, never collapsed (ADR 0005 item 8).
 
@@ -366,8 +413,13 @@ def _provenance(output_dir: str, config, spaces: list) -> dict:
     """
     manifests = {}
     for space in spaces:
-        path = os.path.join(output_dir, "spaces", space.space_id, "manifest.json")
-        manifest = _read_json(path)
+        # `manifest_{reducer}.json`, not `manifest.json`. The store has never
+        # written the latter, so this block silently produced `{}` and the
+        # provenance footer rendered an empty list -- visible only by opening
+        # the file and looking, which is how it was found (REVIEW_LOG GE.5).
+        manifest = _space_manifest(
+            os.path.join(output_dir, "spaces", space.space_id), space.embeddings
+        )
         if manifest:
             manifests[space.space_id] = {
                 "cache_key": manifest.get("cache_key"),
