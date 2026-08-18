@@ -809,6 +809,15 @@ class MultispaceConfig:
         the row order, so a direct read returns the wrong cell for almost every
         pair. The loader's assertion is the gate; this check makes the
         requirement explicit at config time rather than at hour four.
+
+        **Alignment is necessary and not sufficient.** It makes the matrix mean
+        its labels; it says nothing about whether ``1 - TM`` is a distance that
+        can be laid out in a Euclidean space, and on real data it largely is not
+        -- 44.6% of the positive spectral mass of the published 160-protein actin
+        cohort sits in negative eigenvalues. That second property is measured by
+        :func:`diagnostics.metricity.metricity_report` and recorded on the block;
+        it is reported and not gated, because the threshold is not knowable from
+        one protein family (``docs/FOLLOWUPS.md`` #49).
         """
         for block in self.blocks.values():
             if block.representation != "direct":
