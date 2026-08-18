@@ -61,10 +61,11 @@ from diagnostics.partition import negative_controls, resolution_sweep
 from diagnostics.redundancy import RedundancyError, redundancy
 from diagnostics.stability import neighborhood_stability
 from reduce_space import features_for
+from spaces import layout
 from spaces.manifest import Manifest
 from spaces.store import BlockStore
 
-DIAGNOSTICS_FILENAME = "diagnostics.json"
+DIAGNOSTICS_FILENAME = layout.DIAGNOSTICS_FILENAME
 
 #: The four questions, in the order the module docstring asks them. A section is
 #: absent when this run could not answer it -- a single-block space has no
@@ -84,7 +85,7 @@ SECTIONS = (
 #: a declared snakemake output: whether it exists depends on scanpy being
 #: importable and on the space having three proteins, and a rule that promises
 #: a file it cannot always write fails the run instead of degrading it.
-CLUSTERS_FILENAME = "clusters.tsv"
+CLUSTERS_FILENAME = layout.CLUSTERS_FILENAME
 
 
 def parse_args():
@@ -350,7 +351,9 @@ def main() -> int:
         # reported for this space" needs the difference.
         extra={"sections": sorted(set(report) & set(SECTIONS))},
     )
-    manifest.write(os.path.join(space_dir, "manifest_diagnostics.json"))
+    manifest.write(
+        os.path.join(space_dir, layout.manifest_filename(layout.DIAGNOSTICS_MANIFEST_KEY))
+    )
 
     for note in _every_warning(report):
         print(f"[diagnose_space] {args.space_id}: {note}", file=sys.stderr)
@@ -488,7 +491,9 @@ def _faithfulness_for(space_id, reducer, path, high, protids, space_dir, k) -> d
         )
     low = pairwise_distances(frame.loc[list(protids)].to_numpy(dtype=np.float64))
     result = faithfulness(space_id, reducer, high, low, protids, k=k)
-    result.to_frame().to_csv(os.path.join(space_dir, "faithfulness_" + reducer + ".tsv"), sep="\t")
+    result.to_frame().to_csv(
+        os.path.join(space_dir, layout.faithfulness_filename(reducer)), sep="\t"
+    )
     return result.to_dict()
 
 

@@ -30,6 +30,7 @@ from config_io import load_config
 from config_schema import from_legacy
 from fusion import FusionError, FusionInput, fuse
 from index import IndexAlignmentError, ProteinIndex
+from spaces import layout
 from spaces.manifest import Manifest
 from spaces.reducers.core import reduce_pca, reduce_tsne, reduce_umap
 from spaces.store import BlockStore
@@ -196,7 +197,7 @@ def main() -> int:
     space_dir = os.path.join(args.output_dir, "spaces", args.space_id)
     os.makedirs(space_dir, exist_ok=True)
 
-    embedding_path = os.path.join(space_dir, "embedding_" + args.reducer + ".tsv")
+    embedding_path = os.path.join(space_dir, layout.embedding_filename(args.reducer))
     result.to_frame().to_csv(embedding_path, sep="\t")
 
     manifest = Manifest.build(
@@ -217,7 +218,7 @@ def main() -> int:
         # and this file is the only place they are written down.
         extra={"steps": provenance, "fusion": fused.to_dict()},
     )
-    manifest.write(os.path.join(space_dir, "manifest_" + args.reducer + ".json"))
+    manifest.write(os.path.join(space_dir, layout.manifest_filename(args.reducer)))
 
     print(
         f"[reduce_space] wrote {embedding_path} ({len(protids)} proteins, "
