@@ -57,6 +57,7 @@ __all__ = [
     "EmbeddingFaithfulness",
     "largest_valid_k",
     "continuity",
+    "neighbor_ordering",
     "faithfulness",
     "trustworthiness",
 ]
@@ -79,8 +80,13 @@ class EmbeddingDiagnosticError(ValueError):
     """Raised when the two spaces cannot be compared at all."""
 
 
-def _ordering(distances: np.ndarray) -> np.ndarray:
+def neighbor_ordering(distances: np.ndarray) -> np.ndarray:
     """Each protein's neighbors, nearest first, with itself in column 0.
+
+    Public because ``diagnostics.stability`` derives its k-nearest sets from
+    it too. Two diagnostics that both report "the k nearest neighbors" and
+    reach them by separate sorts agree only where there are no tied distances,
+    and censored TM-scores arrive as exact zeros in their thousands.
 
     Ranks and k-nearest sets are both derived from *this one* sort, which makes
     the identity they depend on structural rather than coincidental: a protein
@@ -131,8 +137,8 @@ def _penalties(high: np.ndarray, low: np.ndarray, k: int) -> np.ndarray:
     the space the map claims to represent.
     """
     n = _check(high, low, k)
-    ranks_high = _ranks_from(_ordering(high))
-    neighbors_low = _ordering(low)[:, 1 : k + 1]
+    ranks_high = _ranks_from(neighbor_ordering(high))
+    neighbors_low = neighbor_ordering(low)[:, 1 : k + 1]
 
     ranks = np.take_along_axis(ranks_high, neighbors_low, axis=1)
     # rank <= k is exactly "also a k-nearest neighbor in the high-dimensional
