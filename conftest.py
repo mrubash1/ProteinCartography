@@ -23,3 +23,29 @@ def pytest_addoption(parser):
         default=False,
         help="Run tests without mocks",
     )
+    parser.addoption(
+        "--runslow",
+        action="store_true",
+        default=False,
+        help=(
+            "Run tests marked `slow`. These run the pipeline end to end, several "
+            "times, and take minutes rather than seconds."
+        ),
+    )
+
+
+def pytest_collection_modifyitems(config, items):
+    """
+    Skip tests marked `slow` unless `--runslow` was given.
+
+    The parity tests run the whole pipeline four times to compare this branch
+    against the baseline, which is far too slow for an edit-test loop but is the
+    evidence behind the backwards-compatibility claim, so CI runs it on every
+    pull request.
+    """
+    if config.getoption("--runslow"):
+        return
+    skip_slow = pytest.mark.skip(reason="needs --runslow")
+    for item in items:
+        if "slow" in item.keywords:
+            item.add_marker(skip_slow)

@@ -74,6 +74,20 @@ uniprot_additional_fields: []
 
 # The maximum number of total structures to download (combined BLAST + Foldseek hits)
 # (this is the final number of structures that will be used for analysis)
+#
+# When there are more hits than this, the rest are discarded, and *which* ones
+# survive decides what the map is about. See docs/adr/0008-cohort-selection.md.
+# Every run now writes protein_features/cohort_report.json saying how many
+# candidates were dropped and whether the discarded set was taxonomically
+# different from the one that was kept.
+#
+# To choose the rule, add a `cohort:` block. The default reproduces exactly what
+# the pipeline has always done, and is not reproducible run to run:
+#
+#   cohort:
+#     max_structures: 5000
+#     selection: as_filtered   # as_filtered (default) | accession | significance
+#
 max_structures: 5000
 
 # The maximum and minimum protein lengths to use to filter the hits from foldseek and blast,
