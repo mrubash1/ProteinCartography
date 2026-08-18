@@ -53,7 +53,7 @@ DESCRIPTOR_FIELDS = 4
 #: Structure suffixes foldseek accepts, longest first so `.pdb.gz` is stripped
 #: before `.gz`. Suffix removal is explicit because `str.rstrip(".pdb")` strips a
 #: *character set* and would corrupt any protid ending in b, d, p or a dot --
-#: the bug recorded as docs/FOLLOWUPS.md #5.
+#: a bug this pipeline has had before.
 STRUCTURE_SUFFIXES = (
     ".pdb.gz",
     ".cif.gz",

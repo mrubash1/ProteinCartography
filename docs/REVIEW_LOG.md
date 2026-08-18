@@ -1821,4 +1821,412 @@ works.
 
 ## Gate E — before opening the PR
 
-*Not yet run.*
+**RAN 2026-08-18. FAILED, then fixed.** Three blockers and eleven smaller
+findings. None of them was a wrong number.
+
+Run in two passes. First a four-reviewer battery with disjoint briefs and no
+shared context — a **maintainer simulation** (would Arcadia take this?), a
+**mechanical checklist** (do the stated numbers hold?), a **blast-radius** pass
+(what breaks for someone who uses none of it?), and a **documentation honesty**
+pass (does the prose describe the code?). Each was told to treat `CLAUDE.md`
+and `PLAN.md` as untrusted, per Gate A's action item. Then a second pass that
+re-derived every "blocks" finding independently before touching anything,
+because a review that is acted on without being checked is just a rumour with
+a heading.
+
+That second pass mattered. **GE.2 was confirmed and was worse than reported**,
+and the first fix for it was wrong in a way only execution revealed.
+
+**Moving target, recorded so the numbers reconcile.** The battery was briefed at
+`165e46a` / 51 commits. The branch advanced to `9a28b08` and `202497f` during
+it, and to `238649c` / 58 commits during the fixes. The invariants (12 modified
+files, 0 merges, 16/25/36, lint clean) hold at every one.
+
+---
+
+### GE.1 — The evidence for the central claim never executed, and a committed file said it did
+
+**Severity: blocks. FIXED — `2698100`.**
+
+`conftest.py` stated that the parity suite "is the evidence behind the
+backwards-compatibility claim, so CI runs it on every pull request". No workflow
+passed `--runslow`. `grep -rn runslow .github/workflows/` returned two hits, both
+`test_determinism.py`. `make test` collects the 13 slow tests in
+`test_parity.py` — including `test_default_output_is_unchanged_from_the_baseline`
+— and runs none, and no job anywhere created the `../pc-baseline` worktree the
+fixtures need. The byte-identical promise was a one-time manual assertion on one
+laptop, and the mutation harness, Gates A–D and the measured determinism floor
+all inherited that.
+
+The sharpest part: `multispace.yml`'s own header comment names this failure mode
+— "a guard that never executes is not a guard" — and fixes it for determinism
+while leaving parity out.
+
+The new `parity` job checks out at full depth, adds the upstream remote, creates
+the worktree at the merge-base, and shares the conda cache with the other two
+jobs. Its second step is the one that matters: `baseline_repo` and `conda_prefix`
+both *skip* rather than fail, and a skipped parity suite is indistinguishable
+from a passing one in the summary line, so the job greps for both skip reasons
+and for the pytest summary itself.
+
+**It failed on its first run, for a real reason, and the guard is what caught
+it** — see GE.2's second half.
+
+### GE.2 — A checkpoint output nothing reads silently drops the query protein
+
+**Severity: blocks. FIXED — `33f6a46`, revised by `238649c`.**
+
+`download_pdbs` is a **checkpoint**, and this branch added `cohort_report.json`
+to its outputs. Additive in appearance only.
+
+On an output tree produced before this branch — structures present, report
+absent — no job requests the report, so snakemake never re-runs the checkpoint
+to produce it. `checkpoints.download_pdbs.get()` then raises,
+`get_pdb_filepaths` contributes no `copy_pdb` job, and the run **proceeds
+without the query proteins**. It does not fail. It finishes and reports success
+on a map missing the protein the search was about.
+
+Reproduced in isolation against snakemake 7.25.3, three variants over one
+identical tree, executed rather than dry-run:
+
+| checkpoint outputs | query PDB copied | what the consumer received |
+|---|---|---|
+| directory only (baseline) | **yes** | `HIT1.pdb HIT2.pdb QUERY.pdb` |
+| directory + orphan file (this branch) | **no** | `structures` — the bare directory |
+| directory + file demanded by `rule all` | yes | `NEW.pdb QUERY.pdb` |
+
+Neither of this work's two instruments could see it. **The rule count cannot**:
+16/25/36 is unchanged and correct on a fresh run, which is what CI asserts.
+**Parity cannot either**: it measures a fresh run from an empty directory, where
+the claim is true. The break lives entirely in the resumed run, which is how
+anyone with a multi-thousand-protein search actually uses this pipeline.
+
+`refseq_mapping` on `map_refseq_ids` has the same shape and is harmless, because
+that rule is not a checkpoint — a missing orphan output on a plain rule is never
+created and nothing notices. Both are now declared only when their consumer is
+in the DAG.
+
+**The third row of that table is why the first fix was revised.** Making the
+report a demanded target also fixes the drop, and preserves the report on the
+default path — but snakemake deletes a `directory()` output wholesale before
+re-running its rule, so a resumed search would re-download every structure from
+AlphaFold. Better to lose a report than a cohort. The table is in the fixture
+docstring so the next person does not re-derive it.
+
+**Cost, stated plainly:** the cohort report is no longer produced on the default
+search path. It is part of the multi-space feature now. ADR 0008's diagnostic
+about legacy truncation is therefore only available to someone who enables a
+space, which is a real reduction and the least bad of the three options above.
+
+### GE.3 — 92 references to five documents that are not in the PR
+
+**Severity: blocks. OPEN — Matt's decision (FOLLOWUPS #33).**
+
+Counted over `git ls-files` only: `docs/FOLLOWUPS.md` 59, `PLAN.md` 14,
+`CLAUDE.md` 9, `docs/EXPLORATION.md` 9, `docs/PR_NARRATIVE.md` 1 — 92 across 26
+tracked files. None of the five is tracked; all are local-only via
+`.git/info/exclude`. `docs/REVIEW_LOG.md` is 45 of the 92 on its own, and its
+third line points at `PLAN.md` §4.3.
+
+Not confined to prose: thirteen comments in production modules cite
+`FOLLOWUPS.md` by number, each telling the next maintainer that the reason for a
+decision is in a document they do not have.
+
+This is left open deliberately. It is one question — do the local-only documents
+ship? — and it is not mine to answer. Both answers are cheap to execute and the
+work does not block on it, and fixing 92 references one at a time before the
+decision would be wasted either way.
+
+Checked rather than assumed, because it changes how much the decision costs:
+**ten of the twelve production comments are already self-contained.** Each states
+its substance and then adds `(FOLLOWUPS #N)` as a trailing pointer — "`spec.metric`
+is likewise never consulted (FOLLOWUPS #29)" loses a cross-reference without the
+file, not a reason. Two named a repository path that will not exist
+(`coregistration.py:17`, `blocks/threedi.py:56`) and are reworded, since a dangling
+path is wrong under either answer. So if the documents do not ship, the residual
+damage in code is small; the exposure is in `docs/`, where `REVIEW_LOG.md` alone
+carries 45 references and opens by pointing at `PLAN.md` §4.3.
+
+### GE.4 — `docs/EXTENDING.md` documented an extension contract that does not exist
+
+**Severity: blocks. FIXED (documentation) — `0e2dc37`.**
+
+Three claims, each falsified by grep over `git ls-files` and each verified again
+before editing:
+
+- **`spec_schema` is never called by the framework.** Declared by all four
+  providers, read by nothing outside tests. Validation happens because each
+  provider calls `validate_params` itself, *inside* `compute()` — after the run
+  has started, which is the failure the doc claimed to prevent. The cause is
+  deliberate (`config_schema` validates without importing any provider) and the
+  effect is that a third-party provider trusting the documented behaviour gets no
+  validation at all.
+- **The reducer entry-point group is not a mechanism.** `REDUCER_GROUP` and
+  `FUSION_GROUP` are defined, exported, seeded into `_BUILTINS`, and referenced
+  nowhere else. `reduce_space.py` resolves from a closed `REDUCER_PIPELINES`
+  dict. §1 and §7 of one document disagreed with each other.
+- **`version` is not part of the cache key.** It lands in `derived`, which
+  `Manifest.cache_key` excludes by design, so a bump invalidates nothing.
+
+The first two are documentation defects and are fixed as such. The third is a
+code defect — a recorded-and-unhonored field, the shape this work has hit three
+times — and making it honest costs a change to the cache identity across eleven
+`Manifest.build` call sites. Recorded as FOLLOWUPS #46 rather than rushed in
+beside a parity re-run; both docstrings now say what is true.
+
+Also corrected: `registry.available_providers` claimed "this is what the
+Snakefile uses to decide which spaces it can build". The Snakefile does not
+import `registry` at all; the skip lives in `compute_block.py` and
+`reduce_space.py`.
+
+### GE.5 — The explorer's provenance was empty, and ADR 0002's last verb was false
+
+**Severity: should-fix. FIXED — `b3cb767`.**
+
+Two defects, one found by the gate and one found while fixing it.
+
+**The one the gate found.** ADR 0002 says a block's contribution share is
+"computed, written to the manifest, logged at runtime, and rendered on the
+panel", and that "no fused map renders without it visible". `contribution`
+occurred **zero** times in the 3.65 MB HTML. The first three verbs were true; the
+number sat in `extra.fusion.contributions` one file away from the panel that
+promised to show it. This is the manifest-versus-honored pattern one level up,
+where the thing failing to honor the value is a decision record.
+
+**The one the gate missed, which is the more interesting.** `_provenance` read
+`spaces/{id}/manifest.json` — a filename the store has never written. It writes
+`manifest_{reducer}.json` and `manifest_diagnostics.json`. So `"manifests": {}`
+in every explorer ever built, and the footer rendered an empty list. Nothing
+failed; the only symptom was a blank section in a 3.7 MB page. Gate E's own
+GE.7 lists the wrong layout entries and nobody connected them to the code that
+reads them. **This is the third time the explorer has read a key or a path that
+does not exist**, and all three were reachable only by running it.
+
+The panel now shows both the asked and the realized share, because they differ
+and the difference is the finding: `fused_early` 50/50 → **73/27**, `fused_late`
+50/50 → **34/66**, `fused_graph` 50/50 → **50.4/49.6**. A single-block space
+apportions nothing and gets no row — "tmscore 100%" on four of seven panels is
+the noise half of the rule that a diagnostic which always fires says nothing.
+
+ADR 0005's items 6 and 7 are genuinely unbuilt and now say so. "Six presets
+shipped" described an intended end state and read as a description of the page.
+
+### GE.6 — ADR 0006 described six pieces of infrastructure that do not exist
+
+**Severity: should-fix. FIXED (scoped) — `0e2dc37`.**
+
+Verified absent: `envs/embeddings.yml`, `envs/function.yml`,
+`envs/structure_tools.yml`, `docs/MODELS.md`, `make fetch-models`, the `plm`
+provider, the per-environment import smoke job, and the scheduled fresh-solve
+job (no `schedule:` in any workflow). All belong to Phases 8 and 9, which this
+PR defers. Rules 1–4 hold for what is here. The record is written in the present
+indicative, so each deferred item is now marked as such rather than reworded —
+the decision stands, only its tense was wrong.
+
+### GE.7 — `docs/ARCHITECTURE.md` was stale where a reviewer looks first
+
+**Severity: should-fix. FIXED — `0e2dc37`.**
+
+The explorer was annotated "not yet built" and is 938 lines; the module tree
+omitted the nine entry points the Snakefile invokes; `biophys.py` was described
+as using Biopython against its own emphatic docstring; and the on-disk layout was
+wrong in five entries — `mask.npy` (the store writes `channel_censored.npy`),
+`manifest.json` (it is `manifest_{reducer}.json`), `distance.npy` and
+`neighbors_k{K}.parquet` (neither produced), and `crossspace/` with three parquet
+files (it is `coregistration/`, no parquet anywhere). `enrichment/` was missing
+entirely. Rebuilt from a real demo tree rather than from reading.
+
+Contract 5 was overstated and is now split correctly: the space manifest carries
+weights, strategy, seeds, reducer params and input digests; `metric` and provider
+`version` live on the block manifests it hashes.
+
+### GE.8 — `demo/multispace/README.md` contradicted the demo, and itself
+
+**Severity: should-fix. FIXED — `0e2dc37`.**
+
+"35 rules" for a 36-rule DAG. "Nine diagnostics per space" for a file whose
+`SECTIONS` declares seven and whose richest space writes six. And "the three
+fused spaces split their contribution 50/50 and that split is honest arithmetic"
+— `fused_early` splits 73.3/26.7, which the same README states correctly sixty
+lines later.
+
+The counterweight is worth recording, because `INTERPRETING.md` is the document
+most exposed to a spot-check and it survived one: noise baseline 0.105 →
+0.1050505633 across all four spaces that ran the control, `structure` 0.503 →
+0.50278, trustworthiness 0.34–0.76 → 0.343–0.758, "seven of ten pairs blank" →
+10 rows and 7 NaN, tmscore/biophys Spearman 0.883 → 0.88338, censoring 0.000.
+Every number checked, every number held.
+
+### GE.9, GE.10, GE.11 — three guards narrower than what they guard
+
+**Severity: should-fix. FIXED — `0e2dc37`.**
+
+- `CORE_MODULES` omitted seven modules including four entry points, while
+  already listing `coregister` and `enrich_clusters` — omissions by the list's
+  own convention. All seven import cleanly; the guard was not asking.
+- `test_every_subpackage_is_listed_in_setup_py` globbed `*/__init__.py`,
+  non-recursive, so it never checked `spaces.reducers` — the one nested
+  subpackage, which is listed, so the test passed by luck. Made recursive, and
+  the expected name is built from the whole relative path: a leaf-name version
+  would look for `ProteinCartography.reducers` and fail on a correct package.
+- `from ProteinCartography import dim_reduction` stopped working. It imports
+  `spaces.reducers.core` flat, which resolves only with `ProteinCartography/`
+  on `sys.path` — true under snakemake, false for a library user. It worked at
+  the merge-base and was the **only** import regression on the branch. Its test
+  runs in a subprocess from outside the repository, because a test started from
+  the repo root has both paths and cannot tell the forms apart.
+
+### GE.12 — `sys.path.insert(0, …)` puts 49 flat names ahead of site-packages
+
+**Severity: note. OPEN.**
+
+`Snakefile:11` prepends `ProteinCartography/` to the driver's path, so `index`,
+`clustering`, `enrichment`, `fusion`, `cohort`, `parity` and 43 others shadow
+anything of the same name. Checked against `cartography_tidy`: no collision
+today. The hazard is a driver env that differs. `append` would remove it, and
+changing import order under a passing parity suite is not a thing to do in the
+same session as GE.2.
+
+### GE.13 — `.github/workflows/multispace.yml` had never executed
+
+**Severity: should-fix. CLOSED — it has now run.**
+
+Exercised through a throwaway PR inside the personal fork, which is what the
+`pull_request: branches: [main]` trigger requires. Results on the first run:
+
+| job | first run |
+|---|---|
+| `end-to-end-with-no-optional-dependencies` | **pass** |
+| `determinism` | **pass** |
+| `parity` (new, GE.1) | **fail — correctly** |
+
+The two pre-written jobs were green on their first execution, which is the
+opposite of what was expected and worth recording as such. The `parity` job
+failed because the GE.2 fix had broken four `slow` tests that no local loop
+runs. **It also exposed a hole in its own step**: `pytest … | tee` under
+`micromamba-shell` does not inherit `pipefail`, so the pytest step reported
+success on a failing run and only the follow-up "must have run, not skipped"
+step caught it. The guard written to catch a *vacuous* pass caught a *masked
+failure* instead, on its first outing.
+
+### GE.14 — Smaller things, confirmed
+
+**Severity: note.**
+
+- `README.md:184`'s "the default output is byte-identical" reads as *the tree*,
+  and the tree gained two files. **This is now literally true**: the GE.2 fix
+  removes both from the default path. The wording needed no change in the end;
+  the code moved to meet it.
+- `MAX_STRUCTURES` now comes from `MULTISPACE_CONFIG.cohort.max_structures`, so
+  a config omitting the key silently gets 5000 where it used to raise
+  `KeyError`, and `max_structures <= 0` now `SystemExit`s where it used to yield
+  an empty cohort. **Open**, and arguably an improvement, but it is a behaviour
+  change on the default path and is not recorded as one anywhere else.
+- ADR 0014 is the only one of fifteen with no "Alternatives rejected" and no
+  "Consequences", against the README's claim that each has them. **Open.**
+
+---
+
+### What was attacked and held
+
+Every row ran. The engineering survived; the packaging did not.
+
+| target | result |
+|---|---|
+| **the `dim_reduction` port** | base and head side by side, PCA/t-SNE/UMAP at N=1,2,3,4,5,11,30, plus the small-N layout branch — **every column name and coordinate identical to 6 dp**. This is the refactor the maintainer simulation expected to reject |
+| every commit builds alone | 51/51 at brief time, monotonic 25 → 1103 |
+| no merge commits | empty |
+| diff-size claim | 102 added / 12 modified / 0 renamed / 0 deleted; deletions exactly 129, counted two ways |
+| `calculate_concordance.py` | AST-identical after stripping the docstring — proven, not asserted |
+| `download_pdbs` default selection | byte-for-byte `accessions[:maximum]`; its two new inputs are pre-existing ancestors, so no new DAG edge |
+| `rule all` without a `spaces:` key | every multispace target resolves empty |
+| Snakefile module scope | `from_legacy` runs for every config and pulls in four new modules at parse time with no scipy or sklearn present; no previously valid config is newly rejected; the new wildcard constraints collide with zero baseline names |
+| `pip install .` | fresh venv, exit 0, all five subpackages including `spaces.reducers` |
+| REVIEW_LOG spot-checks | G8b.6 and GD.3 genuinely fixed, not merely claimed |
+| ADR 0002's amendment notes | 50/50 vs 34/66 reproduced exactly; SNF is numpy with no `snfpy`; the 70% dominance warning fires on real numbers |
+| the search DAG | matched baseline **rule for rule**, not merely in count |
+
+### What Gate E did not check
+
+- **No real interrupted run at scale.** GE.2's tree was synthesized and its
+  mechanism proven in isolation. The `.snakemake/metadata` dimension is untested.
+- **No run against the 2530-protein production matrix.** Everything here is the
+  11-protein demo, the 240- and 750-protein fixtures, and dry-runs.
+- **The networked path was never run live.** UniProt, AlphaFold and Foldseek are
+  mocked throughout.
+- **The explorer was verified by parsing its payload, not by clicking it.** The
+  shares, the seven manifests and 72 KB of syntactically valid JavaScript are
+  confirmed; linked selection, the lasso and the disagreement toggle are not.
+- **Windows and Linux** — arm64 macOS locally, though CI now covers ubuntu.
+
+### Verification, after the Gate E fixes
+
+Re-run in full, because the fixes touched the Snakefile's default path and one
+of them changed which files a default run produces.
+
+| check | result |
+|---|---|
+| unit suite, bare env | **1126 passed, 108 skipped** (from 1109; the gate added 17 tests) |
+| `ruff check` / `ruff format --check` / `snakefmt --check` | clean, 125 files |
+| DAGs | **16 / 25 / 36**, unchanged |
+| **parity `--runslow`** | **38 passed, 0 differing files, 185 s** — and the default tree is now byte-identical *file for file*, not "byte-identical plus two new files" |
+| **mutation harness** | **exit 0**, no unexplained holes. Read it as narrowly as FOLLOWUPS #44 says: it covers six pipeline scripts and none of the modules this gate touched |
+| multispace demo | rebuilt from scratch, 36/36, seven manifests and shares on the three fused panels |
+| `.github/workflows/multispace.yml` | executed for the first time; see GE.13 |
+
+The `mutation_check` tree-restore check came back clean — only the gate's own
+documentation edits were outstanding, which is what it should say.
+
+### GE.16 — §0.8 E: the vestigial refs are not safe to delete, and the plan assumed they were
+
+**Severity: note. Deliberately NOT done.**
+
+Gate E owns §0.8 E — delete the `multispace-base` tag, the
+`integration/multispace-base` branches, and `backup/pre-rebase-20260817`, all
+recorded as vestigial once §0.8 A landed. Checked before executing:
+
+| ref | commit | reachable from HEAD |
+|---|---|---|
+| tag `multispace-base` | `0b5716f` | **no** |
+| `integration/multispace-base` | `93c817e` | **no** |
+| `backup/pre-rebase-20260817` | `2b5ef0f` | **no** |
+
+None is an ancestor of HEAD, so deleting any of them makes its commits
+unreachable and eventually collectable. That is not tidying a stale pointer;
+it is discarding the only pointer to history — and for `backup/pre-rebase-20260817`
+specifically, the pre-rebase tip, which §0.8 E's own text calls "the only pointer
+to the pre-rebase tip" two sentences before saying to delete it.
+
+They cost nothing to keep, which the plan also says. Nothing in the tree names
+any of them, so leaving them costs no reviewer confusion either. The superseded
+fork snapshots `mr/multispace-wip-2026081{7,8}` are in the same position and are
+also left, and deleting those is a write to someone's public fork rather than a
+local operation.
+
+Left for Matt as a one-line decision rather than executed unattended for a
+cosmetic gain. The check itself is the finding: "vestigial" was decided when
+these refs were reachable, and the rebase changed that without anyone
+re-deriving it.
+
+### GE.15 — What the gate says about the gate
+
+Gate D found that probes beat reading. **Gate E is the inverse and belongs next
+to it: every blocker here was found by grep or by a dry-run diff, and not one of
+them is a wrong number.** Four reviewers attacked the numerics and the numerics
+held — the port could not be made to differ in a single coordinate. What failed
+was everything around the code: a CI docstring, an ADR, an extension guide, and
+a checkpoint output that looked additive.
+
+Three of the four blockers are **statements the repository makes about itself
+that are not true**. The pattern this work has now hit five times — a comment
+stating an invariant does not enforce it — has a sibling: **a document
+describing a mechanism does not create it**, and unlike a comment beside code,
+it never fails a test.
+
+The second lesson is narrower and cost the most time. **Acting on a review
+without re-deriving it is how a good finding becomes a bad fix.** GE.2 was
+reported accurately and my first fix for it was wrong: it removed a feature from
+the default path, and only executing all three variants showed that the obvious
+alternative was worse still. The report said "16 jobs versus 17". What it did not
+say — because dry-runs cannot — is that the surviving job receives the bare
+directory and finishes successfully.

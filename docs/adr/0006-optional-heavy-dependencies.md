@@ -36,10 +36,21 @@ constrains the solution:
 
 **Four rules, enforced in code and CI rather than documented.**
 
+> **What exists today.** This record is written in the present indicative, and
+> the blocks it is chiefly about — `plm`, `function`, `localization` — belong to
+> Phases 8 and 9 and are not in this PR. Rules 1 to 4 are all in force for what
+> *is* here: `envs/` is untouched by this branch, every provider implements
+> `is_available`, no optional dependency is load-bearing, and the CI job proving
+> it is the `end-to-end-with-no-optional-dependencies` job in
+> `.github/workflows/multispace.yml`. Items marked **(deferred)** below arrive
+> with the phase that needs them and do not exist yet; a reviewer following one
+> of them today reaches nothing (REVIEW_LOG GE.6).
+
 **1. Nothing heavy or licensed enters an existing env file.**
 `envs/cartography_tidy.yml` and `envs/analysis.yml` are untouched. New capability
-gets new env files: `envs/embeddings.yml`, `envs/function.yml`,
-`envs/structure_tools.yml`. Each pins `mamba=1.4.2`, and none pins `python=`
+gets new env files — `envs/embeddings.yml`, `envs/function.yml`,
+`envs/structure_tools.yml` **(deferred; none of the three exists, because none
+of the blocks needing them is in this PR)**. Each pins `mamba=1.4.2`, and none pins `python=`
 without timing evidence — an earlier revision that added `python=3.9.16` to
 three envs took `plotting.yml` from ~74 s to over 12 minutes without finishing.
 
@@ -63,10 +74,12 @@ manually triggered or scheduled, never on the PR path.
 
 Two supporting mechanisms:
 
-- **An import smoke test per environment.** Building an environment does not
-  prove it imports — that is the exact lesson of the numpy/matplotlib ABI break.
-  Each env gets a job that creates it and imports its top-level packages.
-- **A scheduled fresh-solve job.** Because the cache key is
+- **An import smoke test per environment (deferred).** Building an environment
+  does not prove it imports — that is the exact lesson of the numpy/matplotlib
+  ABI break. Each env gets a job that creates it and imports its top-level
+  packages.
+- **A scheduled fresh-solve job (deferred; no workflow carries a `schedule:`).**
+  Because the cache key is
   `hashFiles('envs/*.yml')`, unchanged env files are never re-solved and drift is
   invisible. A weekly job that bypasses the cache is the only thing that surfaces
   it.
@@ -76,10 +89,12 @@ one provider file, with no other module importing it. If review pressure appears
 they drop first and the cost is deleting a config block — no code changes
 elsewhere.
 
-`docs/MODELS.md` records every optional model with its licence, acquisition
-steps, hardware needs, and what degrades without it. `make fetch-models`
-downloads and hashes checkpoints into a configurable cache dir, and the hashes
-go in the space manifest.
+**(Deferred, with the first licensed block.)** `docs/MODELS.md` will record
+every optional model with its licence, acquisition steps, hardware needs, and
+what degrades without it, and `make fetch-models` will download and hash
+checkpoints into a configurable cache dir, with the hashes going in the space
+manifest. Neither exists: this PR ships no model-backed block, so there is
+nothing yet to record or fetch.
 
 ## Consequences
 
