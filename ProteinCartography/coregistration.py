@@ -14,8 +14,9 @@ from the UniProt features table -- and those files are produced by different
 rules at different points in the pipeline. Two spaces built over slightly
 different sets still reduce cleanly, still plot, and still look co-registered.
 Every per-protein comparison between them would then be quietly conditioned on
-an overlap nobody chose. `docs/FOLLOWUPS.md` #30 recorded this against group 7;
-this module is the answer to it.
+an overlap nobody chose. This module is the answer to that: `shared_index`
+intersects every compared space's protids in a named reference space's order and
+enumerates -- not counts -- what each space lost reaching it.
 
 **The index is the intersection, and the loss is reported rather than hidden.**
 Refusing outright to co-register spaces whose sets differ would be wrong: a

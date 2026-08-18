@@ -50,19 +50,25 @@ Contents, in priority order:
    not buried in a menu.
 5. **Diagnostics overlays** in the same dropdown but **visually grouped
    separately**, so a QC metric is never mistaken for a biological finding.
-6. **Preset switcher** with the weight vector and contribution shares printed on
-   the panel (ADR 0002).
+6. **Contribution shares printed on the panel** for every fused space, both the
+   asked-for and the realized split, which differ (ADR 0002). The **preset
+   switcher** they were to sit beside is **not built**: it needs precomputed
+   alternative weightings, and this PR fuses each pair once. When it arrives it
+   goes here.
 7. **Cluster inspector** — FDR-corrected enrichment, cross-cluster similarity,
-   stability distribution.
+   stability distribution. **Not built.** The enrichment table is computed and
+   written to `enrichment/cluster_enrichment.tsv`; nothing in the explorer reads
+   it yet.
 8. **Provenance footer** — manifest, versions, dates, seeds, N, cohort rule.
    Always visible, never collapsed.
 
 **Be honest about the one real constraint.** Live weight-slider re-embedding
 requires recomputing a distance matrix and a projection, which is not feasible
 client-side at realistic N. The mixer switches between **precomputed named
-presets** — six of them shipped. A slider that silently snaps to the nearest
-preset is worse than labeled buttons, because it implies a continuity that does
-not exist.
+presets**. A slider that silently snaps to the nearest preset is worse than
+labeled buttons, because it implies a continuity that does not exist. **None are
+shipped in this PR** — "six of them shipped" described an intended end state and
+was read, reasonably, as a description of the page (REVIEW_LOG GE.5).
 
 **`plot_interactive.py` keeps working and keeps emitting its existing
 filenames.** The explorer is additive.

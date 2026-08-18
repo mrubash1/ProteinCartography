@@ -1,6 +1,9 @@
 # ADR 0014 — What the diagnostics measure, and what they refuse to
 
-**Status:** accepted, 2026-08-17 (commit group 8b)
+Status: accepted
+Date: 2026-08-17
+
+(Commit group 8b.)
 **Supersedes:** nothing. **Amends:** nothing.
 **Related:** ADR 0002 (fusion and normalization), ADR 0004 (storage and scale),
 ADR 0009 (censoring semantics), ADR 0013 (what fusion reports).
@@ -224,3 +227,51 @@ be dropped there for exactly that reason. A cluster-mode config could set
 - **Nothing that needs a per-space clustering.** Phase 5 items 7 and 8 are
   diagnostics *about* a partition, and spaces do not cluster yet. Deferred to
   group 8c with the decision they depend on.
+
+## Alternatives rejected
+
+**A single composite quality score per space.** Rejected in decision 2 and worth
+restating here, because it is the thing every reader asks for first. Trustworthiness
+and continuity fail in opposite directions -- one catches a neighbour that the
+projection invented, the other a neighbour it lost -- and averaging them produces a
+number that is high when both are mediocre and cannot be inverted back into which
+failure occurred. A map that tore one cluster apart and a map that fused two would
+score alike.
+
+**Thresholds drawn from the literature.** There are none for either statistic at
+this scale. `FAITHFUL_THRESHOLD` and `REDUNDANT_THRESHOLD` are reporting
+conventions, and the alternative -- inventing a number and then citing it as
+though it were established -- is worse than naming where the line was drawn and
+who drew it.
+
+**Diagnostics as an opt-in section of the config.** Rejected in decision 1. A
+diagnostic a user must remember to enable is one that is absent exactly when a
+map is being read carelessly, which is the case it exists for.
+
+**Repairing what a diagnostic finds** -- imputing a censored cell, re-seeding an
+unstable embedding. Rejected because the next run's diagnostics would then
+describe the repair rather than the data, and the user would have no way to tell
+the two apart.
+
+## Consequences
+
+**Every space pays for its diagnostics on every run.** They are not opt-in, so
+the cost is unconditional; it is bounded by keeping each one O(N k) or better and
+by refusing anything that needs a second embedding.
+
+**Two numbers per projection, not one, and both per protein.** Downstream
+consumers must decide how to summarize them, and the explorer's readable mask is
+the first such decision -- a protein is unreadable if *either* statistic flags it
+under *any* reducer. That rule lives with the consumer, not here.
+
+**A section is absent when the run could not answer it.** This is deliberate and
+it has a cost: a shorter list reads as "nothing was wrong" rather than "this was
+not asked". Decision 9's `NOT_YET_CONSUMED` check is the counterweight for config
+fields; for sections, `negative_controls` carries `skipped` with reasons, and
+where a space omits the section entirely the absence is the report. Gate E's
+GE.14 records this as still imperfect.
+
+**Item 9 is a test, so "nine diagnostics" is a specification count, not a count
+of what a `diagnostics.json` contains.** `SECTIONS` declares seven. Prose that
+promised nine per space was wrong and has been corrected in two places; the
+distinction is easy to lose and worth stating in the record itself.
