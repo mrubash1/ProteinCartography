@@ -301,3 +301,146 @@ def test_a_space_id_that_would_collide_with_the_pair_separator_is_refused(monkey
     build_blocks(monkeypatch, config, output)
     with pytest.raises(SystemExit, match="__vs__"):
         run(monkeypatch, config, output)
+
+
+# --- cluster-assignment ARI, Phase 6's fourth metric -------------------------
+
+_CLUSTERING_AVAILABLE = __import__("clustering").is_available()[0]
+needs_scanpy = pytest.mark.skipif(not _CLUSTERING_AVAILABLE, reason="needs scanpy")
+
+
+def test_the_ari_column_is_empty_rather_than_invented_without_clustering(monkeypatch, run_dir):
+    """Same rule Procrustes follows. Without scanpy the column is blank, and
+    the reason is logged once rather than per pair."""
+    if _CLUSTERING_AVAILABLE:
+        pytest.skip("scanpy is installed here; the populated case is tested below")
+    output = run_dir / "output"
+    config = write_config(run_dir, {"compare": ["physicochemistry", "families"], "k": 2})
+    build_blocks(monkeypatch, config, output)
+    assert run(monkeypatch, config, output) == 0
+    summary = pd.read_csv(output / "coregistration" / "summary.tsv", sep="\t")
+    assert pd.isna(summary.loc[0, "cluster_ari"])
+
+
+@needs_scanpy
+def test_five_proteins_withhold_the_ari_even_with_scanpy_installed(monkeypatch, run_dir):
+    """The guard reaches the entry point, not just the function.
+
+    This fixture has five proteins, which Leiden puts in one cluster, and the
+    adjusted Rand index of two single-cluster partitions is 1.0 by convention.
+    That is the number the demo printed for `families vs fused_late` beside a
+    neighborhood Jaccard of 0.291. Withheld here, with the reason on the pair.
+    """
+    output = run_dir / "output"
+    config = write_config(run_dir, {"compare": ["physicochemistry", "families"], "k": 2})
+    build_blocks(monkeypatch, config, output)
+    assert run(monkeypatch, config, output) == 0
+    summary = pd.read_csv(output / "coregistration" / "summary.tsv", sep="\t")
+    assert pd.isna(summary.loc[0, "cluster_ari"])
+
+
+@needs_scanpy
+def test_the_ari_column_is_populated_when_the_spaces_really_cluster(tmp_path):
+    """The populated path, through `coregister.main`, at a size that clusters.
+
+    The five-protein fixture above cannot reach it, and a metric whose only
+    end-to-end test is of its absent case is not tested end to end.
+    """
+    import json
+    import sys
+
+    from fusion_cohort import NARROW_BLOCK, WIDE_BLOCK, fusion_cohort, write_fusion_cohort
+
+    output = tmp_path / "output"
+    cohort = fusion_cohort(n=60)
+    write_fusion_cohort(output, cohort, [WIDE_BLOCK, NARROW_BLOCK])
+    config = tmp_path / "config.json"
+    config.write_text(
+        json.dumps(
+            {
+                "blocks": {b: {"provider": "tmscore"} for b in (WIDE_BLOCK, NARROW_BLOCK)},
+                "spaces": {
+                    "a": {"blocks": [WIDE_BLOCK], "strategy": "none", "reducers": ["pca"]},
+                    "b": {"blocks": [NARROW_BLOCK], "strategy": "none", "reducers": ["pca"]},
+                },
+                "coregistration": {"compare": ["a", "b"], "k": 5},
+            }
+        )
+    )
+    import coregister
+
+    original = sys.argv
+    try:
+        sys.argv = ["coregister.py", "--configfile", str(config), "--output-dir", str(output)]
+        assert coregister.main() == 0
+    finally:
+        sys.argv = original
+
+    summary = pd.read_csv(output / "coregistration" / "summary.tsv", sep="\t")
+    value = summary.loc[0, "cluster_ari"]
+    assert pd.notna(value)
+    assert -1.0 <= float(value) <= 1.0
+    # `wide` shows `fold` and `narrow` shows `chemistry`, crossed exactly, so
+    # two spaces that each cluster well must still barely agree with each other.
+    assert abs(float(value)) < 0.35
+
+
+@needs_scanpy
+def test_coregister_and_diagnose_space_agree_on_a_space_s_partition(tmp_path):
+    """The claim `coregister._partitions_for`'s comment makes, asserted.
+
+    `coregister` recomputes each space's partition instead of reading
+    `spaces/{space_id}/clusters.tsv`, because that file is deliberately not a
+    declared snakemake output and this rule cannot order itself after the one
+    that writes it. That is only safe if the two produce the same labels. They
+    do, because `leiden_partition` is deterministic in its input and seed --
+    but "deterministic" is the kind of claim that is true until someone adds a
+    parameter, so it is a test rather than a sentence.
+    """
+    import json
+    import sys
+
+    import numpy as np
+    from clustering import leiden_partition
+    from fusion_cohort import WIDE_BLOCK, fusion_cohort, write_fusion_cohort
+    from spaces.store import BlockStore
+
+    output = tmp_path / "output"
+    cohort = fusion_cohort(n=60)
+    write_fusion_cohort(output, cohort, [WIDE_BLOCK])
+    config = tmp_path / "config.json"
+    config.write_text(
+        json.dumps(
+            {
+                "blocks": {WIDE_BLOCK: {"provider": "tmscore"}},
+                "spaces": {"s": {"blocks": [WIDE_BLOCK], "strategy": "none", "reducers": ["pca"]}},
+            }
+        )
+    )
+
+    import diagnose_space
+
+    original = sys.argv
+    try:
+        sys.argv = [
+            "diagnose_space.py",
+            "-c",
+            str(config),
+            "-s",
+            "s",
+            "-o",
+            str(output),
+        ]
+        diagnose_space.main()
+    finally:
+        sys.argv = original
+
+    written = (output / "spaces" / "s" / "clusters.tsv").read_text().splitlines()[1:]
+    from_disk = [line.split("\t")[1] for line in written]
+
+    store = BlockStore(str(output))
+    block = store.read_block(WIDE_BLOCK)
+    recomputed = leiden_partition(
+        np.asarray(block.features, dtype=np.float64), list(block.protids)
+    ).labels
+    assert recomputed == from_disk

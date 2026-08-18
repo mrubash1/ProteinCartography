@@ -482,3 +482,109 @@ def test_the_summary_carries_the_caveats_that_qualify_it():
     assert 0.0 <= summary["jaccard_mean"] <= 1.0
     assert any("normalization" in caveat for caveat in summary["geometry_caveats"])
     assert any("metric" in caveat for caveat in summary["geometry_caveats"])
+
+
+# --- cluster-assignment ARI: Phase 6's fourth metric -------------------------
+
+
+def _pair(clusters_a=None, clusters_b=None, n=48):
+    """Two spaces over one index, optionally with partitions."""
+    from coregistration import compare_pair
+    from fusion_cohort import NARROW_BLOCK, WIDE_BLOCK, fusion_cohort
+
+    cohort = fusion_cohort(n=n)
+    return compare_pair(
+        WIDE_BLOCK,
+        cohort.values(WIDE_BLOCK),
+        NARROW_BLOCK,
+        cohort.values(NARROW_BLOCK),
+        cohort.protids,
+        k=5,
+        clusters_a=clusters_a,
+        clusters_b=clusters_b,
+    ), cohort
+
+
+def test_no_partitions_gives_no_ari_rather_than_a_number():
+    """The rule Procrustes already follows: absent, not fabricated."""
+    comparison, _ = _pair()
+    assert comparison.cluster_ari is None
+    assert comparison.summary()["cluster_ari"] is None
+    assert comparison.diagnostics["clusters_compared"] is False
+
+
+def test_two_spaces_that_agree_on_the_partition_score_one():
+    from fusion_cohort import fusion_cohort
+
+    labels = list(fusion_cohort(n=48).partitions["fold"].labels)
+    comparison, _ = _pair(clusters_a=labels, clusters_b=labels)
+    assert comparison.cluster_ari == pytest.approx(1.0)
+    assert comparison.diagnostics["clusters_compared"] is True
+
+
+def test_two_spaces_with_crossed_partitions_score_about_zero():
+    """`fold` and `chemistry` are built as an exact cross-product, so a space
+    recovering one carries no information about the other. This is the number
+    that makes the metric worth having: two spaces can each be internally
+    well-clustered and agree on nothing."""
+    from fusion_cohort import fusion_cohort
+
+    cohort = fusion_cohort()
+    comparison, _ = _pair(
+        clusters_a=list(cohort.partitions["fold"].labels),
+        clusters_b=list(cohort.partitions["chemistry"].labels),
+        n=cohort.n_proteins,
+    )
+    # At the fixture's default N=240; at N=48 the same exact crossing scores
+    # -0.054, which is finite-sample noise in the index rather than structure.
+    # The crossing is exact at any N divisible by 12 -- what changes with N is
+    # how tightly ARI concentrates on 0, so the tolerance has to name an N.
+    assert abs(comparison.cluster_ari) < 0.02
+
+
+def test_the_ari_does_not_depend_on_the_label_names():
+    from fusion_cohort import fusion_cohort
+
+    cohort = fusion_cohort(n=48)
+    plain = list(cohort.partitions["fold"].labels)
+    renamed = [f"LC{value:02d}" for value in plain]
+    comparison, _ = _pair(clusters_a=plain, clusters_b=renamed)
+    assert comparison.cluster_ari == pytest.approx(1.0)
+
+
+def test_a_degenerate_partition_withholds_the_ari_rather_than_reporting_one():
+    """The demo's `families vs fused_late`, which read ARI 1.000.
+
+    Both spaces put all eleven proteins in one cluster, and the adjusted Rand
+    index of two such partitions is 1.0 by convention. Beside a neighborhood
+    Jaccard of 0.291 that reads as "these two agree perfectly" when neither
+    found any structure at all. Found by running the demo, not by a unit test.
+    """
+    labels = ["LC0"] * 48
+    comparison, _ = _pair(clusters_a=labels, clusters_b=labels)
+    assert comparison.cluster_ari is None
+    assert comparison.diagnostics["clusters_compared"] is False
+    assert "convention" in comparison.diagnostics["cluster_ari_note"]
+
+
+def test_one_degenerate_side_also_withholds_it():
+    """0.0 against a real partition is the same kind of convention, and reads
+    as "these two disagree completely" instead of "one of them has nothing"."""
+    from fusion_cohort import fusion_cohort
+
+    real = list(fusion_cohort(n=48).partitions["fold"].labels)
+    comparison, _ = _pair(clusters_a=["LC0"] * 48, clusters_b=real)
+    assert comparison.cluster_ari is None
+    assert "1 cluster(s)" in comparison.diagnostics["cluster_ari_note"]
+
+
+def test_two_real_partitions_record_their_cluster_counts():
+    from fusion_cohort import fusion_cohort
+
+    cohort = fusion_cohort(n=48)
+    comparison, _ = _pair(
+        clusters_a=list(cohort.partitions["fold"].labels),
+        clusters_b=list(cohort.partitions["chemistry"].labels),
+    )
+    assert comparison.cluster_ari is not None
+    assert comparison.diagnostics["cluster_ari_note"] == "4 against 3 clusters"
