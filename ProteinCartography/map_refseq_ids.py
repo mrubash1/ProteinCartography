@@ -43,11 +43,47 @@ def parse_args():
     parser.add_argument("-o", "--output", required=True)
     parser.add_argument("-d", "--databases", nargs="+", default=DEFAULT_DBS)
     parser.add_argument("-s", "--service", default=UniProtService.REST.value)
+    parser.add_argument(
+        "--mapping-output",
+        help=(
+            "Optional TSV of the from/to pairs behind --output. The hit list alone "
+            "loses which RefSeq accession became which UniProt entry, and that "
+            "correspondence is what keys a BLAST e-value to a cohort candidate "
+            "(see hit_significance.py). Nothing is written unless this is given."
+        ),
+    )
     return parser.parse_args()
 
 
+def _write_mapping(frame, mapping_file) -> None:
+    """Write the from/to pairs, deduplicated and sorted.
+
+    Sorted because this lands in the run directory: an unordered dump of an API
+    response is exactly the kind of file PR #106 had to go back and fix.
+
+    The two services name the target column differently -- the REST path returns
+    a flat ``to`` and bioservices returns a nested one that ``json_normalize``
+    renders as ``to.primaryAccession`` -- so both are accepted.
+    """
+    if not mapping_file:
+        return
+    target_column = next(
+        (name for name in ("to", "to.primaryAccession") if name in getattr(frame, "columns", [])),
+        None,
+    )
+    pairs = set()
+    if target_column is not None and "from" in frame.columns:
+        for source, target in zip(frame["from"], frame[target_column]):
+            if isinstance(source, str) and isinstance(target, str):
+                pairs.add((source.strip(), target.strip()))
+    with open(mapping_file, "w+") as handle:
+        handle.write("from\tto\n")
+        for source, target in sorted(pairs):
+            handle.write(f"{source}\t{target}\n")
+
+
 def map_refseqids_bioservices(
-    input_file: str, output_file: str, query_dbs: list, return_full=False
+    input_file: str, output_file: str, query_dbs: list, return_full=False, mapping_file=None
 ):
     uniprot = UniProtWithExpBackoff()
     with open(input_file) as f:
@@ -75,6 +111,7 @@ def map_refseqids_bioservices(
     )
     with open(output_file, "w+") as f:
         f.writelines(hit + "\n" for hit in hits)
+    _write_mapping(dummy_df, mapping_file)
     if return_full:
         return dummy_df
 
@@ -162,7 +199,9 @@ def _map_batch(session, db: str, batch: list[str]) -> list[dict]:
     )
 
 
-def map_refseqids_rest(input_file: str, output_file: str, query_dbs: list, return_full=False):
+def map_refseqids_rest(
+    input_file: str, output_file: str, query_dbs: list, return_full=False, mapping_file=None
+):
     with open(input_file) as f:
         input_ids = list(dict.fromkeys(line.strip() for line in f if line.strip()))
 
@@ -170,6 +209,7 @@ def map_refseqids_rest(input_file: str, output_file: str, query_dbs: list, retur
         print("[map_refseq_ids] empty input — writing empty UniProt hit list", file=sys.stderr)
         with open(output_file, "w+") as f:
             pass
+        _write_mapping(pd.DataFrame(), mapping_file)
         if return_full:
             return pd.DataFrame()
         return
@@ -203,6 +243,7 @@ def map_refseqids_rest(input_file: str, output_file: str, query_dbs: list, retur
     with open(output_file, "w+") as f:
         f.writelines(f"{hit}\n" for hit in hits)
 
+    _write_mapping(dummy_df, mapping_file)
     if return_full:
         return dummy_df
 
@@ -211,9 +252,13 @@ def main():
     args = parse_args()
     service = UniProtService(args.service)
     if service == UniProtService.BIOSERVICES:
-        map_refseqids_bioservices(args.input, args.output, args.databases)
+        map_refseqids_bioservices(
+            args.input, args.output, args.databases, mapping_file=args.mapping_output
+        )
     elif service == UniProtService.REST:
-        map_refseqids_rest(args.input, args.output, args.databases)
+        map_refseqids_rest(
+            args.input, args.output, args.databases, mapping_file=args.mapping_output
+        )
     else:
         sys.exit(f"unknown UniProt service: {args.service}")
 

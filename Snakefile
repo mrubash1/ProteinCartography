@@ -1,7 +1,16 @@
 import os
+import sys
 from pathlib import Path
 
 from ProteinCartography import config_utils
+
+# The package's modules import each other flat (`from spaces.base import ...`),
+# which works when snakemake runs them as `python ProteinCartography/foo.py`
+# because that puts the package directory on the path. Importing one of them
+# *here*, in the snakemake process, needs the same thing done explicitly.
+sys.path.insert(0, str(Path(workflow.basedir) / "ProteinCartography"))
+
+import config_schema  # noqa: E402
 
 
 # Default pipeline configuration parameters are in this file
@@ -62,6 +71,84 @@ FOLDSEEK_TMSCORES_DIR = OUTPUT_DIR / "key_protid_tmscores_results"
 # final output results (plots and aggregated TSV files)
 FINAL_RESULTS_DIR = OUTPUT_DIR / "final_results"
 
+# multi-space outputs; empty unless the config defines `spaces`
+BLOCKS_DIR = OUTPUT_DIR / "blocks"
+SPACES_DIR = OUTPUT_DIR / "spaces"
+COREGISTRATION_DIR = OUTPUT_DIR / "coregistration"
+ENRICHMENT_DIR = OUTPUT_DIR / "enrichment"
+
+# Foldseek's 3Di structural alphabet, one row per analyzed structure. Produced
+# only when a block uses the `threedi` provider.
+THREEDI_DESCRIPTORS_FILENAME = "3di_descriptors.tsv"
+
+# The multi-space configuration. A config with no `blocks`/`spaces` keys is
+# translated into the single structure space the pipeline has always built, and
+# `MULTISPACE_ENABLED` stays false so none of the new rules enter the DAG. That
+# is what keeps the default run byte-identical: the rules below are unreachable
+# unless someone asks for them.
+#
+# Validation happens here rather than inside a rule so that an invalid config --
+# in particular one that tries to fuse an overlay-only signal -- fails before
+# any work is done, instead of four hours in. See docs/adr/0003-the-fusable-flag.md.
+MULTISPACE_CONFIG = config_schema.from_legacy(config)
+MULTISPACE_ENABLED = bool(config.get("spaces"))
+MULTISPACE_TARGETS = []
+if MULTISPACE_ENABLED:
+    for space_id, space in sorted(MULTISPACE_CONFIG.spaces.items()):
+        for reducer in space.reducers:
+            # Built by concatenation, never an f-string: under PEP 701 `make
+            # format` rewrites the doubled braces that make a literal wildcard.
+            MULTISPACE_TARGETS.append(SPACES_DIR / space_id / ("embedding_" + reducer + ".tsv"))
+
+# Diagnostics run for every space a config defines, rather than behind their own
+# key. They are the caveats on a map, and a caveat nobody opted into is the only
+# kind worth having -- an opt-in diagnostic is read by exactly the people who
+# already suspected the problem. Empty when there are no spaces, so the default
+# DAG is untouched.
+DIAGNOSTICS_TARGETS = []
+if MULTISPACE_ENABLED:
+    for space_id in sorted(MULTISPACE_CONFIG.spaces):
+        DIAGNOSTICS_TARGETS.append(SPACES_DIR / space_id / "diagnostics.json")
+
+# One file, all data embedded, no server (ADR 0005). Unreachable without a
+# `spaces:` key, like every other rule in this work, and it depends on the
+# diagnostics rather than on the embeddings alone: what it refuses to draw is
+# decided by the diagnostics, and building it from coordinates only would give
+# a page that renders every space as if it were trustworthy.
+EXPLORER_TARGETS = []
+if MULTISPACE_ENABLED:
+    EXPLORER_TARGETS.append(FINAL_RESULTS_DIR / (ANALYSIS_NAME + "_explorer.html"))
+
+# Co-registration compares spaces pairwise. Empty unless `coregistration.compare`
+# names at least two of them, so asking for spaces does not silently buy a
+# comparison as well.
+COREGISTERED_SPACES = list(MULTISPACE_CONFIG.coregistration.compare) if MULTISPACE_ENABLED else []
+COREGISTRATION_ENABLED = len(COREGISTERED_SPACES) > 1
+COREGISTRATION_PAIR_FILES = []
+# Procrustes needs both layouts in the same coordinate system, so it needs one
+# reducer that every compared space ran. Picking the first shared one keeps the
+# choice deterministic; when there is none, the entry point records that the
+# disparity was not computed rather than inventing a comparison.
+COREGISTRATION_REDUCER = None
+if COREGISTRATION_ENABLED:
+    for space_a, space_b in (
+        (a, b) for i, a in enumerate(COREGISTERED_SPACES) for b in COREGISTERED_SPACES[i + 1 :]
+    ):
+        COREGISTRATION_PAIR_FILES.append(
+            COREGISTRATION_DIR / (space_a + "__vs__" + space_b + ".tsv")
+        )
+    shared_reducers = set.intersection(
+        *(set(MULTISPACE_CONFIG.spaces[s].reducers) for s in COREGISTERED_SPACES)
+    )
+    if shared_reducers:
+        COREGISTRATION_REDUCER = sorted(shared_reducers)[0]
+
+# Cluster enrichment is gated on its own key rather than on `spaces`, because it
+# needs neither: it takes a cluster table and an annotation table, and a legacy
+# cluster-mode run produces both. A config that names no annotation column gets
+# no rule, so the default DAG is unchanged.
+ENRICHMENT_ENABLED = MULTISPACE_CONFIG.enrichment.enabled
+
 # search-mode-specific parameters
 # note: although these parameters are only used in search mode, we can assume they exist here
 # because they are defined in the base config file, which snakemake always loads
@@ -76,7 +163,16 @@ BLAST_DATABASE = config["blast_database"]
 FOLDSEEK_SERVER_URL = config["foldseek_server_url"]
 FOLDSEEK_DATABASES = config["foldseek_databases"]
 MAX_FOLDSEEK_HITS = int(config["max_foldseek_hits"])
-MAX_STRUCTURES = int(config["max_structures"])
+# Read through the cohort config so that `cohort.max_structures` is honored when
+# set, while a legacy config that only knows `max_structures` keeps working --
+# `from_legacy` copies the old key across when the new one is absent.
+MAX_STRUCTURES = MULTISPACE_CONFIG.cohort.max_structures
+COHORT_SELECTION = MULTISPACE_CONFIG.cohort.selection
+COHORT_MEASURE = MULTISPACE_CONFIG.cohort.measure
+# Significance ranking needs a score per candidate, and building that table
+# means reading every raw search result. The default rule needs no scores, so
+# the rule that builds it stays out of the DAG entirely unless it is asked for.
+COHORT_NEEDS_SIGNIFICANCE = COHORT_SELECTION == "significance"
 MIN_LENGTH = int(config["min_length"])
 MAX_LENGTH = int(config["max_length"])
 UNIPROT_ADDITIONAL_FIELDS = config["uniprot_additional_fields"]
@@ -85,6 +181,13 @@ UNIPROT_ADDITIONAL_FIELDS = config["uniprot_additional_fields"]
 wildcard_constraints:
     plotting_mode="|".join(PLOTTING_MODES),
     protid="|".join(SEARCH_MODE_INPUT_PROTIDS + KEY_PROTIDS),
+    # Constrained to the ids the config actually defines, and to no id at all
+    # when multi-space is off. Without this a `{space_id}` wildcard would match
+    # greedily across path separators, because snakemake wildcards are regexes
+    # and `.+` happily eats a `/`.
+    block_id="|".join(MULTISPACE_CONFIG.block_ids()) if MULTISPACE_ENABLED else "^$",
+    space_id="|".join(MULTISPACE_CONFIG.space_ids()) if MULTISPACE_ENABLED else "^$",
+    reducer="|".join(sorted(config_schema.LEGACY_PLOTTING_MODES)),
 
 
 rule make_pdb:
@@ -180,7 +283,26 @@ rule map_refseq_ids:
     input:
         blast_hits=rules.extract_blast_hits.output.blast_hits,
     output:
+        # The from/to pairs behind the hit list. That list alone loses which
+        # RefSeq accession became which UniProt entry, and the correspondence is
+        # the only way to key a BLAST e-value to a cohort candidate.
+        #
+        # Declared only when `aggregate_hit_significance` is in the DAG to read
+        # it. An output nothing consumes is not free: see the comment on
+        # `download_pdbs`, where the same shape silently drops a rule.
+        **(
+            {"refseq_mapping": BLAST_RESULTS_DIR / "{protid}.blast_hits.mapping.tsv"}
+            if COHORT_NEEDS_SIGNIFICANCE
+            else {}
+        ),
         blast_hits_uniprot_ids=BLAST_RESULTS_DIR / "{protid}.blast_hits.uniprot.txt",
+    params:
+        # A function of `output`, not a formatted string: a params string is
+        # substituted into the shell command verbatim and is never re-expanded,
+        # so a `{protid}` written here would reach the command line literally.
+        mapping_args=lambda wildcards, output: (
+            "--mapping-output " + output.refseq_mapping if COHORT_NEEDS_SIGNIFICANCE else ""
+        ),
     benchmark:
         BENCHMARKS_DIR / "{protid}.map_refseq_ids.txt"
     conda:
@@ -189,7 +311,8 @@ rule map_refseq_ids:
         """
         python ProteinCartography/map_refseq_ids.py \
             --input {input.blast_hits} \
-            --output {output.blast_hits_uniprot_ids}
+            --output {output.blast_hits_uniprot_ids} \
+            {params.mapping_args}
         """
 
 
@@ -267,6 +390,55 @@ rule aggregate_foldseek_fraction_seq_identity:
         """
 
 
+rule aggregate_hit_significance:
+    """
+    Best e-value and bit score per hit, across every query that found it.
+
+    Only in the DAG when `cohort.selection` is `significance` -- see the
+    conditional input on `download_pdbs`. The default cohort rule needs no
+    scores, so the default run does not build this and its output tree is
+    unchanged.
+
+    Note that this is an e-value and not a TM-score, which is what ADR 0008
+    originally asked for. The Foldseek web API's .m8 output has no TM-score
+    column, and the TM-scores the pipeline is built around come from the local
+    all-versus-all run, which happens after the structures are downloaded. See
+    the header of hit_significance.py.
+    """
+    input:
+        # Guarded by the same flag that declares the output. This rule only
+        # enters the DAG under `significance` selection, but its input block is
+        # evaluated at parse time for every config, so an unguarded reference
+        # to an output that is no longer declared is an AttributeError on the
+        # default path.
+        **(
+            {
+                "refseq_mapping": expand(
+                    rules.map_refseq_ids.output.refseq_mapping,
+                    protid=SEARCH_MODE_INPUT_PROTIDS,
+                )
+            }
+            if COHORT_NEEDS_SIGNIFICANCE
+            else {}
+        ),
+        m8_files=expand(rules.run_foldseek.output.m8_files, protid=SEARCH_MODE_INPUT_PROTIDS),
+        blast_results=expand(rules.run_blast.output.blast_results, protid=SEARCH_MODE_INPUT_PROTIDS),
+    output:
+        significance=PROTEIN_FEATURES_DIR / "hit_significance.tsv",
+    benchmark:
+        BENCHMARKS_DIR / "aggregate_hit_significance.txt"
+    conda:
+        "envs/pandas.yml"
+    shell:
+        """
+        python ProteinCartography/hit_significance.py \
+            --foldseek-m8 {input.m8_files} \
+            --blast-results {input.blast_results} \
+            --refseq-mapping {input.refseq_mapping} \
+            --output {output.significance}
+        """
+
+
 rule aggregate_hits:
     """
     Take all Uniprot ID lists and make them one big ID list, removing duplicates.
@@ -331,11 +503,54 @@ rule filter_aggregated_hits:
 
 checkpoint download_pdbs:
     """
-    Download all PDB files from AlphaFold
+    Download all PDB files from AlphaFold.
+
+    This rule decides the cohort: the hit list is truncated to `max_structures`
+    here, and every space and diagnostic downstream is conditioned on that cut.
+    The `cohort_report` output records what was discarded and whether the
+    retained set is reproducible. See docs/adr/0008-cohort-selection.md.
+
+    The two metadata inputs are read for the report only. Both are already
+    ancestors of this rule through `filter_aggregated_hits`, so naming them adds
+    an edge the DAG already had and does not add a job. Cluster mode does not
+    run this rule at all -- the user supplies the structures, so there is no
+    cohort decision to report.
     """
     input:
-        rules.filter_aggregated_hits.output.filtered_aggregated_hits,
+        **(
+            {"significance": rules.aggregate_hit_significance.output.significance}
+            if COHORT_NEEDS_SIGNIFICANCE
+            else {}
+        ),
+        filtered_aggregated_hits=rules.filter_aggregated_hits.output.filtered_aggregated_hits,
+        uniprot_features=rules.fetch_uniprot_metadata.output.uniprot_features,
+        aggregated_hits=rules.aggregate_hits.output.aggregated_hits,
+    params:
+        cohort_report_args=lambda wildcards, output: (
+            "--cohort-report " + output.cohort_report if MULTISPACE_ENABLED else ""
+        ),
+        significance_args=(
+            "--significance-table "
+            + str(PROTEIN_FEATURES_DIR / "hit_significance.tsv")
+            + " --significance-measure "
+            + COHORT_MEASURE
+            if COHORT_NEEDS_SIGNIFICANCE
+            else ""
+        ),
     output:
+        # Declared only when `diagnose_space` is in the DAG to read it, and the
+        # reason is not tidiness. This rule is a *checkpoint*. An output that no
+        # job requests is never a reason to re-run it, so on an output tree
+        # produced before this branch -- structures present, report absent --
+        # snakemake leaves the checkpoint alone, `checkpoints.download_pdbs.get`
+        # raises, `get_pdb_filepaths` contributes no `copy_pdb` job, and the run
+        # proceeds *silently* without the query proteins. Reproduced against
+        # `36a38c7`: 17 jobs with `copy_pdb`, 16 without.
+        **(
+            {"cohort_report": PROTEIN_FEATURES_DIR / "cohort_report.json"}
+            if MULTISPACE_ENABLED
+            else {}
+        ),
         protein_structures_dir=directory(DOWNLOADED_PROTEIN_STRUCTURES_DIR),
     benchmark:
         BENCHMARKS_DIR / "download_pdbs.txt"
@@ -344,9 +559,14 @@ checkpoint download_pdbs:
     shell:
         """
         python ProteinCartography/download_pdbs.py \
-            --input {input} \
+            --input {input.filtered_aggregated_hits} \
             --output {output.protein_structures_dir} \
-            --max-structures {MAX_STRUCTURES}
+            --max-structures {MAX_STRUCTURES} \
+            --selection {COHORT_SELECTION} \
+            --uniprot-features {input.uniprot_features} \
+            --candidates-before-filtering {input.aggregated_hits} \
+            {params.cohort_report_args} \
+            {params.significance_args}
         """
 
 
@@ -497,6 +717,284 @@ rule dim_reduction:
         """
 
 
+rule multispace_config:
+    """
+    Write the run's config as JSON for the block and space scripts to read.
+
+    Not a convenience. Those scripts run in `envs/analysis.yml`, which has no
+    PyYAML, so they could not read the config at all -- `compute_block` failed at
+    import the first time it was executed. Adding PyYAML to that environment
+    would change its hash and force a fresh solve of the one environment whose
+    package versions decide the pipeline's numeric output, which this repository
+    has already been bitten by once. Writing JSON avoids the parser instead.
+
+    `run:` rather than `shell:`, so it executes in snakemake's own environment
+    and needs no conda environment of its own.
+    """
+    output:
+        resolved=OUTPUT_DIR / "multispace_config.json",
+    run:
+        import json
+
+        os.makedirs(os.path.dirname(output.resolved), exist_ok=True)
+        with open(output.resolved, "w") as handle:
+            json.dump(dict(config), handle, indent=2, sort_keys=True, default=str)
+            handle.write("\n")
+
+
+rule extract_3di_descriptors:
+    """
+    Extract foldseek's 3Di structural alphabet for every analyzed structure.
+
+    Its own rule rather than part of `compute_block` because it needs the
+    foldseek binary, which lives in a different conda environment from the one
+    the block providers run in. Same arrangement as `foldseek_clustering`: the
+    tool writes a file, the provider reads it.
+
+    Only in the DAG when a block actually uses the `threedi` provider.
+    """
+    input:
+        pdb_files=get_pdb_filepaths,
+    output:
+        descriptors=PROTEIN_FEATURES_DIR / THREEDI_DESCRIPTORS_FILENAME,
+        # foldseek writes a `.dbtype` sidecar next to its output. Declared so
+        # snakemake tracks and cleans it rather than leaving it as litter that
+        # nothing in the workflow accounts for.
+        dbtype=PROTEIN_FEATURES_DIR / (THREEDI_DESCRIPTORS_FILENAME + ".dbtype"),
+    conda:
+        "envs/foldseek.yml"
+    benchmark:
+        BENCHMARKS_DIR / "extract_3di_descriptors.txt"
+    shell:
+        """
+        foldseek structureto3didescriptor {input.pdb_files} {output.descriptors}
+        """
+
+
+#: Providers that read the UniProt features table. Keyed on the provider rather
+#: than the block id, for the reason recorded in
+#: config_schema.NOT_FUSABLE_PROVIDERS: the block id is a name the user chooses,
+#: so a table keyed on it would work only for users who happened to pick the
+#: expected one.
+FEATURES_TABLE_PROVIDERS = ("biophys", "domains")
+
+
+def uniprot_features_table():
+    """The features table for this mode.
+
+    Search mode fetches it into the output directory; cluster mode takes the
+    user's file from the input directory. Same split as
+    `get_aggregate_features_input`, and the reason the path cannot come from the
+    config: it is a property of the run, not of the block.
+    """
+    if MODE == config_utils.Mode.SEARCH:
+        return rules.fetch_uniprot_metadata.output.uniprot_features
+    return FEATURES_FILE
+
+
+def get_block_extra_inputs(wildcards):
+    """Inputs a specific block's provider needs beyond the similarity matrix."""
+    block = MULTISPACE_CONFIG.blocks.get(wildcards.block_id)
+    if block is None:
+        return []
+    if block.provider == "threedi":
+        return [PROTEIN_FEATURES_DIR / THREEDI_DESCRIPTORS_FILENAME]
+    if block.provider in FEATURES_TABLE_PROVIDERS:
+        return [uniprot_features_table()]
+    return []
+
+
+def get_block_provider_inputs(wildcards):
+    """The `--provider-input NAME=PATH` arguments for this block.
+
+    Separate from the input list because snakemake's `{input}` expansion gives
+    the provider a bare path with no indication of what it is. A provider that
+    reads two files would have to index into that list positionally, which is
+    the same defect as reading a labeled matrix by position (ADR 0007).
+    """
+    block = MULTISPACE_CONFIG.blocks.get(wildcards.block_id)
+    if block is not None and block.provider in FEATURES_TABLE_PROVIDERS:
+        return "--provider-input features_file=" + str(uniprot_features_table())
+    return ""
+
+
+rule compute_block:
+    """
+    Compute one representation and write it to the block store.
+
+    Additive: nothing in the legacy pipeline depends on this, and the rule is
+    unreachable unless the config defines `spaces`. A block whose provider is
+    unavailable records a skip rather than failing the DAG, so a missing
+    optional dependency costs you that block and nothing else.
+    """
+    input:
+        all_by_all_tmscores=rules.foldseek_clustering.output.all_by_all_tmscores,
+        resolved_config=rules.multispace_config.output.resolved,
+        provider_inputs=get_block_extra_inputs,
+    output:
+        manifest=BLOCKS_DIR / "{block_id}" / "manifest.json",
+        protids=BLOCKS_DIR / "{block_id}" / "protids.txt",
+    params:
+        provider_inputs=get_block_provider_inputs,
+    conda:
+        "envs/analysis.yml"
+    benchmark:
+        BENCHMARKS_DIR / "compute_block_{block_id}.txt"
+    shell:
+        """
+        python ProteinCartography/compute_block.py \
+            --configfile {input.resolved_config} \
+            --block-id {wildcards.block_id} \
+            --output-dir {OUTPUT_DIR} \
+            {params.provider_inputs}
+        """
+
+
+def get_space_block_inputs(wildcards):
+    """The block manifests a space needs before it can be reduced."""
+    space = MULTISPACE_CONFIG.spaces[wildcards.space_id]
+    return [str(BLOCKS_DIR / block_id / "manifest.json") for block_id in space.blocks]
+
+
+rule reduce_space:
+    """
+    Reduce one space to coordinates, through the same reducer core that the
+    legacy `dim_reduction` rule uses.
+
+    Sharing that core is the point: two implementations of the pipeline's PCA
+    would eventually disagree, and the disagreement would look like a
+    scientific result.
+    """
+    input:
+        blocks=get_space_block_inputs,
+        resolved_config=rules.multispace_config.output.resolved,
+    output:
+        embedding=SPACES_DIR / "{space_id}" / "embedding_{reducer}.tsv",
+    conda:
+        "envs/analysis.yml"
+    benchmark:
+        BENCHMARKS_DIR / "reduce_space_{space_id}_{reducer}.txt"
+    shell:
+        """
+        python ProteinCartography/reduce_space.py \
+            --configfile {input.resolved_config} \
+            --space-id {wildcards.space_id} \
+            --reducer {wildcards.reducer} \
+            --output-dir {OUTPUT_DIR}
+        """
+
+
+def get_cohort_report_input(wildcards):
+    """The cohort report, in search mode only.
+
+    Cluster mode makes no cohort decision -- the user supplies the structures --
+    so there is no report to read and its absence is correct rather than a gap.
+    """
+    if MODE != config_utils.Mode.SEARCH:
+        return []
+    return [str(PROTEIN_FEATURES_DIR / "cohort_report.json")]
+
+
+def get_cohort_report_arg(wildcards):
+    paths = get_cohort_report_input(wildcards)
+    return "--cohort-report " + paths[0] if paths else ""
+
+
+def get_space_embeddings(wildcards):
+    """Every layout this space produced, for the faithfulness diagnostic."""
+    space = MULTISPACE_CONFIG.spaces[wildcards.space_id]
+    return [
+        str(SPACES_DIR / wildcards.space_id / ("embedding_" + reducer + ".tsv"))
+        for reducer in sorted(space.reducers)
+    ]
+
+
+def get_space_embedding_args(wildcards):
+    """`--embedding REDUCER=PATH` per reducer.
+
+    Named rather than positional, for the reason `coregister --embedding` is:
+    snakemake hands the shell a bare list of paths and working out which
+    reducer produced which by position is the same defect as reading a labeled
+    matrix by position (ADR 0007).
+    """
+    space = MULTISPACE_CONFIG.spaces[wildcards.space_id]
+    return " ".join(
+        "--embedding "
+        + reducer
+        + "="
+        + str(SPACES_DIR / wildcards.space_id / ("embedding_" + reducer + ".tsv"))
+        for reducer in sorted(space.reducers)
+    )
+
+
+def get_coregistration_block_inputs(wildcards):
+    """Every block behind every compared space."""
+    needed = []
+    for space_id in COREGISTERED_SPACES:
+        for block_id in MULTISPACE_CONFIG.spaces[space_id].blocks:
+            needed.append(str(BLOCKS_DIR / block_id / "manifest.json"))
+    return sorted(set(needed))
+
+
+def get_coregistration_embeddings(wildcards):
+    """The 2-D embeddings the Procrustes comparison needs, or none."""
+    if COREGISTRATION_REDUCER is None:
+        return []
+    return [
+        str(SPACES_DIR / space_id / ("embedding_" + COREGISTRATION_REDUCER + ".tsv"))
+        for space_id in COREGISTERED_SPACES
+    ]
+
+
+def get_coregistration_embedding_args(wildcards):
+    """`--embedding SPACE_ID=PATH` per compared space.
+
+    Named rather than positional for the reason `--provider-input` is: snakemake
+    hands the shell a bare list of paths, and working out which is which by
+    position is the same defect as reading a labeled matrix by position
+    (ADR 0007).
+    """
+    if COREGISTRATION_REDUCER is None:
+        return ""
+    return " ".join(
+        "--embedding "
+        + space_id
+        + "="
+        + str(SPACES_DIR / space_id / ("embedding_" + COREGISTRATION_REDUCER + ".tsv"))
+        for space_id in COREGISTERED_SPACES
+    )
+
+
+rule coregister_spaces:
+    """
+    Compare every pair of co-registered spaces over one shared protein index.
+
+    Additive and opt-in twice over: the rule is unreachable without `spaces`,
+    and unreachable again unless `coregistration.compare` names two of them.
+    """
+    input:
+        blocks=get_coregistration_block_inputs,
+        embeddings=get_coregistration_embeddings,
+        resolved_config=rules.multispace_config.output.resolved,
+    output:
+        summary=COREGISTRATION_DIR / "summary.tsv",
+        index=COREGISTRATION_DIR / "index.json",
+        pairs=COREGISTRATION_PAIR_FILES,
+    params:
+        embeddings=get_coregistration_embedding_args,
+    conda:
+        "envs/analysis.yml"
+    benchmark:
+        BENCHMARKS_DIR / "coregister_spaces.txt"
+    shell:
+        """
+        python ProteinCartography/coregister.py \
+            --configfile {input.resolved_config} \
+            --output-dir {OUTPUT_DIR} \
+            {params.embeddings}
+        """
+
+
 rule leiden_clustering:
     """
     Performs Leiden clustering on the data using scanpy's implementation.
@@ -514,6 +1012,45 @@ rule leiden_clustering:
         python ProteinCartography/leiden_clustering.py \
             --input {input} \
             --output {output.leiden_features}
+        """
+
+
+rule diagnose_space:
+    """
+    Say what this space's map can and cannot be read for.
+
+    Censoring, cohort fairness, block redundancy and embedding faithfulness,
+    written next to the map they qualify rather than into a log nobody keeps.
+
+    The Leiden clustering is an input because cross-cluster edge retention is
+    the censoring number worth reading, and it needs a partition to be about.
+    It comes from the legacy path, which is the pipeline's only clustering
+    today; when spaces cluster in their own right this should take that
+    instead.
+    """
+    input:
+        blocks=get_space_block_inputs,
+        embeddings=get_space_embeddings,
+        clusters=rules.leiden_clustering.output.leiden_features,
+        cohort=get_cohort_report_input,
+        resolved_config=rules.multispace_config.output.resolved,
+    output:
+        diagnostics=SPACES_DIR / "{space_id}" / "diagnostics.json",
+    params:
+        embeddings=get_space_embedding_args,
+        cohort=get_cohort_report_arg,
+    conda:
+        "envs/analysis.yml"
+    benchmark:
+        BENCHMARKS_DIR / "diagnose_space_{space_id}.txt"
+    shell:
+        """
+        python ProteinCartography/diagnose_space.py \
+            --configfile {input.resolved_config} \
+            --space-id {wildcards.space_id} \
+            --output-dir {OUTPUT_DIR} \
+            --clusters {input.clusters} \
+            {params.embeddings} {params.cohort}
         """
 
 
@@ -625,6 +1162,83 @@ rule aggregate_features:
             --input {input} \
             --output {output.aggregated_features} \
             --features-override-file {FEATURES_OVERRIDE_FILE}
+        """
+
+
+rule enrich_clusters:
+    """
+    Test what each cluster is made of, and write it as a table.
+
+    Additive and opt-in: the rule is unreachable unless `enrichment` names at
+    least one annotation column. It is gated on that key alone rather than on
+    `spaces`, because a legacy cluster-mode run already produces both tables it
+    needs.
+
+    The clusters come from `leiden_features.tsv`, which is the pipeline's only
+    clustering -- Leiden over the TM-score matrix -- so this describes the
+    structure space rather than the multi-space map, however many spaces the
+    run built. The clustering is named in every output row. See ADR 0012.
+
+    `envs/analysis.yml` is reused rather than added to: the script needs only
+    numpy and pandas, but that environment already exists in any run that gets
+    here and adding a new one would be a fresh solve for nothing.
+    """
+    input:
+        clusters=rules.leiden_clustering.output.leiden_features,
+        annotations=rules.aggregate_features.output.aggregated_features,
+        resolved_config=rules.multispace_config.output.resolved,
+    output:
+        table=ENRICHMENT_DIR / "cluster_enrichment.tsv",
+        manifest=ENRICHMENT_DIR / "manifest.json",
+    conda:
+        "envs/analysis.yml"
+    benchmark:
+        BENCHMARKS_DIR / "enrich_clusters.txt"
+    shell:
+        """
+        python ProteinCartography/enrich_clusters.py \
+            --configfile {input.resolved_config} \
+            --output-dir {OUTPUT_DIR} \
+            --clusters {input.clusters} \
+            --annotations {input.annotations}
+        """
+
+
+rule build_explorer:
+    """
+    One self-contained HTML file: every co-registered space, linked selection,
+    and the diagnostics that say which panels may be read.
+
+    Depends on the diagnostics, not just the embeddings. A page built from
+    coordinates alone would draw an unreadable space exactly like a trustworthy
+    one, which is the failure ADR 0005 item 5 and ADR 0014 both exist to
+    prevent.
+
+    `plot_interactive` keeps working and keeps emitting its existing filenames;
+    this is additive.
+
+    Placed after `aggregate_features` because it references
+    `rules.aggregate_features`, and snakemake resolves `rules.` at parse time --
+    the same ordering constraint that moved `diagnose_space` below
+    `leiden_clustering` in group 8b.
+    """
+    input:
+        diagnostics=DIAGNOSTICS_TARGETS,
+        features=rules.aggregate_features.output.aggregated_features,
+        resolved_config=rules.multispace_config.output.resolved,
+    output:
+        explorer=FINAL_RESULTS_DIR / (ANALYSIS_NAME + "_explorer.html"),
+    conda:
+        "envs/plotting.yml"
+    benchmark:
+        BENCHMARKS_DIR / "build_explorer.txt"
+    shell:
+        """
+        python ProteinCartography/build_explorer.py \
+            --configfile {input.resolved_config} \
+            --output-dir {OUTPUT_DIR} \
+            --analysis-name {ANALYSIS_NAME} \
+            --output {output.explorer}
         """
 
 
@@ -788,3 +1402,13 @@ rule all:
         rules.plot_semantic_analysis.output.pdf,
         expand(rules.plot_interactive.output.html, plotting_mode=PLOTTING_MODES),
         expand(rules.plot_cluster_distributions.output.svg, protid=KEY_PROTIDS),
+        # Empty unless the config defines `spaces`, so the default DAG is
+        # exactly the one it has always been.
+        MULTISPACE_TARGETS,
+        # One per space, and empty for the same reason MULTISPACE_TARGETS is.
+        DIAGNOSTICS_TARGETS,
+        EXPLORER_TARGETS,
+        # Empty again unless `coregistration.compare` names two spaces.
+        [str(COREGISTRATION_DIR / "summary.tsv")] if COREGISTRATION_ENABLED else [],
+        # And again unless `enrichment` names an annotation column.
+        [str(ENRICHMENT_DIR / "cluster_enrichment.tsv")] if ENRICHMENT_ENABLED else [],
