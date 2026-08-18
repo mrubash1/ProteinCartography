@@ -30,11 +30,19 @@ trustworthiness and low continuity has torn a real group apart, which usually
 means the reducer found a split the data does not have.
 
 Cross-checked against ``sklearn.manifold.trustworthiness`` in
-``tests/test_diagnostics_embedding.py``, which agrees exactly -- to 0.0e+00,
-not to a tolerance -- on the four planted cases of ``tests/embedding_cohort.py``
-at every k tried. The check is behind an ``importorskip`` because scikit-learn
-is optional (ADR 0006), so it is also run in an environment where it does not
-skip; a gated test can be written, be correct, and never execute.
+``tests/test_diagnostics_embedding.py``, on the four planted cases of
+``tests/embedding_cohort.py`` at k = 5, 10 and 20. The two agree exactly in
+seven of those twelve comparisons and by one unit in the last place in the
+other five -- worst relative difference 2.2e-16, one machine epsilon. The
+residual is not a disagreement about the statistic: scikit-learn computes one
+normalized sum over all N*k rank excesses, and this module computes a
+per-protein value and averages, which is the same quantity associated
+differently. The isometric case, where both sides are exactly 1.0, is asserted
+as equality rather than under the tolerance the others need.
+
+The check is behind an ``importorskip`` because scikit-learn is optional
+(ADR 0006), so it is also run in an environment where it does not skip; a gated
+test can be written, be correct, and never execute.
 """
 
 from __future__ import annotations
