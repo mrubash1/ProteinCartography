@@ -664,3 +664,65 @@ def test_the_result_serializes_everything_a_manifest_needs(wide, narrow, noise):
     import json
 
     assert json.loads(json.dumps(data))["strategy"] == "graph"
+
+
+# --- Gate D: a block with no geometry must not reach the map ------------------
+
+
+@pytest.mark.parametrize("n", [24, 60, 120, 240])
+def test_a_constant_block_is_refused_at_every_cohort_size(n):
+    """Gate D found this passing at N=240 and silently failing at N=60.
+
+    `pairwise_distances` uses the Gram identity, which loses about sqrt(eps)
+    relative precision near zero, so a block whose rows are *bitwise identical*
+    came back with a mean distance of 4.2e-08 rather than 0. The guard tested
+    `mean <= 0.0`, missed it, divided by the residue, and handed pure
+    cancellation noise a **46.7% contribution share** of the fused geometry.
+
+    Whether it happened depended on the magnitude of the block's values, which
+    is why one N raised and another did not -- so the size is a parameter now
+    rather than a fixture constant.
+    """
+    from fusion_cohort import fusion_cohort
+
+    cohort = fusion_cohort(n=n)
+    blocks = [
+        FusionInput(DEGENERATE_BLOCK, cohort.blocks[DEGENERATE_BLOCK]),
+        FusionInput(WIDE_BLOCK, cohort.blocks[WIDE_BLOCK]),
+    ]
+    for strategy in ("late", "graph"):
+        with pytest.raises(FusionError, match="carries no geometry"):
+            fuse(strategy, blocks, {})
+
+
+def test_the_noise_floor_names_the_scale_it_compared_against():
+    """A "this is zero" message on a distance of 4e-08 would be confusing.
+
+    Both branches are reachable and they need different wording: whether the
+    Gram identity cancels to exactly zero or leaves a residue depends on the
+    magnitude of the row, so a constant block hits one or the other with no
+    pattern a reader could predict. This is the residue branch, using the exact
+    cohort size Gate D found it at -- ``fusion_cohort(n=60)``'s degenerate block
+    produces a mean distance of 4.2e-08 where ``n=240``'s produces 0.0.
+    """
+    from fusion import NOISE_FLOOR
+    from fusion_cohort import fusion_cohort
+
+    assert NOISE_FLOOR == 1e-6
+    cohort = fusion_cohort(n=60)
+    blocks = [
+        FusionInput(DEGENERATE_BLOCK, cohort.blocks[DEGENERATE_BLOCK]),
+        FusionInput(WIDE_BLOCK, cohort.blocks[WIDE_BLOCK]),
+    ]
+    with pytest.raises(FusionError, match="cancellation noise"):
+        fuse("late", blocks, {})
+
+
+def test_a_block_with_real_but_small_variation_is_still_accepted():
+    """The other half of the guard. The floor is 1e-6 of the block's own scale,
+    so a block whose geometry is genuinely small relative to its offset -- which
+    is ordinary -- must survive."""
+    rng = np.random.RandomState(0)
+    values = 1000.0 + rng.normal(0.0, 0.01, size=(40, 4))
+    result = fuse("late", [FusionInput("small", values), FusionInput("real", np.eye(40))], {})
+    assert len(result.contributions) == 2

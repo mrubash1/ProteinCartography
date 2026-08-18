@@ -335,3 +335,14 @@ def test_no_skipped_controls_means_no_such_warning():
     assert not any(
         "requested and not produced" in n for n in negative_controls("w", WIDE, FOLD).warnings()
     )
+
+
+def test_the_silhouette_refuses_a_nan_distance():
+    """Gate D. Same reasoning as the embedding statistics: a NaN would be
+    averaged into a cluster's mean distance and come back as a number."""
+    from diagnostics.embedding import EmbeddingDiagnosticError
+
+    distances = WIDE.copy()
+    distances[4, 9] = np.nan
+    with pytest.raises(EmbeddingDiagnosticError, match="NaN or infinite"):
+        silhouette(distances, FOLD)

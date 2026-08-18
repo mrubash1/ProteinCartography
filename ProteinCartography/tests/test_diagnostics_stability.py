@@ -332,3 +332,30 @@ def test_a_local_neighborhood_is_reported_as_informative():
     assert result.informative
     assert result.neighborhood_fraction < 0.1
     assert not any("most of the cohort" in note for note in result.warnings())
+
+
+# --- Gate D --------------------------------------------------------------------
+
+
+def test_a_nan_distance_is_refused():
+    from diagnostics.embedding import EmbeddingDiagnosticError
+
+    distances = DISTANCES.copy()
+    distances[2, 5] = np.nan
+    with pytest.raises(EmbeddingDiagnosticError, match="NaN or infinite"):
+        neighborhood_stability("nan", distances, COHORT.protids, k=K)
+
+
+def test_jaccard_rows_refuses_a_repeated_index():
+    """It returned 1.0 where the sets give 0.667.
+
+    The 2k - shared identity assumes each row is a set. No caller here can
+    violate that -- they all pass `neighbor_ordering` output -- but the function
+    is exported and the wrong answer was silent.
+    """
+    with pytest.raises(StabilityError, match="distinct indices"):
+        jaccard_rows(np.array([[1, 1, 2]]), np.array([[1, 2, 3]]))
+
+
+def test_jaccard_rows_still_accepts_the_same_set_in_different_orders():
+    assert np.all(jaccard_rows(np.array([[3, 1, 2]]), np.array([[2, 3, 1]])) == 1.0)
