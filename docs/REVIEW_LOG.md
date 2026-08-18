@@ -2160,15 +2160,9 @@ Every row ran. The engineering survived; the packaging did not.
   11-protein demo, the 240- and 750-protein fixtures, and dry-runs.
 - **The networked path was never run live.** UniProt, AlphaFold and Foldseek are
   mocked throughout.
-- **The explorer was verified by parsing its payload, not by clicking it.** The
-  shares, the seven manifests and 72 KB of syntactically valid JavaScript are
-  confirmed; linked selection, the lasso and the disagreement toggle are not.
-  Attempted twice and blocked both times on browser selection rather than on
-  anything about the page. It is the one item on the Gate E list that is still
-  genuinely open, and what it should check is whether an `unreadable` space is
-  unmistakably different from a readable one at a glance — that distinction is
-  the whole design (ADR 0005 item 5), and no amount of payload inspection
-  answers it.
+- ~~The explorer was verified by parsing its payload, not by clicking it.~~
+  **Done — see GE.17 and GE.18.** It found a fifth defect that nothing else
+  could have.
 - **Windows and Linux** — arm64 macOS locally, though CI now covers ubuntu.
 
 ### Verification, after the Gate E fixes
@@ -2235,6 +2229,44 @@ checker and no import graph can help.
 **And it is the answer to whether the browser check was worth doing.** Payload
 parsing, `node --check`, 1126 unit tests and a green CI run all passed over this.
 What found it was pressing the button.
+
+### GE.18 — What the click-through confirmed, and the one thing the demo cannot show
+
+**Severity: note. CLOSED.**
+
+Exercised in Chrome against a from-scratch demo build, served over HTTP because
+the extension refuses `file://`.
+
+| feature | ADR 0005 | result |
+|---|---|---|
+| linked selection | item 2, "built first" | **works.** Selecting three protids in `fused_early` lit exactly those three in all seven panels, eight dimmed in each |
+| lasso / box select | item 2 | **works.** `plotly_selected` is the event both emit and it is what the handler binds |
+| clear selection | — | **works.** 2 lit → 11 lit in every panel |
+| overlay selector | item 3 | **works.** 27 options, including `__cluster__` and `__readable__`, which splits into named `readable` / `do not read` traces |
+| layout switch | — | **works.** `pca_tsne` → `pca_umap` repositions every point |
+| disagreement mode | item 4 | **was broken — GE.17** |
+| per-protein refusal | item 5 | **works, and varies.** Readable counts per space: 0/11, 1/11, 1/11, 1/11, 4/11, 4/11, 7/11. Unreadable proteins draw as `circle-open` |
+| provenance footer | item 8 | **works** — after GE.5. Seven manifests, no timestamp |
+
+No console errors at any point.
+
+**The one thing the demo cannot show is the space-level verdict distinction,
+because all seven of its spaces are `unreadable`.** At N=11 every space fails
+the stability band, so the demo renders seven identical red panels and a reader
+never sees what a good one looks like. That is not a defect in the explorer —
+it is the demo's scale — but it means the artifact most people will look at
+cannot demonstrate its own central design.
+
+Answered by rendering a synthetic payload carrying one space at each level.
+The three are unmistakable, and deliberately over-determined: **border colour**
+(green / amber / red), **banner colour and wording** ("this map is safe to read
+as a finding" / "read this map with care" / "this map should not be read as a
+finding"), and **point fill** (solid / mixed / hollow). Three redundant channels,
+so the distinction survives a colour-blind reader or a greyscale print.
+**ADR 0005 item 5 holds.**
+
+The refusal paths for empty inputs also render rather than erroring: "No pairs
+were co-registered in this run" and "Nothing selected."
 
 ### GE.16 — §0.8 E: the vestigial refs are not safe to delete, and the plan assumed they were
 
