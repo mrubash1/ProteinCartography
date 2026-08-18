@@ -3,16 +3,38 @@
 
 Clamps UMAP/t-SNE parameters for small N and falls back to a PCA/identity
 layout when N < 3 so tiny maps still produce coordinates.
+
+The numerical work lives in :mod:`spaces.reducers.core`, which the multi-space
+machinery also calls. This module keeps its CLI, its filenames and its return
+types exactly as they were and is otherwise a thin layer over that shared core.
+
+The sharing is the point. Two implementations of "the pipeline's PCA" -- one for
+the legacy map and one for a new space -- would eventually disagree, and the
+disagreement would surface as a scientific difference with no obvious cause.
+`ProteinCartography/tests/test_parity.py` checks byte-for-byte that this
+refactor changed nothing.
 """
 
 from __future__ import annotations
 import argparse
 
-import numpy as np
 import pandas as pd
-from sklearn.decomposition import PCA
-from sklearn.manifold import TSNE
-from umap import UMAP
+
+# Snakemake runs this as `python ProteinCartography/dim_reduction.py`, which puts
+# the package directory on the path and makes the flat import the working one.
+# The fallback is for `from ProteinCartography import dim_reduction`, which the
+# README advertises and which worked at the commit this branch forked from: the
+# flat form raises `ModuleNotFoundError: spaces` there, and this module -- with
+# its `__all__` of calculate_PCA/TSNE/UMAP -- is the one most likely to be used
+# as a library. It was the only import regression on the branch.
+try:
+    from spaces.reducers.core import reduce_pca, reduce_tsne, reduce_umap
+except ModuleNotFoundError:  # pragma: no cover - exercised by test_packaging
+    from ProteinCartography.spaces.reducers.core import (
+        reduce_pca,
+        reduce_tsne,
+        reduce_umap,
+    )
 
 __all__ = ["calculate_PCA", "calculate_TSNE", "calculate_UMAP"]
 
@@ -46,6 +68,7 @@ def _save_path(pivot_file: str, saveprefix: str | None, dimtype: str) -> str:
 
 def calculate_PCA(
     pivot_file: str,
+    random_state: int,
     n_components=2,
     save=False,
     saveprefix=None,
@@ -54,23 +77,16 @@ def calculate_PCA(
     **kwargs,
 ):
     pivoted_df = pd.read_csv(pivot_file, sep="\t", index_col="protid")
-
-    max_n_components = min(pivoted_df.shape)
-    if max_n_components < 1:
-        raise ValueError(f"empty similarity matrix: {pivot_file}")
-    if n_components > max_n_components:
-        print(
-            f"Warning: the specified value of `n_components` ({n_components})"
-            f"cannot be greater than the number of samples ({max_n_components}),"
-            f"so `n_components` will be set to {max_n_components}."
-        )
-        n_components = max_n_components
-
-    pca = PCA(n_components=n_components, **kwargs)
-    pca_results = pca.fit_transform(pivoted_df)
+    result = reduce_pca(
+        pivoted_df.to_numpy(),
+        list(pivoted_df.index),
+        n_components=n_components,
+        random_state=random_state,
+        **kwargs,
+    )
     pca_results_df = pd.DataFrame(
-        pca_results,
-        columns=[f"PC{i}" for i in range(pca_results.shape[1])],
+        result.coordinates,
+        columns=result.column_names,
         index=pivoted_df.index,
     )
 
@@ -94,71 +110,25 @@ def calculate_TSNE(
     **kwargs,
 ):
     pivoted_df = pd.read_csv(pivot_file, sep="\t", index_col="protid")
-    n = len(pivoted_df)
-    if n < 2:
-        # Single point — emit a degenerate layout.
-        coords = np.zeros((n, n_components), dtype=float)
-        tsne_results_df = pd.DataFrame(
-            coords,
-            columns=[f"tSNE{i + 1}" for i in range(n_components)],
-            index=pivoted_df.index,
-        )
-    else:
-        # sklearn requires perplexity < n_samples. Clamp only for that;
-        # do not also scale perplexity for every N under 250 (that shifts
-        # ordinary maps, e.g. N=100 from 50 → 21).
-        perplexity_check = min(perplexity, max(1, n - 1))
-        perplexity_check = min(perplexity_check, n - 1)
-        tsne = TSNE(
-            n_components=min(n_components, max(1, n - 1)),
-            perplexity=float(perplexity_check),
-            n_iter=n_iter,
-            random_state=random_state,
-            **kwargs,
-        )
-        tsne_results = tsne.fit_transform(pivoted_df)
-        # Pad to requested components if sklearn reduced them.
-        if tsne_results.shape[1] < n_components:
-            pad = np.zeros((n, n_components - tsne_results.shape[1]))
-            tsne_results = np.hstack([tsne_results, pad])
-        tsne_results_df = pd.DataFrame(
-            tsne_results[:, :n_components],
-            columns=[f"tSNE{i + 1}" for i in range(n_components)],
-            index=pivoted_df.index,
-        )
+    result = reduce_tsne(
+        pivoted_df.to_numpy(),
+        list(pivoted_df.index),
+        n_components=n_components,
+        perplexity=perplexity,
+        n_iter=n_iter,
+        random_state=random_state,
+        **kwargs,
+    )
+    tsne_results_df = pd.DataFrame(
+        result.coordinates,
+        columns=result.column_names,
+        index=pivoted_df.index,
+    )
 
     savefile = _save_path(pivot_file, saveprefix, dimtype)
     if save:
         tsne_results_df.to_csv(savefile, sep="\t")
     return tsne_results_df
-
-
-def _small_n_layout(pivoted_df: pd.DataFrame, n_components: int, prefix: str) -> pd.DataFrame:
-    """PCA or identity layout when N is too small for UMAP/t-SNE."""
-    n = len(pivoted_df)
-    if n == 0:
-        raise ValueError("empty matrix")
-    if n == 1:
-        coords = np.zeros((1, n_components), dtype=float)
-    else:
-        # Prefer existing PC columns if this is already a PCA matrix.
-        pc_cols = [c for c in pivoted_df.columns if str(c).startswith("PC")]
-        if len(pc_cols) >= n_components:
-            coords = pivoted_df[pc_cols[:n_components]].to_numpy(dtype=float)
-        else:
-            k = min(n_components, n, pivoted_df.shape[1])
-            pca = PCA(n_components=k)
-            reduced = pca.fit_transform(pivoted_df)
-            if reduced.shape[1] < n_components:
-                pad = np.zeros((n, n_components - reduced.shape[1]))
-                coords = np.hstack([reduced, pad])
-            else:
-                coords = reduced[:, :n_components]
-    return pd.DataFrame(
-        coords,
-        columns=[f"{prefix}{i + 1}" for i in range(n_components)],
-        index=pivoted_df.index,
-    )
 
 
 def calculate_UMAP(
@@ -173,32 +143,23 @@ def calculate_UMAP(
     **kwargs,
 ):
     pivoted_df = pd.read_csv(pivot_file, sep="\t", index_col="protid")
-    n = len(pivoted_df)
-
-    # umap-learn requires n_neighbors >= 2 and n_neighbors < n (effectively ≤ n-1).
-    if n < 3:
-        print(
-            f"[dim_reduction] N={n} too small for UMAP; writing PCA/identity layout "
-            f"as {dimtype} coordinates",
-            flush=True,
-        )
-        umap_results_df = _small_n_layout(pivoted_df, n_components, "UMAP")
-    else:
-        neighbors_check = min(int(n_neighbors), n - 1)
-        neighbors_check = max(2, neighbors_check)
-        umap_fxn = UMAP(
-            n_components=n_components,
-            random_state=random_state,
-            n_neighbors=neighbors_check,
-            min_dist=min_dist,
-            **kwargs,
-        )
-        umap_results = umap_fxn.fit_transform(pivoted_df)
-        umap_results_df = pd.DataFrame(
-            umap_results,
-            columns=[f"UMAP{i + 1}" for i in range(umap_results.shape[1])],
-            index=pivoted_df.index,
-        )
+    result = reduce_umap(
+        pivoted_df.to_numpy(),
+        list(pivoted_df.index),
+        n_components=n_components,
+        n_neighbors=n_neighbors,
+        min_dist=min_dist,
+        random_state=random_state,
+        # Below N=3 the fallback reuses this matrix's existing PC columns rather
+        # than running PCA on PCA output, which is what the pre-port code did.
+        input_column_names=list(pivoted_df.columns),
+        **kwargs,
+    )
+    umap_results_df = pd.DataFrame(
+        result.coordinates,
+        columns=result.column_names,
+        index=pivoted_df.index,
+    )
 
     savefile = _save_path(pivot_file, saveprefix, dimtype)
     if save:
@@ -221,7 +182,7 @@ def main():
         raise Exception(f"{mode} provided is not valid.\nValid modes include {MODES}.")
 
     if mode == "pca":
-        calculate_PCA(pivot_file, save=True, saveprefix=saveprefix)
+        calculate_PCA(pivot_file, random_state, save=True, saveprefix=saveprefix)
     elif mode == "tsne":
         calculate_TSNE(pivot_file, random_state, save=True, saveprefix=saveprefix)
     elif mode == "umap":
@@ -230,6 +191,7 @@ def main():
         saveprefix1 = pivot_file.replace(".tsv", "temp1")
         pca_results_file = calculate_PCA(
             pivot_file,
+            random_state,
             save=True,
             saveprefix=saveprefix1,
             n_components=30,
@@ -241,6 +203,7 @@ def main():
         saveprefix1 = pivot_file.replace(".tsv", "temp2")
         pca_results_file = calculate_PCA(
             pivot_file,
+            random_state,
             save=True,
             saveprefix=saveprefix1,
             n_components=30,

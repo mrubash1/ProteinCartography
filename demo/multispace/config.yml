@@ -1,0 +1,284 @@
+# Multi-space demo: the same actin structures as the cluster-mode demo, but
+# with the map built through the block/space machinery as well as through the
+# legacy path.
+#
+# Everything the legacy pipeline produces is still produced, byte for byte. The
+# `blocks` and `spaces` keys are additive: they add `blocks/` and `spaces/`
+# directories to the output and add nothing to, and take nothing from, the
+# existing outputs.
+#
+# Run it with:
+#   snakemake --configfile demo/multispace/config.yml --use-conda --cores 8
+
+mode: "cluster"
+analysis_name: "multispace-demo"
+input_dir: "demo/cluster-mode/input"
+output_dir: "demo/multispace/output"
+
+features_file: "uniprot_features.tsv"
+
+# The legacy plotting modes still drive the legacy outputs.
+plotting_modes:
+- "pca_umap"
+
+# `key_protids` is deliberately empty. Setting it pulls the Foldseek web API
+# into the DAG even in cluster mode -- `aggregate_foldseek_fraction_seq_identity`
+# and `calculate_concordance` are expanded for key protids as *common* inputs,
+# not search-mode-only -- so a config that sets it is not offline.
+
+# ------------------------------------------------------------------------------
+# Multi-space configuration
+# ------------------------------------------------------------------------------
+
+blocks:
+  # The pipeline's existing representation, as a block. `profile` means each
+  # protein is described by its row of the similarity matrix, which is what the
+  # pipeline has always done and is invariant to the column permutation that
+  # PR #106 fixed. `direct` reads the matrix as a matrix and is gated behind a
+  # verified alignment -- see docs/adr/0007-matrix-index-alignment.md.
+  tmscore:
+    provider: tmscore
+    representation: profile
+    normalization: unit_mean_distance
+
+  # Foldseek's 3Di alphabet as k-mer frequencies. Local structure, where
+  # `tmscore` is global: two proteins sharing a domain but differing in how
+  # their domains are arranged score poorly under TM-score, because no single
+  # rigid superposition fits both, and score alike here. The two spaces are
+  # meant to disagree, and where they disagree is the finding.
+  threedi:
+    provider: threedi
+    k: 3
+    scaling: frequency
+
+  # Bulk physicochemical descriptors from the sequence: hydropathy, charge,
+  # isoelectric point, aromatic content. Not shape at all, which is why it is
+  # worth having beside two blocks that are. Every default descriptor is
+  # intensive -- a mean, a fraction or a pH -- so the block cannot smuggle
+  # protein length in as an axis. `molecular_weight` is available and is
+  # deliberately not a default; see ProteinCartography/blocks/biophys.py.
+  biophys:
+    provider: biophys
+
+  # Curated family membership from Pfam, already present in the UniProt
+  # metadata the pipeline downloads. External evidence rather than another
+  # measurement of these structures, which is what makes it worth co-registering
+  # against them: agreement is confirmation, disagreement is either a remote
+  # homolog the structural map missed or an annotation artifact.
+  domains:
+    provider: domains
+    source: pfam
+
+spaces:
+  structure:
+    blocks: [tmscore]
+    strategy: none
+    reducers: [pca_umap, pca_tsne]
+
+  # A second, independent geometry over the same protein index. Not fused with
+  # `structure` -- co-registration is the default product and fusion is an
+  # explicitly invoked analysis. See docs/adr/0001-block-space-view.md.
+  local_structure:
+    blocks: [threedi]
+    strategy: none
+    reducers: [pca_umap]
+
+  # A third geometry, over the same protein index and from a different kind of
+  # evidence entirely. Where it agrees with `structure` is the interesting part:
+  # two proteins can be physicochemically alike and structurally unrelated, and
+  # a co-registered pair of maps shows that where a single fused map hides it.
+  physicochemistry:
+    blocks: [biophys]
+    strategy: none
+    reducers: [pca_umap]
+
+  # A fourth geometry, from annotation rather than measurement. On this demo's
+  # eleven actins it is nearly degenerate -- they almost all carry the same
+  # single Pfam family -- which is itself the honest result for a cohort this
+  # homogeneous, and a useful thing for the demo to show.
+  families:
+    blocks: [domains]
+    strategy: none
+    reducers: [pca_umap]
+
+  # ----------------------------------------------------------------------------
+  # Fusion: the same two blocks, three ways.
+  #
+  # Co-registration is the default product and fusion is the explicitly invoked
+  # analysis (ADR 0001), so these three exist to be *compared with each other*
+  # rather than to be the answer. They are deliberately built from the same pair
+  # of blocks -- `tmscore`, which describes global shape, and `biophys`, which
+  # describes bulk chemistry -- so that the only thing separating their outputs
+  # is the strategy. What each one reports is in the manifest beside its
+  # embedding, under `extra.fusion`, and on stderr while it runs.
+  #
+  # ADR 0002's scale warning is not hypothetical on this cohort: `tmscore`'s
+  # profile has one column per protein and `biophys` has four, so `early` hands
+  # `tmscore` most of the geometry on column count alone. `late` normalizes each
+  # block to unit mean distance first and reports an even split. That
+  # disagreement is the point of running both.
+  #
+  # **What this cohort actually reports, measured rather than predicted.**
+  # `early` gives `tmscore` 73.3% of the variance against `biophys`'s 26.7`%`,
+  # which is 11 columns against 4 and nothing else -- it is over the 70%
+  # threshold, so both warnings fire. `late` reports a nominal 50/50, because
+  # that is what the weights say once each block is at unit mean distance, and a
+  # *realized* 34/66 the other way: `biophys`'s normalized distances are far more
+  # dispersed on these eleven proteins, so it puts more into the fused squared
+  # distance than its weight suggests. Two numbers that would be one number if
+  # ADR 0002's formula were the only one computed.
+  #
+  # `graph` needs both of its parameters set for a cohort this small. `k: 5`
+  # because eleven proteins cannot support the default neighborhood of twenty,
+  # and `iterations: 200` because the paper's recommended 10-20 does not
+  # converge here: measured, the last step still moves an affinity by 0.029
+  # after 20 iterations, 5.4e-07 after 100 and 2.8e-17 after 500. Convergence is
+  # monotone in both `k` and `iterations`, and small `k` on a small cohort is the
+  # slow corner. The warning would have said so either way -- that is what it is
+  # for -- but a demo should not ship a result its own output calls provisional.
+  fused_early:
+    blocks: [tmscore, biophys]
+    strategy: early
+    reducers: [pca_umap]
+
+  fused_late:
+    blocks: [tmscore, biophys]
+    strategy: late
+    reducers: [pca_umap]
+
+  fused_graph:
+    blocks: [tmscore, biophys]
+    strategy: graph
+    params:
+      k: 5
+      iterations: 200
+    reducers: [pca_umap]
+
+# Co-registration is the product, not a diagnostic. Four independent geometries
+# over one protein index are only worth building if you can ask where they
+# disagree, and these are the four the demo asks about. Each pair gets a
+# per-protein neighborhood Jaccard and rank correlation, plus a Procrustes
+# disparity between the two `pca_umap` layouts.
+#
+# `structure` is the reference, so the shared index inherits its protein order --
+# the order the similarity matrix was written in, which is the order every
+# legacy output already uses.
+#
+# `fused_late` is in the comparison and the other two fused spaces are not.
+# One fused space is enough to answer the question worth asking -- does fusing
+# move the map away from the block that dominates it -- and adding all three
+# would take the pair count from ten to twenty-one on an eleven-protein demo.
+coregistration:
+  reference_space: structure
+  compare: [structure, local_structure, physicochemistry, families, fused_late]
+  k: 5
+
+# What each cluster is made of, as a table rather than as stars on a violin
+# plot. The clusters are the pipeline's Leiden clusters over the TM-score
+# matrix, so this describes the `structure` space; see ADR 0012.
+#
+# **What it finds on this cohort is worth reading, and it is not a biological
+# result.** The eleven actins fall into two Leiden clusters: seven canonical
+# 375-385 aa proteins, and four longer ones up to 507 aa. `pdb_confidence`
+# separates them perfectly and `Length` almost perfectly, in opposite
+# directions -- and those two correlate at r = -0.86 across the cohort. So the
+# table has rediscovered, from the other end, exactly the confound
+# `NOT_FUSABLE_REASONS` already refuses to fuse: prediction confidence tracks
+# length, so a map that let it move the points would make protein length an
+# axis. As an overlay it is legitimate and it is informative; as a finding it
+# would be a mistake, which is why the reason lives in the validator.
+#
+# Nothing categorical is significant, and that half is the honest null: `Pfam`
+# has two distinct values across the whole set, four of the proteins have
+# byte-identical sequences, and most of the lineage vocabulary is carried by a
+# single protein. `min_term_count: 2` drops those; the count of what it dropped
+# is in the manifest rather than nowhere.
+#
+# `EC` and subcellular localization are the other two categories worth
+# enriching on and are deliberately absent: the pipeline never requests those
+# fields from UniProt, so naming them here would only produce a line saying
+# they were not in the table.
+enrichment:
+  cluster_column: LeidenCluster
+  categorical: [Lineage, Pfam, Organism]
+  continuous: [Length, pdb_confidence, Annotation]
+  min_term_count: 2
+  fdr: 0.05
+
+# Overlay-only signals may be declared here and used as overlays, but the
+# validator will refuse to fuse them into a geometry, with the circularity
+# reason in the error. See docs/adr/0003-the-fusable-flag.md.
+
+# Diagnostics need no key. They run for every space a config defines, because a
+# caveat somebody had to opt into is read by exactly the people who already
+# suspected the problem. Output lands in `spaces/{space_id}/diagnostics.json`
+# alongside a per-protein `faithfulness_{reducer}.tsv`.
+#
+# **What they report on this cohort is the most useful thing in this file, and
+# it is a verdict against the demo.** Every map here scores near chance:
+# trustworthiness runs 0.34 to 0.76 and continuity 0.24 to 0.78, and 4 to 10 of
+# the 11 proteins are flagged as having positions that should not be read. That
+# is the correct answer rather than a defect. Eleven proteins cannot support a
+# 2-D embedding: `k` is clamped from the default 15 to 6, which is more than
+# half the cohort, so "neighborhood" has stopped meaning anything local. Every
+# picture the demo draws is a picture of eleven points, and these numbers are
+# what says so.
+#
+# Two more measured results worth keeping:
+#
+# * `tmscore` and `biophys` correlate at Spearman 0.883 over their pairwise
+#   distances -- just under the 0.90 redundancy threshold. The three fused
+#   spaces divide their contribution shares 50/50 and that split is honest
+#   arithmetic, but the two blocks are closer to saying the same thing than
+#   their names suggest. This is the number ADR 0002's `early` warning gestures
+#   at and cannot itself provide.
+# * The censoring rate on this matrix is exactly 0.000. Nothing is being hidden:
+#   at N=11 Foldseek's per-query cap of 1000 cannot bind, so there is no fill to
+#   report. It is the same reason mutation testing found the demo fixture cannot
+#   exercise the censoring path at all, and it is why the censoring section here
+#   reads "no problems detected" rather than being absent.
+#
+# **Group 8c adds three more, and two of them are opt-in below.** Neighborhood
+# stability needs no clustering and runs for every space; the resolution sweep
+# and the negative controls need a partition, which spaces now have because
+# `clustering.py` gives them one -- scanpy's Leiden, the same call the legacy
+# `leiden_clustering` rule makes, verified to return identical labels (ADR
+# 0015). The per-space partition is written to `spaces/{space_id}/clusters.tsv`.
+#
+# Turning them on here is deliberate even though eleven proteins cannot support
+# them, because *that* is the result worth showing. Measured on this cohort:
+#
+# * **Stability reports `informative: false` for all seven spaces**, and that
+#   field exists because of this demo. `k` clamps from 15 to 8 and an 80%
+#   subsample holds 9 proteins, so every protein's eight nearest are *all* the
+#   others and the Jaccard is 1.0 whatever the noise. Every space scored a
+#   perfect 1.000 under a sigma half the size of the data. A statistic with no
+#   room left to be wrong in reporting 1.000 is the most confident possible way
+#   to say nothing, so it now says which it is.
+# * **The two clusters each space finds are not reproducible across conda
+#   environments at this N** -- and at N=250 they are, exactly, in both. Same
+#   scanpy 1.9.3, same leidenalg 0.9.1, same igraph; the difference is scipy
+#   1.13.1 against 1.15.2, whose arpack gives `sc.tl.pca` a different answer on
+#   an 11x11 matrix. With `n_neighbors` clamped to 10 of 11 the graph is nearly
+#   complete and Leiden's optimum is degenerate, so the tie-break decides. This
+#   is a property of the existing `leiden_clustering` rule too, not something
+#   the multi-space path introduced (`docs/FOLLOWUPS.md` #42).
+# * **`fused_early`'s `random_distances` control cannot run**: its random matrix
+#   clusters into one group, which has no silhouette. It appears under
+#   `negative_controls.skipped` with that reason rather than vanishing -- a
+#   control that silently disappears leaves a shorter list that reads as "ran
+#   and found nothing".
+#
+# The one number here that is worth reading is the comparison the controls make
+# possible: `structure` separates at silhouette 0.503 where a shuffle of its own
+# labels gives -0.024 and a clustering of pure noise gives 0.105. The gap is
+# real. `fused_early` separates at 0.176 against the same 0.105 baseline, which
+# is not.
+diagnostics:
+  # Four resolutions spanning an order of magnitude. Fewer than two is refused
+  # -- a sweep with no adjacent pair has nothing to compare.
+  leiden_resolution_sweep: [0.25, 0.5, 1.0, 2.0]
+  # `shuffled_labels` needs no clusterer and holds every marginal fixed.
+  # `random_distances` fits the same Leiden to a random matrix of the same
+  # shape, and is the one that tends to be uncomfortable.
+  negative_controls: [shuffled_labels, random_distances]

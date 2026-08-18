@@ -176,6 +176,47 @@ snakemake --configfile config.yml --use-conda --cores n
 - [ProteinCartography/](ProteinCartography/): scripts that are called by Snakemake, importable in Python.
 - [pub/](pub/): files related to the ProteinCartography pub.
 
+## Multi-space cartography (optional)
+
+The pipeline above produces one map: proteins arranged by structural similarity.
+**Multi-space cartography is an optional layer that produces several maps of the
+same proteins and compares them.** It is entirely opt-in — a config without a
+`spaces:` key runs exactly as it always has, and the default output is
+byte-identical.
+
+Three concepts:
+
+- A **block** is one measurement of the proteins — an `(N, D)` feature matrix or
+  a precomputed distance. Four ship: `tmscore` (the existing TM-score path),
+  `threedi` (Foldseek 3Di k-mer profiles), `biophys` (physicochemical
+  descriptors) and `domains` (InterPro/Pfam architecture).
+- A **space** is a geometry built from one or more blocks, optionally *fused*,
+  and reduced for display.
+- A **view** is one rendering of a space.
+
+Several spaces over one shared `protid` index can be displayed side by side and
+compared pairwise — neighborhood Jaccard, rank correlation, Procrustes
+disparity, and cluster-assignment ARI — or combined into a single geometry, but
+only when a config asks for it explicitly.
+
+**Every space carries diagnostics saying what it cannot be read for**, and they
+run unconditionally rather than behind a flag. That is the part worth knowing
+before using any of this: a caveat you have to opt into is read only by people
+who already suspected the problem.
+
+| document | what it is for |
+|---|---|
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | the map: module layout, on-disk layout, data flow, and the ten contracts |
+| [docs/INTERPRETING.md](docs/INTERPRETING.md) | **read this before reading a map.** What a distance licenses and what it does not, and how to read each of the nine diagnostics |
+| [docs/EXTENDING.md](docs/EXTENDING.md) | adding your own block from a separate package, without editing this repository |
+| [docs/adr/](docs/adr/) | fifteen decision records, each with the alternatives that were rejected and why |
+
+A runnable example is in [demo/multispace/](demo/multispace/), which builds four
+co-registered spaces and three fused ones from the same inputs as the actin
+demo. Its config is annotated with what the diagnostics actually report on
+eleven proteins — which is largely *"this cohort is too small to support these
+maps"*, stated in numbers.
+
 ## Pipeline Overview
 
 The **Search** mode of the pipeline performs all of the following steps.\
