@@ -64,22 +64,26 @@ total — because those two choices move the same cohort between 19.9% and 44.6%
 and a bare percentage is not comparable to another bare percentage. It carries
 the cohort size and censoring rate for the same reason.
 
-**On a censored matrix, most of that number is the fill.** Measured on two real
-production runs (2,530 and 2,174 proteins, at 60.5% and 54.0% censoring) the
-whole-matrix figure is 88.2% and 89.0% — but dense sub-cohorts of those same
-matrices, where every pair was measured in both directions and no fill is
-present, return 36.0–48.6%, which agrees with the 44.6% of the dense
-160-protein cohort. So roughly 40–45% of it is `1 - TM` being genuinely
-non-Euclidean and the remainder is the sentinel: a censored pair read as
-distance 1.0 is being asserted to be maximally distant, and enough of those
-assertions are mutually inconsistent to dominate the spectrum.
+**On a censored matrix, roughly half of that number is the fill.** The run
+archive's large matrices are S1 peptidase cohorts (query `P07338`) at 60.5% and
+54.0% censoring, and their whole-matrix figures are 88.2% and 89.0%. Fully dense
+sub-cohorts of those same matrices — every pair measured in both directions, no
+fill present — return 36.5–53.2% and 59.3–64.5%. A censored pair read as
+distance 1.0 is an assertion that two proteins are maximally distant, and enough
+of those assertions are mutually inconsistent to dominate the spectrum.
 
-**So read the fraction against the censoring rate recorded beside it**, and do
-not compare a figure from a censored run with one from a dense run. On a
-production matrix the number is a statement about coverage at least as much as
-about the metric. The decomposition is not computed automatically because
-choosing a dense core needs a rule and every obvious rule is a threshold
-(`docs/FOLLOWUPS.md` #51).
+**The metric alone is still not a constant.** Those dense cores span 36% to 65%,
+and the widest gap is between two runs of the *same query* — the smaller cores
+span more divergence and score 15–25 points higher. Add the 44.6% of the dense
+160-protein actin cohort and the honest summary is that every cohort measured
+lands between 36% and 65%, against under `1e-9` for a genuinely Euclidean
+matrix. So `1 - TM` is robustly non-Euclidean, and the particular value is a
+property of the cohort rather than of the metric.
+
+**Therefore: read the fraction against the censoring rate recorded beside it,
+and never compare two figures from different cohorts.** The decomposition is not
+computed automatically because choosing a dense core needs a rule and every
+obvious rule is a threshold (`docs/FOLLOWUPS.md` #51).
 
 ---
 
