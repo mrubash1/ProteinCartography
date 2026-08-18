@@ -478,14 +478,25 @@ def _assert_the_foldseek_sleep_was_neutralised(output_dir: Path) -> None:
         )
     # snakemake writes a header row and then one row per repeat; column 0 is
     # wall-clock seconds.
-    slow = []
+    slow, measured = [], 0
     for path in benchmarks:
         for row in path.read_text().splitlines()[1:]:
             if not row.strip():
                 continue
+            measured += 1
             seconds = float(row.split("\t")[0])
             if seconds >= FOLDSEEK_BENCHMARK_CEILING_SECONDS:
                 slow.append(f"{path.name}: {seconds:.1f} s")
+    if not measured:
+        # A header row and no data satisfied this guard silently, which is the
+        # "otherwise satisfied by silence" mode the docstring above says it
+        # refuses to accept -- found by Gate E's adversarial pass, which read
+        # the docstring's own promise back to it.
+        raise RuntimeError(
+            f"{len(benchmarks)} benchmark file(s) under {output_dir} contain a header "
+            "and no timings, so there is no evidence the mocked Foldseek query skipped "
+            "its 30 s poll sleep"
+        )
     if slow:
         raise RuntimeError(
             "the mocked Foldseek query slept: "

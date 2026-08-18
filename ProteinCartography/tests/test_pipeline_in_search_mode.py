@@ -91,11 +91,20 @@ def set_env_variables(pytestconfig):
     # entirely for the same reason: it has no mocking fixture at all, and its
     # `key_protids` pulls `run_foldseek` into the DAG, so its sleep is always
     # against the real server.
+    # Both halves are inside the gate. An earlier version popped
+    # PYTHONNOUSERSITE unconditionally and gated only the redirect -- three
+    # lines below the paragraph above -- which under `--no-mocks` re-enabled the
+    # machine's real ~/.local site-packages on sys.path for every rule
+    # interpreter, and any usercustomize.py living there auto-executes. That is
+    # the isolation "optional deps stay optional" depends on, in the run closest
+    # to production. Fourth instance of a comment stating an invariant it does
+    # not enforce; Gate E's adversarial pass found it.
     previous_user_base = os.environ.get("PYTHONUSERBASE")
-    previous_no_user_site = os.environ.pop("PYTHONNOUSERSITE", None)
+    previous_no_user_site = None
     if using_mocks:
         from parity import foldseek_sleep_user_base
 
+        previous_no_user_site = os.environ.pop("PYTHONNOUSERSITE", None)
         os.environ["PYTHONUSERBASE"] = str(foldseek_sleep_user_base())
 
     yield
