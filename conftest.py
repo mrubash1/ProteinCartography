@@ -40,8 +40,14 @@ def pytest_collection_modifyitems(config, items):
 
     The parity tests run the whole pipeline four times to compare this branch
     against the baseline, which is far too slow for an edit-test loop but is the
-    evidence behind the backwards-compatibility claim, so CI runs it on every
-    pull request.
+    evidence behind the backwards-compatibility claim.
+
+    That evidence is only worth something if something runs it. `make test` does
+    not pass `--runslow`, so the job that does is the `parity` job in
+    `.github/workflows/multispace.yml`, which also creates the baseline worktree
+    the fixtures need and fails if they skipped for want of it. This docstring
+    previously claimed CI ran the suite on every pull request while no workflow
+    passed the flag at all.
     """
     if config.getoption("--runslow"):
         return
