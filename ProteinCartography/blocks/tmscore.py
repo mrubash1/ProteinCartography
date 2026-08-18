@@ -31,9 +31,10 @@ See ``docs/adr/0007-matrix-index-alignment.md`` and
 
 from __future__ import annotations
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
+from diagnostics.metricity import metricity_report
 from matrix_io import load_labeled_matrix, summarize_censoring
 from spaces.base import BlockResult, BlockSpec
 from spaces.manifest import Manifest, file_digest
@@ -170,7 +171,7 @@ class TMScoreProvider:
 
         if representation == "profile":
             return self._profile_block(matrix, params, manifest)
-        return self._direct_block(matrix, params, manifest)
+        return self._direct_block(matrix, params, manifest, censoring)
 
     def _profile_block(self, matrix, params, manifest) -> BlockResult:
         spec = BlockSpec(
@@ -191,7 +192,7 @@ class TMScoreProvider:
             manifest=manifest.to_dict(),
         )
 
-    def _direct_block(self, matrix, params, manifest) -> BlockResult:
+    def _direct_block(self, matrix, params, manifest, censoring) -> BlockResult:
         from scipy.spatial.distance import squareform
 
         rule = params["symmetrization"]
@@ -206,6 +207,33 @@ class TMScoreProvider:
         # squareform needs exact symmetry; floating-point averaging can leave a
         # last-bit asymmetry that trips its check.
         distances = (distances + distances.T) / 2.0
+
+        # This is the only point in the pipeline where a full square distance
+        # matrix exists, so it is the only point where its metricity can be
+        # measured. The config gate for `direct` checks that the rows and
+        # columns line up; that says nothing about whether `1 - TM` can be
+        # embedded in a Euclidean space, and largely it cannot. Recorded on the
+        # block rather than on the space because it is a property of these
+        # distances, and because no space consumes a pairwise block yet --
+        # `reduce_space.read_blocks` refuses one for want of a metric-aware
+        # reducer. When one lands, the number is already attached to the input.
+        #
+        # It goes in `derived` and not in `extra`, because `extra` is folded
+        # into `cache_key` and `derived` is not. A cache key is an identity of
+        # the *inputs*; a figure computed from the output could only be supplied
+        # by a caller who had already built the block, which is exactly the
+        # caller the cache is not for.
+        manifest = replace(
+            manifest,
+            derived={
+                **manifest.derived,
+                "metricity": metricity_report(
+                    distances,
+                    censoring_rate=censoring.get("censoring_rate"),
+                    n_proteins=len(matrix.protids),
+                ),
+            },
+        )
 
         spec = BlockSpec(
             id=params.get("block_id", "tmscore"),

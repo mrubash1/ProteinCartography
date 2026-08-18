@@ -43,6 +43,27 @@ nothing that reduces it, and features are unnormalized because
 descriptions of the geometry the map is drawn from rather than the one the
 config declares. They are `docs/FOLLOWUPS.md` #29 and #32.
 
+**And with `representation: direct`, the distance may not be a distance.** That
+mode reads the similarity matrix as a matrix and hands `1 - TM` downstream. Its
+config gate checks that rows and columns line up, which is necessary and is not
+sufficient: alignment makes the matrix mean its labels and says nothing about
+whether those numbers can be laid out in a Euclidean space. Largely they cannot.
+Double-centring the squared distances of the published 160-protein actin cohort
+puts **44.6%** of the positive spectral mass into negative eigenvalues, so a
+large share of what the matrix asserts is not embeddable in any number of
+dimensions — and every reducer consuming it discards that silently.
+
+`diagnostics/metricity.py` measures this and records it on the block, under
+`derived.metricity`. **Read it as context, not as a verdict.** It deliberately
+sets no threshold: measured on sub-cohorts of that same single family the
+statistic runs from 15.3% to 49.3%, so any warning level fitted to it today
+would be a constant derived from one protein family (`docs/FOLLOWUPS.md` #49).
+The report carries its own convention — whether squared or raw distances were
+centred, and whether the negative mass is divided by the positive mass or the
+total — because those two choices move the same cohort between 19.9% and 44.6%,
+and a bare percentage is not comparable to another bare percentage. It carries
+the cohort size and censoring rate for the same reason.
+
 ---
 
 ## 2. A zero in the similarity matrix is missing, not dissimilar
