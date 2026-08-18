@@ -28,6 +28,19 @@ class _FakeResponse:
             yield self._content[start : start + chunk_size]
 
 
+#: Polls beyond which the loop is treated as unbounded. The real loop makes 60
+#: (1800 s / 30 s), so this is a generous ceiling that only an unbounded loop
+#: reaches. Without it, removing the bound would make these tests spin at full
+#: CPU forever rather than fail -- `sleep` is neutralized here, so nothing slows
+#: the loop down. A test whose failure mode is a hang is worse than no test:
+#: it reports nothing and stalls CI.
+POLL_CEILING = 10_000
+
+
+class _UnboundedPollError(AssertionError):
+    """Raised when the poll loop keeps going past any plausible bound."""
+
+
 class _FakeSession:
     """A Foldseek server that reports `status` forever, then serves a download."""
 
@@ -45,6 +58,11 @@ class _FakeSession:
             self.downloads += 1
             return _FakeResponse(content=self.content)
         self.polls += 1
+        if self.polls > POLL_CEILING:
+            raise _UnboundedPollError(
+                f"the poll loop made more than {POLL_CEILING} requests without stopping; "
+                "its bound has been removed"
+            )
         return _FakeResponse(json_data={"status": self.status})
 
 
