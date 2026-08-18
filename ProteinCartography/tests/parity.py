@@ -55,6 +55,7 @@ import argparse
 import atexit
 import filecmp
 import fnmatch
+import hashlib
 import os
 import re
 import shutil
@@ -210,20 +211,28 @@ def _normalized_file_bytes(relpath: str, path: Path) -> bytes:
     self-diff and again for the parity comparison -- and the repeat is what this
     recovers, ~0.7 s per parity run.
 
-    The key includes size and mtime_ns, not just the path, because
-    `run_pipeline` rmtree's and rewrites its workdir. Serving a stale entry
-    across two runs into the same directory would make a *changed* file compare
-    equal, which is the single failure this module must never produce; a
-    spurious miss only costs a re-read.
+    **The key is the file's content, not its path and stat.** The first version
+    keyed on ``(path, st_size, st_mtime_ns)`` and Gate E's adversarial pass broke
+    it: rewrite a file with a real payload change at the same byte length,
+    restore its mtime, and `compare_trees` reported two genuinely different
+    files as identical. That is the single failure this module must never
+    produce. The reviewer had to force the mtime with `os.utime` to trigger it --
+    2000 rapid rewrites on this box produced 2000 distinct `st_mtime_ns` -- but
+    a coarse-mtime filesystem, `cp -p`, `rsync -a`, `tar -x` or a restored
+    snapshot all preserve mtime, and "held off by convention" is not a property.
+
+    Hashing costs about 50 ms for the 21 MB of Plotly HTML in a tree, against
+    the ~940 ms `re.sub` it avoids, so the saving survives and the staleness
+    class of bug is gone by construction rather than by assumption.
     """
     global _normalized_cached_bytes
-    stat = path.stat()
-    key = (str(path), stat.st_size, stat.st_mtime_ns)
+    raw = path.read_bytes()
+    key = (relpath, hashlib.sha256(raw).hexdigest())
     cached = _normalized_by_stat.get(key)
     if cached is not None:
         _normalized_by_stat.move_to_end(key)
         return cached
-    cached = normalize_bytes(relpath, path.read_bytes())
+    cached = normalize_bytes(relpath, raw)
     _normalized_by_stat[key] = cached
     _normalized_cached_bytes += len(cached)
     while (

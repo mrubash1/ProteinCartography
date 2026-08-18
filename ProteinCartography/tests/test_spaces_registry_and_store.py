@@ -436,3 +436,23 @@ def test_invalidate_removes_the_block(tmp_path):
 
 def test_list_blocks_on_empty_store(tmp_path):
     assert BlockStore(str(tmp_path)).list_blocks() == []
+
+
+def test_two_manifests_do_not_share_one_versions_dict():
+    """The safeguard `package_versions` argues for at length, actually tested.
+
+    Gate E replaced the immutable cached tuple with a single shared mutable
+    dict and the whole suite stayed green -- the existing test rebinds
+    (`m2.versions = dict(...)`) rather than mutating, so it could not see it.
+    `Manifest.versions` is a plain mutable field, and one caller mutating its
+    own manifest in place would otherwise rewrite the provenance recorded by
+    every other manifest in the process.
+    """
+    from spaces.manifest import package_versions
+
+    first, second = package_versions(), package_versions()
+    assert first == second
+    assert first is not second
+    first["numpy"] = "0.0.0-mutated"
+    assert second.get("numpy") != "0.0.0-mutated"
+    assert package_versions().get("numpy") != "0.0.0-mutated"
