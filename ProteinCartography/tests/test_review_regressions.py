@@ -11,6 +11,10 @@ reported success.
 """
 
 import copy
+import json
+import shutil
+import subprocess
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -19,6 +23,8 @@ from index import IndexAlignmentError, ProteinIndex
 from spaces.base import BlockResult, BlockSpec, BlockSpecError, NotFusableError
 from spaces.manifest import Manifest
 from spaces.store import BlockStore
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 FILL = "0.0"
 
@@ -442,3 +448,97 @@ def test_channels_round_trip_through_the_store_with_their_names(tmp_path):
     assert set(loaded.channels) == {"censored", "absent"}
     np.testing.assert_array_equal(loaded.channels["censored"], censored)
     np.testing.assert_array_equal(loaded.channels["absent"], absent)
+
+
+# ==========================================================================
+# GE.2 (blocks) -- a checkpoint output nothing consumes silently drops a rule
+# ==========================================================================
+#
+# `download_pdbs` is a checkpoint. Adding `cohort_report.json` to its outputs
+# looked additive and was not: on an output tree produced before this branch the
+# structures directory exists and the report does not, and because *no job
+# requests the report*, snakemake never re-runs the checkpoint to produce it.
+# `checkpoints.download_pdbs.get()` then raises, `get_pdb_filepaths` contributes
+# no `copy_pdb` job, and the run proceeds without the query proteins -- silently,
+# not with an error. Reproduced in isolation against snakemake 7.25.3: the same
+# tree plans 3 jobs including `copy_pdb` with a single-output checkpoint and 2
+# jobs without, and the surviving job receives the directory rather than the
+# file list.
+#
+# The fix is to declare each new output only when the rule that reads it is in
+# the DAG, so it is never an orphan. These tests assert that, not the prose.
+
+
+def _planned_outputs(config_path):
+    """The output-file set snakemake plans for a config, via `--summary`."""
+    completed = subprocess.run(
+        [
+            "snakemake",
+            "--configfile",
+            str(config_path),
+            "--summary",
+            "--rerun-incomplete",
+        ],
+        capture_output=True,
+        text=True,
+        cwd=str(REPO_ROOT),
+    )
+    if completed.returncode != 0:
+        pytest.fail(f"snakemake --summary failed:\n{completed.stdout}\n{completed.stderr}")
+    rows = completed.stdout.splitlines()[1:]
+    return {row.split("\t")[0] for row in rows if "\t" in row}
+
+
+def _write_config(tmp_path, name, extra):
+    body = {
+        "mode": "search",
+        "analysis_name": "ge2",
+        "input_dir": "demo/search-mode/input/",
+        "output_dir": str(tmp_path / "out") + "/",
+        "max_blast_hits": 10,
+        "max_foldseek_hits": 10,
+        "max_structures": 10,
+        "plotting_modes": ["pca_umap"],
+    }
+    body.update(extra)
+    path = tmp_path / name
+    # JSON is valid YAML, and no environment here has PyYAML alongside the rest
+    # of the stack -- the Snakefile reads either.
+    path.write_text(json.dumps(body))
+    return path
+
+
+@pytest.mark.skipif(shutil.which("snakemake") is None, reason="needs snakemake")
+def test_the_default_search_path_declares_neither_new_output(tmp_path):
+    """The regression itself. Both files are absent from the legacy plan."""
+    planned = _planned_outputs(_write_config(tmp_path, "legacy.json", {}))
+    assert planned, "the summary returned no rows, so this test proves nothing"
+    orphans = [p for p in planned if p.endswith(("cohort_report.json", ".mapping.tsv"))]
+    assert orphans == [], (
+        f"{orphans} are declared on the default path but no rule consumes them. "
+        "An unconsumed output on the `download_pdbs` checkpoint drops `copy_pdb` "
+        "on any pre-existing output tree -- see REVIEW_LOG GE.2."
+    )
+
+
+@pytest.mark.skipif(shutil.which("snakemake") is None, reason="needs snakemake")
+def test_the_cohort_report_appears_exactly_when_a_space_reads_it(tmp_path):
+    spaces = {
+        "blocks": {"tmscore": {"provider": "tmscore", "representation": "profile"}},
+        "spaces": {"legacy": {"blocks": ["tmscore"], "strategy": "none", "reducers": ["pca"]}},
+    }
+    planned = _planned_outputs(_write_config(tmp_path, "spaces.json", spaces))
+    assert any(p.endswith("cohort_report.json") for p in planned), (
+        "`diagnose_space` reads the cohort report, so enabling spaces must declare it. "
+        "If this fails the report is never written and the diagnostic loses its input."
+    )
+
+
+@pytest.mark.skipif(shutil.which("snakemake") is None, reason="needs snakemake")
+def test_the_refseq_mapping_appears_exactly_when_significance_reads_it(tmp_path):
+    significance = {"cohort": {"selection": "significance"}}
+    planned = _planned_outputs(_write_config(tmp_path, "significance.json", significance))
+    assert any(p.endswith(".mapping.tsv") for p in planned), (
+        "`aggregate_hit_significance` reads the RefSeq mapping, so significance "
+        "selection must declare it."
+    )
