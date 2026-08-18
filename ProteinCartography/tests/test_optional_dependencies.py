@@ -53,6 +53,18 @@ CORE_MODULES = [
     # `build_explorer.main` after `is_available()` has been consulted.
     "explorer.payload",
     "explorer.template",
+    # The entry points the Snakefile invokes. Omitting these while listing
+    # `coregister` and `enrich_clusters` was inconsistent with the list's own
+    # convention, and they are the modules whose import graph is most likely to
+    # grow an optional dependency by accident -- each one is where a rule
+    # decides whether it can run at all (REVIEW_LOG GE.9).
+    "compute_block",
+    "reduce_space",
+    "diagnose_space",
+    "build_explorer",
+    "cohort",
+    "config_io",
+    "hit_significance",
 ]
 
 HEAVY = ["sklearn", "umap", "scipy", "scanpy", "torch"]

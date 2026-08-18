@@ -193,7 +193,10 @@ def get_provider(group: str, name: str, *, require_available: bool = True):
 def available_providers(group: str) -> list:
     """Survey `group`, reporting availability without raising.
 
-    This is what the Snakefile uses to decide which spaces it can build.
+    Provided for callers that want to report what is installed. The Snakefile
+    does *not* use it and does not import this module at all: the skip decision
+    is made inside the rules, at `compute_block.py` and `reduce_space.py`, where
+    the provider is already being resolved.
     """
     infos = []
     for name, source in list_providers(group).items():

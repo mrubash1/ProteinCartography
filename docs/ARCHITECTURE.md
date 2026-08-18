@@ -44,7 +44,7 @@ ProteinCartography/
 ├── blocks/
 │   ├── tmscore.py          # the existing TM path, as a block
 │   ├── threedi.py          # foldseek 3Di k-mer profile
-│   ├── biophys.py          # Biopython ProtParam descriptors
+│   ├── biophys.py          # ProtParam-style descriptors, no Biopython dependency
 │   └── domains.py          # InterPro/Pfam architecture strings
 ├── fusion.py               # none, early, late, graph (SNF) — ADR 0002, 0013
 ├── diagnostics/
@@ -54,9 +54,20 @@ ProteinCartography/
 │   ├── stability.py        # per-protein kNN Jaccard under resampling — ADR 0015
 │   └── partition.py        # ARI, silhouette, resolution sweep, controls — ADR 0015
 ├── clustering.py           # scanpy Leiden per space, the pipeline's own — ADR 0015
+│
+│  # entry points, one per snakemake rule; each is a CLI over the modules above
+├── compute_block.py        # build one block
+├── reduce_space.py         # embed one space
+├── diagnose_space.py       # the nine diagnostics for one space
+├── coregister.py           # compare a pair of spaces
+├── enrich_clusters.py      # cluster-level enrichment
+├── build_explorer.py       # the single-file HTML
+├── cohort.py               # cohort selection rules — ADR 0008
+├── config_io.py            # read the resolved config a rule was given
+├── hit_significance.py     # e-value ranking for `significance` selection
 ├── coregistration.py       # neighborhood Jaccard, Spearman, Procrustes — ADR 0011
 ├── enrichment.py           # cluster-level enrichment statistics — ADR 0012
-└── explorer/               # single-file HTML generator (ADR 0005) — not yet built
+└── explorer/               # single-file HTML generator (ADR 0005)
 ```
 
 Everything above is new. The existing scripts keep their names, their CLIs, and
@@ -72,21 +83,24 @@ Strictly additive — nothing existing moves.
 OUTPUT_DIR/
 ├── blocks/{block_id}/
 │   ├── features.npy | distances.npy   # float32; condensed for pairwise (ADR 0004)
-│   ├── mask.npy                       # bool, censoring (ADR 0009)
+│   ├── channel_censored.npy           # bool, censoring (ADR 0009); one file per channel
 │   ├── protids.txt                    # canonical order — identity lives here
 │   └── manifest.json
 ├── spaces/{space_id}/
-│   ├── distance.npy
 │   ├── embedding_{reducer}.tsv        # protid, dim_1, dim_2[, dim_3]
-│   ├── neighbors_k{K}.parquet
 │   ├── clusters.tsv                   # this space's own Leiden (ADR 0015)
-│   ├── faithfulness_{reducer}.tsv
+│   ├── faithfulness_{reducer}.tsv     # per-protein trustworthiness / continuity
 │   ├── diagnostics.json
+│   ├── manifest_{reducer}.json        # one per reducer, not one per space
+│   └── manifest_diagnostics.json
+├── coregistration/
+│   ├── {space_a}__vs__{space_b}.tsv   # one per compared pair
+│   ├── summary.tsv
+│   ├── index.json
 │   └── manifest.json
-├── crossspace/
-│   ├── neighbor_jaccard.parquet
-│   ├── block_correlation.tsv
-│   └── stability.parquet
+├── enrichment/
+│   ├── cluster_enrichment.tsv
+│   └── manifest.json
 └── final_results/
     ├── (every existing output, byte-identical)
     └── {analysis_name}_explorer.html
@@ -120,7 +134,7 @@ flowchart LR
     SP1 & SP2 & SP3 --> RED["reducers<br/>pca_umap / pca_tsne"]
     RED --> EMB["embeddings"]
 
-    SP1 & SP2 & SP3 --> XS["crossspace<br/>neighborhood Jaccard, Procrustes, ARI"]
+    SP1 & SP2 & SP3 --> XS["coregistration<br/>neighborhood Jaccard, Procrustes, ARI"]
     EMB & XS --> EXP["explorer.html<br/>linked selection, disagreement mode"]
 
     MAT --> LEGACY["dim_reduction shim<br/>leiden_clustering<br/>plot_interactive<br/>(byte-identical output)"]
@@ -150,13 +164,17 @@ are computed, recorded, logged, and displayed, and must sum to 1. (ADR 0002)
 **4. Some signals never enter a geometry.** Enforced by the config validator with
 an error that states the reason. (ADR 0003)
 
-**5. Every space carries provenance sufficient to recompute it exactly** — block
-versions, weights, normalization, metric, reducer params, seeds, input hashes.
+**5. Every space carries provenance sufficient to recompute it exactly** — weights,
+strategy, reducer params, seeds and input digests on the space manifest, and
+block versions, normalization and metric on the block manifests it hashes. The
+space manifest does not restate the block-level fields; follow the digests.
 (ADR 0001)
 
 **6. Default behavior is byte-identical to today's**, proven by the parity test
 against an unmodified checkout of the commit this branch forked from
-`upstream/main`. (commit group 5)
+`upstream/main`, run by the `parity` job in `.github/workflows/multispace.yml`.
+Until that job existed the test was real and unrun, which is a weaker thing than
+this sentence used to claim. (commit group 5, REVIEW_LOG GE.1)
 
 **7. Optional dependencies stay optional**, proven by a CI job that installs none
 of them. (ADR 0006)

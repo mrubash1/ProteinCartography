@@ -24,9 +24,10 @@ hydropathy_windows = "mypkg.blocks:HydropathyWindowsProvider"
 ```
 
 The group name is `proteincartography.blocks`, exported as
-`spaces.registry.BLOCK_GROUP`. There are two sibling groups,
-`proteincartography.reducers` and `proteincartography.fusion`, that work the
-same way.
+`spaces.registry.BLOCK_GROUP`. **It is the only group that is resolved.**
+`REDUCER_GROUP` and `FUSION_GROUP` are defined beside it and reserved for later;
+nothing reads them today, so a reducer or fusion entry point is silently
+ignored. Both are closed sets — see §7.
 
 The entry-point *name* is what a config's `provider:` field names. Keep it
 stable: it goes into every manifest.
@@ -43,14 +44,15 @@ so your package need not depend on ProteinCartography at all to satisfy it.
 class HydropathyWindowsProvider:
     """Mean Kyte-Doolittle hydropathy in W windows along each sequence."""
 
-    #: Validates and normalizes the block's `params` from the config. Called at
-    #: config-parse time, before anything runs, so a typo fails in a second
-    #: rather than four hours into a search.
+    #: Validates and normalizes the block's `params` from the config.
+    #: Declarative only: see the note under `spec_schema` below. Call it
+    #: yourself, first thing in `compute`, as the built-in providers do.
     spec_schema = staticmethod(validate_params)
 
-    #: Bump when the output's *meaning* changes. It is part of the cache key,
-    #: so cached blocks from an older version invalidate rather than being
-    #: silently reused.
+    #: Bump when the output's *meaning* changes. Recorded on every block, and
+    #: **not yet part of the cache key** — `Manifest.cache_key` excludes
+    #: `derived`, which is where the resolved spec lands, so a bump does not
+    #: currently invalidate anything. `docs/FOLLOWUPS.md` #46.
     version = "1"
 
     def is_available(self) -> tuple[bool, str]:
@@ -70,7 +72,16 @@ class HydropathyWindowsProvider:
 ### `spec_schema`
 
 A callable taking the raw `params` dict and returning a validated one, raising
-on anything it does not recognise. **Reject unknown keys.** A misspelled
+on anything it does not recognise. **Reject unknown keys.**
+
+**The framework does not call it.** It is declared by all four built-in
+providers and read by nothing outside the tests: validation happens because each
+provider calls its own `validate_params` at the top of `compute()`, which is
+*inside* the snakemake rule and therefore after the run has started. The reason
+is deliberate — `config_schema.py` validates a config without importing any
+provider, so it cannot reach a provider's schema at parse time — but the effect
+is that a third-party provider which declares `spec_schema` and trusts it to run
+gets no parameter validation at all. Call it yourself. A misspelled
 parameter that is silently ignored is indistinguishable from one that is read
 and does nothing, which is the most persistent defect shape in this codebase —
 `spec.metric` and `spec.normalization` are each recorded on every block and
@@ -231,13 +242,16 @@ uses them, so `is_available()` can be consulted before anything is loaded.
 
 ## 7. Reducers and fusion strategies
 
-The same mechanism, different groups. A reducer entry point in
-`proteincartography.reducers` supplies a callable returning a `ReducerResult`
+Neither is extensible by entry point today, despite `REDUCER_GROUP` and
+`FUSION_GROUP` existing. Reducers are resolved from the closed
+`reduce_space.REDUCER_PIPELINES` dict; adding one means editing that dict. What
+the group would supply, if it is ever wired, is a callable returning a
+`ReducerResult`
 (coordinates, protids, column names, and `params_used` *after* clamping — a run
 at N=4 that asked for 80 neighbours and got 3 must say so, or two runs with
 identical configs and different N look identical in provenance).
 
-Fusion is deliberately **not** extensible by entry point. The four strategies
+Fusion is deliberately not extensible, rather than merely not wired. The four strategies
 are a closed set that the config validator has to enumerate anyway, and each
 one's parameters are declared in `fusion.STRATEGY_PARAMS` so an unknown
 parameter is rejected rather than ignored (ADR 0013 §6).

@@ -249,9 +249,12 @@ Two behaviours to know:
 ## 6. Reproducibility, honestly
 
 - **Default configuration output is byte-identical** to upstream at the commit
-  this branch forked from, proven by a parity test that is itself mutation
-  tested (12 mutations detected, 5 survived-as-expected with a recorded reason,
-  0 unexplained holes).
+  this branch forked from, checked by a parity test that CI runs on every pull
+  request and that is itself mutation tested (12 mutations detected, 5
+  survived-as-expected with a recorded reason, 0 unexplained holes). Read that
+  mutation result narrowly: the harness runs pipeline steps and diffs output
+  trees, and all 17 of its mutations name six pipeline scripts, so it says
+  nothing about the block, fusion or diagnostics modules.
 - **Two runs of the same config agree above N=500**, guarded in CI.
 - **The Leiden partition is not reproducible across environments at very small
   N.** Two environments agreeing on scanpy, leidenalg, igraph, numpy and

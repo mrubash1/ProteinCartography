@@ -119,12 +119,15 @@ class BlockSpec:
         normalization: applied before any weighting. ADR 0002 requires that
             block scale be normalized before weights are meaningful.
         provider: the registry name that produces this block.
-        params: provider-specific parameters, already validated by the
-            provider's ``spec_schema``.
+        params: provider-specific parameters, validated by the provider itself
+            at the top of ``compute``. Nothing calls ``spec_schema`` for it --
+            see the note on that attribute.
         not_fusable_reason: required when ``fusable`` is False. This string is
             shown to the user verbatim when they try to fuse the block.
-        version: bumped by a provider when its output changes meaning, so that
-            cached blocks are invalidated.
+        version: bumped by a provider when its output changes meaning. Recorded
+            on the block and, today, read by nothing: ``Manifest.cache_key``
+            excludes ``derived``, which is where this lands, so a bump does not
+            invalidate a cached block (FOLLOWUPS #46).
     """
 
     id: str
@@ -429,6 +432,12 @@ class BlockProvider(Protocol):
     #: Callable validating and normalizing this provider's params dict.
     #: Raises on bad input. A provider that already depends on pydantic may
     #: implement this with a pydantic model; the contract is the callable.
+    #:
+    #: **Declarative only -- the framework never calls it.** `config_schema`
+    #: validates a config without importing any provider, so it cannot reach
+    #: this at parse time. Every built-in provider calls its own
+    #: `validate_params` first thing in `compute`, and a provider that does not
+    #: gets no validation. See docs/EXTENDING.md §2.
     spec_schema: object
 
     def is_available(self) -> tuple:

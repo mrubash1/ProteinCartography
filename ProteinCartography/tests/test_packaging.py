@@ -12,6 +12,7 @@ import pathlib
 import shutil
 import subprocess
 import sys
+import tempfile
 
 PACKAGE_DIRPATH = pathlib.Path(__file__).parent.parent
 REPO_DIRPATH = PACKAGE_DIRPATH.parent
@@ -97,11 +98,17 @@ def test_every_subpackage_is_listed_in_setup_py():
     to notice it.
     """
     listed = set(get_setup_packages())
-    expected = {
-        f"{PACKAGE_DIRPATH.name}.{path.parent.name}"
-        for path in PACKAGE_DIRPATH.glob("*/__init__.py")
-        if path.parent.name != "tests"
-    }
+    # Recursive, and built from the whole relative path rather than the leaf
+    # directory name. The non-recursive version passed for the right reason
+    # today and would have missed a second nested subpackage entirely; naming a
+    # nested one by its leaf would have looked for `ProteinCartography.reducers`
+    # rather than `ProteinCartography.spaces.reducers` (REVIEW_LOG GE.10).
+    expected = set()
+    for path in PACKAGE_DIRPATH.glob("**/__init__.py"):
+        parts = path.parent.relative_to(PACKAGE_DIRPATH).parts
+        if not parts or parts[0] == "tests":
+            continue
+        expected.add(".".join((PACKAGE_DIRPATH.name, *parts)))
     missing = sorted(expected - listed)
     assert not missing, (
         f"these subpackages exist but are not in setup.py's `packages`: {missing}. "
@@ -166,3 +173,35 @@ def test_api_utils_is_importable_outside_a_git_repo(tmp_path):
         text=True,
     )
     assert process.returncode == 0, process.stderr
+
+
+def test_dim_reduction_is_importable_as_a_package_module():
+    """`from ProteinCartography import dim_reduction` must keep working.
+
+    It worked at the commit this branch forked from and stopped working when the
+    numerics moved to `spaces.reducers.core` behind a flat import, which resolves
+    only with `ProteinCartography/` itself on `sys.path` -- true when snakemake
+    runs the file as a script, false for anyone importing the package. The README
+    advertises the package as importable and this module carries an explicit
+    `__all__`, so it is the one most likely to be used as a library.
+
+    Run in a subprocess from a directory outside the repository, because a test
+    process started from the repo root already has both paths available and so
+    cannot tell the two import forms apart (REVIEW_LOG GE.11).
+    """
+    repo_root = PACKAGE_DIRPATH.parent
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from ProteinCartography import dim_reduction; print(dim_reduction.MODES)",
+        ],
+        cwd=tempfile.gettempdir(),
+        env={**os.environ, "PYTHONPATH": str(repo_root)},
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, (
+        "`from ProteinCartography import dim_reduction` failed:\n" + completed.stderr
+    )
+    assert "pca_umap" in completed.stdout

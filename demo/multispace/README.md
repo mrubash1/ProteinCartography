@@ -7,7 +7,7 @@ seven ways, compared pairwise, and diagnosed.
 snakemake --configfile demo/multispace/config.yml --use-conda --cores 8
 ```
 
-Offline, about two minutes after the conda environments exist, 35 rules.
+Offline, about two minutes after the conda environments exist, 36 rules.
 
 **Everything the legacy pipeline produces is still produced, byte for byte.**
 The `blocks:` and `spaces:` keys are additive. Delete them and this config is
@@ -35,7 +35,12 @@ not the data, is what changes.
 
 **Ten pairwise comparisons**, in `coregistration/summary.tsv`.
 
-**Nine diagnostics per space**, in `spaces/{space_id}/diagnostics.json`.
+**Seven diagnostic sections per space**, in
+`spaces/{space_id}/diagnostics.json` — `diagnose_space.SECTIONS`. Phase 5
+specifies nine diagnostics; the ninth is the cross-run determinism guard, which
+is a test rather than a report (ADR 0014 decision 8), and the count a given
+space writes is lower still when a section could not be answered — the richest
+space here writes six.
 
 ---
 
@@ -60,9 +65,12 @@ Measured on this cohort:
   `k` is clamped to 6 of 11 — more than half the cohort — so "neighborhood" has
   stopped meaning anything local.
 - **`tmscore` and `biophys` correlate at Spearman 0.883** over their pairwise
-  distances, just under the 0.90 redundancy threshold. The three fused spaces
-  split their contribution 50/50 and that split is honest arithmetic, but the
-  two blocks are closer to saying the same thing than their names suggest. This
+  distances, just under the 0.90 redundancy threshold. Only two of the three
+  fused spaces ask for 50/50: `fused_early` weights both blocks 1.0 and still
+  lands at 73.3/26.7, because `early` concatenates features and `tmscore`
+  brings 11 columns to `biophys`'s 4. `fused_late` asks 50/50 and realizes
+  34/66; `fused_graph` asks 50/50 and realizes 50.4/49.6. The nominal split is
+  not the realized one, which is the reason the manifest records both. This
   is the number ADR 0002's `early` warning gestures at and cannot itself
   provide.
 - **The censoring rate is exactly 0.000.** Nothing is hidden: at N=11 Foldseek's
@@ -94,7 +102,7 @@ demo/multispace/output/
 │   ├── embedding_pca_umap.tsv  the 2-D layout
 │   ├── clusters.tsv            this space's own Leiden partition
 │   ├── faithfulness_*.tsv      trustworthiness and continuity, per protein
-│   ├── diagnostics.json        all nine diagnostics
+│   ├── diagnostics.json        the diagnostic sections this space could answer
 │   └── manifest_*.json
 ├── coregistration/
 │   ├── summary.tsv             one row per pair, four metrics
