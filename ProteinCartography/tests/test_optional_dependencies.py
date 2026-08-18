@@ -14,8 +14,11 @@ needs not to break.
 """
 
 import importlib
+import pathlib
 
 import pytest
+
+PACKAGE_ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 #: Every module that must import with only numpy and pandas available. A
 #: provider that needs a heavy dependency imports it inside the function that
@@ -46,6 +49,10 @@ CORE_MODULES = [
     # scanpy-backed, and listed here for exactly that reason: the import must
     # stay inside the function so that `is_available()` can be consulted first.
     "clustering",
+    # The explorer's payload is pandas-only; plotly is imported inside
+    # `build_explorer.main` after `is_available()` has been consulted.
+    "explorer.payload",
+    "explorer.template",
 ]
 
 HEAVY = ["sklearn", "umap", "scipy", "scanpy", "torch"]
@@ -130,3 +137,37 @@ def test_tmscore_profile_path_needs_no_optional_dependency(tmp_path):
     assert result.features.shape == (3, 3)
     assert result.spec.kind == "features"
     assert result.spec.metric == "euclidean"
+
+
+def test_the_explorer_payload_does_not_import_plotly():
+    """plotly is 3.6 MB of JavaScript and a heavy import, and the explorer's
+    payload does not need it -- only `build_explorer.main` does, after
+    consulting `is_available()`.
+
+    Checked by inspecting `sys.modules` rather than by adding plotly to
+    :data:`HEAVY`. `cartography_tidy` has plotly installed (arcadia-pycolor
+    pulls it in), so listing it there would make `test_the_test_environment_
+    really_lacks_them` skip and take the sklearn, umap, scipy and scanpy checks
+    down with it -- a strictly worse trade than testing the real property
+    directly.
+    """
+    import subprocess
+    import sys
+
+    probe = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; import explorer.payload, explorer.template; "
+            "print('plotly' in sys.modules)",
+        ],
+        capture_output=True,
+        text=True,
+        cwd=str(PACKAGE_ROOT),
+    )
+    assert probe.returncode == 0, probe.stderr
+    assert probe.stdout.strip() == "False", (
+        "importing the explorer's payload pulled plotly in; it must stay inside "
+        "build_explorer.main so an unavailable plotly is a skipped rule rather than "
+        "an import error"
+    )

@@ -11,6 +11,7 @@ setup(
         "ProteinCartography.diagnostics",
         "ProteinCartography.blocks",
         "ProteinCartography.spaces.reducers",
+        "ProteinCartography.explorer",
     ],
     version="0.0.2",
     license="MIT",
@@ -18,6 +19,7 @@ setup(
     scripts=[
         "ProteinCartography/aggregate_domain_hits.py",
         "ProteinCartography/aggregate_features.py",
+        "ProteinCartography/build_explorer.py",
         "ProteinCartography/aggregate_hits.py",
         "ProteinCartography/assign_domains.py",
         "ProteinCartography/dim_reduction.py",

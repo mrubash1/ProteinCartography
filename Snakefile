@@ -110,6 +110,15 @@ if MULTISPACE_ENABLED:
     for space_id in sorted(MULTISPACE_CONFIG.spaces):
         DIAGNOSTICS_TARGETS.append(SPACES_DIR / space_id / "diagnostics.json")
 
+# One file, all data embedded, no server (ADR 0005). Unreachable without a
+# `spaces:` key, like every other rule in this work, and it depends on the
+# diagnostics rather than on the embeddings alone: what it refuses to draw is
+# decided by the diagnostics, and building it from coordinates only would give
+# a page that renders every space as if it were trustworthy.
+EXPLORER_TARGETS = []
+if MULTISPACE_ENABLED:
+    EXPLORER_TARGETS.append(FINAL_RESULTS_DIR / (ANALYSIS_NAME + "_explorer.html"))
+
 # Co-registration compares spaces pairwise. Empty unless `coregistration.compare`
 # names at least two of them, so asking for spaces does not silently buy a
 # comparison as well.
@@ -1173,6 +1182,44 @@ rule enrich_clusters:
         """
 
 
+rule build_explorer:
+    """
+    One self-contained HTML file: every co-registered space, linked selection,
+    and the diagnostics that say which panels may be read.
+
+    Depends on the diagnostics, not just the embeddings. A page built from
+    coordinates alone would draw an unreadable space exactly like a trustworthy
+    one, which is the failure ADR 0005 item 5 and ADR 0014 both exist to
+    prevent.
+
+    `plot_interactive` keeps working and keeps emitting its existing filenames;
+    this is additive.
+
+    Placed after `aggregate_features` because it references
+    `rules.aggregate_features`, and snakemake resolves `rules.` at parse time --
+    the same ordering constraint that moved `diagnose_space` below
+    `leiden_clustering` in group 8b.
+    """
+    input:
+        diagnostics=DIAGNOSTICS_TARGETS,
+        features=rules.aggregate_features.output.aggregated_features,
+        resolved_config=rules.multispace_config.output.resolved,
+    output:
+        explorer=FINAL_RESULTS_DIR / (ANALYSIS_NAME + "_explorer.html"),
+    conda:
+        "envs/plotting.yml"
+    benchmark:
+        BENCHMARKS_DIR / "build_explorer.txt"
+    shell:
+        """
+        python ProteinCartography/build_explorer.py \
+            --configfile {input.resolved_config} \
+            --output-dir {OUTPUT_DIR} \
+            --analysis-name {ANALYSIS_NAME} \
+            --output {output.explorer}
+        """
+
+
 rule plot_interactive:
     """
     Generate interactive scatter plot HTML programmatically based on user-input parameters
@@ -1343,6 +1390,7 @@ rule all:
         MULTISPACE_TARGETS,
         # One per space, and empty for the same reason MULTISPACE_TARGETS is.
         DIAGNOSTICS_TARGETS,
+        EXPLORER_TARGETS,
         # Empty again unless `coregistration.compare` names two spaces.
         [str(COREGISTRATION_DIR / "summary.tsv")] if COREGISTRATION_ENABLED else [],
         # And again unless `enrichment` names an annotation column.
