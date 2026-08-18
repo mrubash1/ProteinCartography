@@ -126,6 +126,38 @@ def runs(tmp_path_factory, repo_dirpath, baseline_repo, conda_prefix):
     return {"head_a": head_a, "head_b": head_b, "base_a": base_a, "base_b": base_b}
 
 
+#: The smallest config that puts a space in the DAG. `diagnose_space` is the
+#: only consumer of the cohort report, so this is what makes the report appear.
+_MINIMAL_SPACES = {
+    "blocks": {"tmscore": {"provider": "tmscore", "representation": "profile"}},
+    "spaces": {"legacy": {"blocks": ["tmscore"], "strategy": "none", "reducers": ["pca"]}},
+}
+
+
+@pytest.fixture(scope="module")
+def cohort_report_run(tmp_path_factory, repo_dirpath, conda_prefix):
+    """One HEAD run with a space enabled, which is where the cohort report lives.
+
+    It is not on the default path and deliberately so. The report was originally
+    a second output of the `download_pdbs` *checkpoint*, and an output that no
+    job requests is never a reason to re-run a checkpoint -- so on any output
+    tree produced before this branch, `checkpoints.download_pdbs.get()` raised,
+    `copy_pdb` was never scheduled, and the run finished silently without the
+    query proteins (REVIEW_LOG GE.2). Making the report a demanded target
+    instead would fix that by forcing the checkpoint to re-run, and snakemake
+    deletes a `directory()` output before re-running its rule, so a resumed
+    search would re-download every structure. Declaring it only when
+    `diagnose_space` reads it is the option that costs neither.
+    """
+    work = tmp_path_factory.mktemp("cohort_report")
+    return run_pipeline(
+        Path(repo_dirpath),
+        work / "run",
+        conda_prefix=conda_prefix,
+        extra_config=_MINIMAL_SPACES,
+    )
+
+
 @pytest.fixture(scope="module")
 def self_diffs(runs):
     """Each checkout compared against itself: the baseline's pair, then HEAD's.
@@ -259,7 +291,7 @@ def test_the_pivoted_matrix_is_self_consistent(runs):
 
 
 @pytest.mark.slow
-def test_the_cohort_report_records_the_truncation_the_baseline_hid(runs):
+def test_the_cohort_report_records_the_truncation_the_baseline_hid(runs, cohort_report_run):
     """The demo fixture truncates, and the baseline says nothing about it.
 
     Worth asserting on the real run rather than a unit fixture, because the
@@ -269,11 +301,11 @@ def test_the_cohort_report_records_the_truncation_the_baseline_hid(runs):
     """
     import json
 
-    head, base = Path(runs["head_a"]), Path(runs["base_a"])
+    base = Path(runs["base_a"])
     relpath = "protein_features/cohort_report.json"
     assert not (base / relpath).exists(), "the baseline is not supposed to have this file"
 
-    payload = json.loads((head / relpath).read_text())
+    payload = json.loads((Path(cohort_report_run) / relpath).read_text())
     assert payload["rule"] == "as_filtered"
     assert payload["truncation_fired"] is True
     assert payload["reproducible"] is False
@@ -285,7 +317,7 @@ def test_the_cohort_report_records_the_truncation_the_baseline_hid(runs):
 
 
 @pytest.mark.slow
-def test_the_cohort_the_report_describes_is_the_cohort_that_was_built(runs):
+def test_the_cohort_the_report_describes_is_the_cohort_that_was_built(cohort_report_run):
     """A report that disagrees with the run is worse than no report.
 
     The retained count has to match the structures actually downloaded, or the
@@ -293,7 +325,7 @@ def test_the_cohort_the_report_describes_is_the_cohort_that_was_built(runs):
     """
     import json
 
-    head = Path(runs["head_a"])
+    head = Path(cohort_report_run)
     payload = json.loads((head / "protein_features" / "cohort_report.json").read_text())
     matrix = head / "foldseek_clustering_results" / "all_by_all_tmscore_pivoted.tsv"
     n_in_map = sum(1 for _ in matrix.read_text().splitlines()) - 1
@@ -323,7 +355,10 @@ def test_significance_selection_produces_a_reproducible_cohort(
         Path(repo_dirpath),
         work / "run",
         conda_prefix=conda_prefix,
-        extra_config={"cohort": {"selection": "significance", "max_structures": 10}},
+        extra_config={
+            "cohort": {"selection": "significance", "max_structures": 10},
+            **_MINIMAL_SPACES,
+        },
     )
 
     scores = (output / "protein_features" / "hit_significance.tsv").read_text().splitlines()
@@ -340,18 +375,18 @@ def test_significance_selection_produces_a_reproducible_cohort(
 
 
 @pytest.mark.slow
-def test_the_cohort_report_is_deterministic(runs, nondeterminism_floor):
-    """It lands in the output tree, so it must not become a source of churn."""
-    relpath = "protein_features/cohort_report.json"
-    assert relpath not in nondeterminism_floor
-    a = (Path(runs["head_a"]) / relpath).read_bytes()
-    b = (Path(runs["head_b"]) / relpath).read_bytes()
-    assert a == b
+def test_the_default_tree_does_not_carry_the_cohort_report(runs):
+    """The GE.2 invariant, on a real run rather than on a dry-run plan.
 
-
-# --------------------------------------------------------------------------
-# tests of the harness itself
-# --------------------------------------------------------------------------
+    The report must not appear on the default path, because the only way to put
+    it there is a second output on the `download_pdbs` checkpoint, and that
+    silently drops `copy_pdb` on every pre-existing output tree. Its content is
+    asserted on `cohort_report_run`; its byte-stability in
+    `test_cohort.py::test_the_written_report_is_byte_stable`, which does not
+    need a pipeline run to say it.
+    """
+    for key in ("head_a", "head_b"):
+        assert not (Path(runs[key]) / "protein_features" / "cohort_report.json").exists()
 
 
 def test_the_baseline_commit_resolves_or_says_it_cannot(repo_dirpath):
