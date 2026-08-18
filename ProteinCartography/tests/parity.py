@@ -128,6 +128,16 @@ EXCLUSIONS = (
 #: Adding an entry here is a claim that the file is *new*, not that a difference
 #: in it is acceptable. Keep it short; a long list means the port grew outputs
 #: nobody asked for.
+#:
+#: **Both entries are currently unreachable, and that is the correct state.**
+#: Gate E's GE.2 made each of these outputs conditional on the rule that reads
+#: it, so neither appears in a default run, and the default tree is byte-identical
+#: to the baseline file for file rather than "identical plus two". They are kept
+#: because the *mechanism* is what matters and is still exercised -- by
+#: `test_an_additive_output_missing_from_the_baseline_is_allowed` and its four
+#: siblings, on synthetic trees -- and because the next genuinely additive output
+#: needs this list to exist. If the list is still empty-in-practice when a second
+#: reader asks about it, that is an argument for deleting it, not for adding to it.
 ADDITIVE_OUTPUTS = (
     (
         "protein_features/cohort_report.json",
