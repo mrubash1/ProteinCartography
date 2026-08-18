@@ -1677,7 +1677,147 @@ that does not depend on it. Both now come first.
 
 ## Gate D — after commit group 8 (fusion and diagnostics)
 
-*Not yet run.*
+**RAN 2026-08-18. FAILED, then fixed** — three defects, one of them serious. Fixes
+in `1367611`.
+
+Run against groups 6 through 8c. §4.3's brief is *make the system produce a
+confidently wrong answer*, and the method mattered: this was run as **twenty
+executable probes**, each one an attempt to actually obtain a wrong number, not
+a reading pass over the diff. Every "blocked" below is a call that was made and
+an exception or a correct answer that came back, not an inspection of the code
+that would have produced it. Two of the three defects are invisible to reading —
+one is a floating-point residue and one is `argsort`'s NaN convention.
+
+The gate's own named targets all held. The three defects came from probes added
+beyond them, which is worth recording: the brief's list was written before
+groups 7 through 8c existed, and the questions it does not ask are where the
+findings were.
+
+### GD.1 — A block with no geometry takes 46.7% of the fused map
+
+**Severity: blocks. Fixed.**
+
+ADR 0002 promises a clear error for a block whose every pairwise distance is
+zero, and `test_a_block_with_no_geometry_is_an_error_not_a_nan` has asserted it
+since group 8a. The probe called `fuse("late", ...)` with `fusion_cohort`'s
+`degenerate` block — every row bitwise identical — and got back a
+`FusionResult` in which that block held a **46.7% contribution share**. Under
+`graph`, 37.9%.
+
+The guard reads `if mean <= 0.0`. `pairwise_distances` computes distances by the
+Gram identity, `|x|² + |y|² − 2x·y`, for the memory reason its docstring gives —
+broadcasting the differences needs `N²D` intermediates and is hundreds of
+gigabytes for a 2500-protein profile block. That identity loses about
+`sqrt(eps)` relative precision near zero, so the mean distance of a constant
+block came back as **4.21e-08** rather than 0. Dividing by it amplified pure
+cancellation noise into a unit-mean-distance geometry, and the contribution
+share was computed honestly over noise.
+
+Three things about this are worth keeping:
+
+**The existing test passed the whole time, and the reason it passed is the
+fixture's N.** At the fixture's N=240 the residue cancels to exactly 0.0; at
+N=60 it is 4.21e-08. The difference is the magnitude of the constant row, which
+is a random draw. So the test was correct, the code was wrong, and which one you
+saw depended on a seed. The test is parameterized over four cohort sizes now.
+This is the third distinct time in this work that a fixture *size* has been the
+difference between a defect being visible and invisible (Gate C's N=11 parity
+blindness, G8b.5's `DEFAULT_K`, and now this) — and the first where the size was
+not too small in any obvious way.
+
+**A comment stating an invariant does not enforce it, third instance.** The
+docstring of `pairwise_distances` says, correctly, "the identity loses a little
+precision near zero", and clips negatives to handle it. The guard fifty lines
+away tests for exact zero. Both authors were right about their own line.
+
+**The threshold is not a float64 argument.** The fix refuses a mean below
+`1e-6` of the block's own largest absolute value, and that number comes from ADR
+0004: blocks are stored as **float32**, whose epsilon is 1.2e-07. Variation
+below roughly 1e-6 of a block's magnitude is not representable on disk and
+cannot be geometry whatever the arithmetic in memory says. That is measured
+rather than argued — round-tripping a block through `float32` and reading back
+the surviving per-column standard deviation:
+
+| block offset | variation | relative | std surviving `float32` |
+|---|---|---|---|
+| 1e3 | 1e-2 | 1e-5 | 9.912e-03 of 1e-2 — intact |
+| 1e6 | 1e1  | 1e-5 | 9.913e+00 of 1e1 — intact |
+| 1e6 | 1e-2 | 1e-8 | **0.000e+00** — destroyed entirely |
+
+So the floor accepts every block whose geometry survives the store and refuses
+exactly those whose does not. Both branches are
+reachable and they now say different things, because a "this is zero" message
+about a distance of 4e-08 sends a reader looking for the wrong thing.
+
+### GD.2 — One NaN produces a plausible faithfulness score
+
+**Severity: should-fix. Fixed.**
+
+A single non-finite cell in a feature matrix makes one protein's whole distance
+row NaN. `np.argsort` sorts NaN to the *end* rather than raising, so that
+protein sorts last for every other protein, its own neighbor list is whichever
+proteins happen to be farthest, and `faithfulness` returns **0.489** — a number
+indistinguishable from "this is a mediocre map".
+
+This is the shape of defect this whole package exists to prevent, occurring
+inside the package. `require_finite` now guards the three diagnostics that rank
+distances, and lives in one module so they cannot disagree about it.
+
+### GD.3 — `jaccard_rows` is silently wrong on a repeated index
+
+**Severity: note. Fixed.**
+
+`jaccard_rows([[1,1,2]], [[1,2,3]])` returned **1.0**; the sets give 0.667. The
+`|A ∪ B| = 2k − |A ∩ B|` identity the fast path uses assumes each row is a set,
+and a repeated index is counted as an intersection with itself.
+
+No live caller can violate the precondition — every one passes
+`neighbor_ordering` output, which cannot repeat — so this is not a live defect.
+It is recorded because the function is in `__all__` and the wrong answer was
+silent, which is the combination that makes a note worth acting on rather than
+deferring.
+
+### What was attacked and held
+
+Each of these is a probe that ran, not a file that was read.
+
+| target | result |
+|---|---|
+| `fusable: false` block in a multi-block space | `NotFusableError`, naming the block, the reason and ADR 0003 |
+| the same, forced with an explicit `fusable: true` | refused unless `fusable_override_reason` is given, which is then recorded |
+| the same, alone in a single-block space | **accepted, and correctly so** — a single-block space is not a fusion, and ADR 0003's argument is about letting a signal *move* points. Documented in `_validate_fusability`'s docstring |
+| two blocks whose protid order differs | aligned by label through `ProteinIndex.align`, per block, in `fuse_blocks` |
+| contribution shares summing to 1 | exactly `1.000000000000` under `none`, `early`, `late` and `graph` |
+| a block contributing ~0% | reported, not hidden: `early` gives `narrow` 1.85% and the ADR 0002 dominance warning fires above 70% |
+| a fused map without its weight vector | every `FusionResult` carries `(block_id, weight, realized_share)`; `describe()` prints them |
+| a matrix whose column order is a permutation of its row order | `MatrixAlignmentError`, quantified — "only 0 of 3 columns (0.00%) sit in their row position" — naming PR #106 and offering `repair=True` |
+| duplicate protids | `IndexAlignmentError` from `ProteinIndex`, which every real path builds |
+| a partition covering only some proteins | negative controls skip it with the count in the message |
+| a singleton cluster's silhouette | 0.0, not 1.0, matching scikit-learn |
+| ARI of two degenerate partitions | 1.0, matching scikit-learn's convention, and the pipeline reaches it below three proteins |
+| redundancy over a 2-protein space | `RedundancyError` — one pair is too few to mean anything |
+| an embedding file whose protids are permuted | reindexed by label before comparison |
+| a resolution sweep over pure noise | no plateau, and the warning says the count is tracking the parameter |
+| negative controls where the observed silhouette is negative | warned |
+| the censoring mask through the float32 store | survives as `bool` |
+| `graph` fusion over two pure-noise blocks | symmetric, finite, 50/50 — **structurally perfect and meaningless**, which is G8.4's finding and the reason `fusion_cohort` plants a partition rather than checking shapes |
+
+### GD.4 — What the gate says about the gate
+
+Two observations that generalize past this run.
+
+**The brief's checklist was the weakest part of it.** §4.3's five Gate D
+questions were written during Phase 1, before groups 7, 7b, 8a, 8b and 8c
+existed. All five held on the first attempt. All three defects came from probes
+invented while attacking, and two of them are in code the checklist could not
+have anticipated. A gate written in advance is a floor, not the work.
+
+**Probes beat reading, measurably.** GD.1 is a floating-point residue whose
+existence depends on a random draw; GD.2 is a documented numpy convention doing
+exactly what it documents. Neither is visible in a diff, and neither would have
+been found by a reviewer reasoning about the code — including one who had just
+written it, since group 8a wrote both the guard and the test that asserts it
+works.
 
 ## Gate E — before opening the PR
 
