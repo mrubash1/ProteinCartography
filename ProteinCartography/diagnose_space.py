@@ -27,6 +27,21 @@ share cannot give.
 **Did the map survive two dimensions?** ``diagnostics/embedding.py``, per
 reducer and per protein.
 
+**Was the neighborhood ever determinate?** ``diagnostics/stability.py``. The one
+question here that is not about a map: a protein whose k-th and (k+1)-th
+neighbors are closer together than the measurement's own noise has a neighbor
+list that would have come out differently on a repeat run, and no faithful
+projection makes it mean anything.
+
+**Is the partition a property of the proteins, or of the resolution knob?**
+``diagnostics/partition.py``, over partitions from ``clustering.py``. Two
+reports: a Leiden resolution sweep looking for a plateau, and negative controls
+that say what the same numbers look like when there is nothing there. Both are
+opt-in through `diagnostics.leiden_resolution_sweep` and
+`diagnostics.negative_controls`, and both are skipped with a logged reason when
+scanpy is absent -- a missing optional dependency is a reduced result, not an
+error (ADR 0006 rule 2).
+
 Additive, like every rule in this work. Nothing consumes what it writes, and it
 stays out of the DAG entirely unless a config asks for a space.
 """
@@ -42,7 +57,9 @@ from config_io import load_config
 from config_schema import from_legacy
 from coregistration import pairwise_distances
 from diagnostics.embedding import faithfulness
+from diagnostics.partition import negative_controls, resolution_sweep
 from diagnostics.redundancy import RedundancyError, redundancy
+from diagnostics.stability import neighborhood_stability
 from reduce_space import features_for
 from spaces.manifest import Manifest
 from spaces.store import BlockStore
@@ -53,7 +70,21 @@ DIAGNOSTICS_FILENAME = "diagnostics.json"
 #: absent when this run could not answer it -- a single-block space has no
 #: redundancy, a cluster-mode run has no cohort report -- so the set that landed
 #: is itself information and is recorded in the manifest.
-SECTIONS = ("censoring", "cohort", "redundancy", "faithfulness")
+SECTIONS = (
+    "censoring",
+    "cohort",
+    "redundancy",
+    "faithfulness",
+    "stability",
+    "resolution_sweep",
+    "negative_controls",
+)
+
+#: Written beside ``diagnostics.json`` when this space could be clustered. Not
+#: a declared snakemake output: whether it exists depends on scanpy being
+#: importable and on the space having three proteins, and a rule that promises
+#: a file it cannot always write fails the run instead of degrading it.
+CLUSTERS_FILENAME = "clusters.tsv"
 
 
 def parse_args():
@@ -204,8 +235,39 @@ def main() -> int:
         "n_proteins": len(protids),
     }
 
+    high = pairwise_distances(np.asarray(fused.values, dtype=np.float64))
+
+    # 0. this space's own partition, which four of the sections below want and
+    #    none of them had before group 8c. Computed once, written out, and
+    #    preferred over the legacy one wherever a partition is needed.
+    own = _own_partition(args.space_id, fused, protids, space_dir)
+    legacy_clusters = read_clusters(args.clusters) if args.clusters else None
+    if own is not None:
+        report["partition"] = {
+            "source": "this space",
+            "resolution": own.resolution,
+            "n_clusters": own.n_clusters,
+            "n_neighbors": own.n_neighbors,
+            "n_pcs": own.n_pcs,
+            "seed": own.seed,
+        }
+    elif legacy_clusters:
+        # FOLLOWUPS #41: this is the legacy *structural* partition, which is the
+        # right one for the `structure` space and the wrong one for
+        # `physicochemistry`. Recorded rather than silently substituted.
+        report["partition"] = {
+            "source": "the legacy structural clustering",
+            "n_clusters": len(set(legacy_clusters.values())),
+            "caveat": (
+                "this space was not clustered in its own right, so every partition-"
+                "dependent number below describes the structural clustering applied "
+                "to this space's distances rather than this space's own grouping."
+            ),
+        }
+
+    clusters = own.as_mapping() if own is not None else legacy_clusters
+
     # 1. was the input measured
-    clusters = read_clusters(args.clusters) if args.clusters else None
     censoring = [c for c in (censoring_for_block(b, clusters) for b in blocks) if c]
     if censoring:
         report["censoring"] = censoring
@@ -233,13 +295,43 @@ def main() -> int:
     # 4. did the map survive two dimensions
     embeddings = parse_named(args.embedding, "--embedding")
     if embeddings:
-        high = pairwise_distances(np.asarray(fused.values, dtype=np.float64))
         report["faithfulness"] = [
             _faithfulness_for(
                 args.space_id, reducer, path, high, protids, space_dir, config.diagnostics.k
             )
             for reducer, path in sorted(embeddings.items())
         ]
+
+    # 5. was the neighborhood ever determinate. Spelled `config.diagnostics.x`
+    #    at each use rather than through a local alias, so that
+    #    `test_diagnostics_config` can see the read: it looks for the attribute
+    #    access itself, and a local name defeats that.
+    if config.diagnostics.bootstrap_replicates:
+        report["stability"] = [
+            neighborhood_stability(
+                args.space_id,
+                high,
+                protids,
+                k=config.diagnostics.k,
+                replicates=config.diagnostics.bootstrap_replicates,
+                subsample_fraction=config.diagnostics.subsample_fraction,
+            ).to_dict()
+        ]
+    else:
+        _skip(f"{args.space_id}: bootstrap_replicates is 0, so stability was not measured")
+
+    # 6. is the partition a property of the proteins, or of the resolution knob
+    if config.diagnostics.leiden_resolution_sweep:
+        swept = _sweep_for(fused, protids, config.diagnostics.leiden_resolution_sweep)
+        if swept is not None:
+            report["resolution_sweep"] = resolution_sweep(args.space_id, high, swept).to_dict()
+
+    if config.diagnostics.negative_controls:
+        controls = _controls_for(
+            args.space_id, high, protids, clusters, config.diagnostics.negative_controls
+        )
+        if controls is not None:
+            report["negative_controls"] = controls.to_dict()
 
     with open(os.path.join(space_dir, DIAGNOSTICS_FILENAME), "w") as handle:
         json.dump(report, handle, indent=2, sort_keys=True, default=_plain)
@@ -264,6 +356,122 @@ def main() -> int:
         print(f"[diagnose_space] {args.space_id}: {note}", file=sys.stderr)
     print(f"[diagnose_space] wrote {os.path.join(space_dir, DIAGNOSTICS_FILENAME)}")
     return 0
+
+
+def _skip(reason: str) -> None:
+    print(f"[diagnose_space] {reason}", file=sys.stderr)
+
+
+def _own_partition(space_id, fused, protids, space_dir):
+    """Cluster this space, or say in the log why it was not clustered.
+
+    Returns ``None`` rather than raising. Every caller has a fallback, and a
+    space that cannot be clustered should lose the partition-dependent
+    diagnostics, not the run -- ADR 0006 rule 2's "a missing optional
+    dependency is a reduced result, never an error", applied to the one
+    dependency this work reaches for that it did not add.
+    """
+    from clustering import ClusteringError, is_available, leiden_partition
+
+    available, explanation = is_available()
+    if not available:
+        _skip(f"{space_id}: not clustered ({explanation}); partition-dependent sections skipped")
+        return None
+    if len(protids) < 3:
+        _skip(f"{space_id}: {len(protids)} proteins is too few to cluster")
+        return None
+    try:
+        partition = leiden_partition(np.asarray(fused.values, dtype=np.float64), protids)
+    except ClusteringError as error:
+        _skip(f"{space_id}: not clustered ({error})")
+        return None
+    partition.to_frame().to_csv(os.path.join(space_dir, CLUSTERS_FILENAME), sep="\t")
+    return partition
+
+
+def _sweep_for(fused, protids, resolutions):
+    """``{resolution: labels}``, or None when this space cannot be clustered."""
+    from clustering import ClusteringError, is_available, sweep_resolutions
+
+    available, explanation = is_available()
+    if not available or len(protids) < 3:
+        return None
+    try:
+        return sweep_resolutions(np.asarray(fused.values, dtype=np.float64), protids, resolutions)
+    except ClusteringError as error:
+        _skip(f"resolution sweep skipped: {error}")
+        return None
+
+
+def _controls_for(space_id, high, protids, clusters, requested):
+    """The negative controls this config asked for, over this space's partition.
+
+    ``shuffled_labels`` is always computed by ``diagnostics.partition`` and is
+    listed in the config only so that asking for nothing means running nothing.
+    ``random_distances`` needs a clusterer, and it is the one worth waiting
+    for: fitting the pipeline's own Leiden to a matrix with no structure in it
+    returns clusters with a positive silhouette, which is the number a reader
+    has to see beside a real one.
+    """
+    if not clusters:
+        _skip(f"{space_id}: no partition, so the negative controls were skipped")
+        return None
+    labels = [clusters.get(p) for p in protids]
+    if any(label is None for label in labels) or len(set(labels)) < 2:
+        _skip(
+            f"{space_id}: the partition covers {len(set(labels) - {None})} cluster(s) over "
+            f"{sum(label is not None for label in labels)} of {len(protids)} proteins, "
+            "which the silhouette is not defined for; negative controls skipped"
+        )
+        return None
+
+    extra, skipped = [], {}
+    if "random_distances" in requested:
+        extra, skipped = _random_distance_control(protids, high)
+    return negative_controls(space_id, high, labels, extra=extra, skipped=skipped)
+
+
+def _random_distance_control(protids, high):
+    """Cluster a random matrix of the same shape and score the result.
+
+    The random features are drawn at the observed data's scale so that the
+    comparison is of structure rather than of units, and the seed is fixed so
+    that a control which happens to look alarming can be reproduced.
+    """
+    from clustering import ClusteringError, is_available, leiden_partition
+
+    available, explanation = is_available()
+    if not available:
+        return [], {"random_distances": explanation}
+    if len(protids) < 3:
+        return [], {"random_distances": f"{len(protids)} proteins is too few to cluster"}
+    rng = np.random.RandomState(0)
+    scale = float(np.median(high[~np.eye(len(protids), dtype=bool)])) or 1.0
+    values = rng.normal(0.0, scale, size=(len(protids), min(len(protids), 32)))
+    try:
+        fitted = leiden_partition(values, protids)
+    except ClusteringError as error:
+        _skip(f"random-distance control skipped: {error}")
+        return [], {"random_distances": str(error)}
+    if fitted.n_clusters < 2:
+        reason = (
+            "the random matrix produced a single cluster, so it has no silhouette. At "
+            "small N this happens for some spaces and not others -- it is a property of "
+            "the cohort size, not of the space."
+        )
+        _skip(f"random-distance control skipped: {reason}")
+        return [], {"random_distances": reason}
+    return (
+        [
+            (
+                "random_distances",
+                "the same clustering fitted to a random matrix of the same shape and scale",
+                pairwise_distances(values),
+                fitted.labels,
+            )
+        ],
+        {},
+    )
 
 
 def _faithfulness_for(space_id, reducer, path, high, protids, space_dir, k) -> dict:

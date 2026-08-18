@@ -290,3 +290,45 @@ def test_bad_arguments_are_refused(kwargs, message):
 def test_a_non_square_distance_matrix_is_refused():
     with pytest.raises(StabilityError, match="must be square"):
         neighborhood_stability("bad", DISTANCES[:, :5], COHORT.protids, k=3)
+
+
+# --- the vacuity guard, which the demo found ---------------------------------
+
+
+def test_a_neighborhood_that_is_the_whole_subsample_says_so():
+    """The defect the demo exposed, and the reason to run things end to end.
+
+    At eleven proteins k clamps to 8 and a replicate holds 9, so every
+    protein's k nearest are *all* the others and the Jaccard is 1.0 whatever
+    the noise. All seven demo spaces reported perfect stability under a sigma
+    half the size of the data. Reporting 1.000 there is the most confident
+    possible way to say nothing, so the report now says which it is.
+    """
+    small = stability_cohort(k=2)
+    result = neighborhood_stability("demo", small.distances()[:11, :11], small.protids[:11], k=15)
+    assert result.mean_stability == 1.0
+    assert result.k == 8
+    assert result.subsample_size == 9
+    assert result.neighborhood_fraction == 1.0
+    assert not result.informative
+    assert any("Jaccard is 1.0 by construction" in note for note in result.warnings())
+
+
+def test_a_neighborhood_over_half_the_subsample_is_flagged_without_being_refused():
+    """Between "local" and "vacuous" there is a band worth naming rather than
+    erroring on -- the score is real, it is just not measuring anything local."""
+    small = stability_cohort(k=2)
+    result = neighborhood_stability("mid", small.distances()[:30, :30], small.protids[:30], k=15)
+    assert result.k == 15
+    assert 0.5 <= result.neighborhood_fraction < 1.0
+    assert not result.informative
+    assert any("most of the cohort" in note for note in result.warnings())
+    assert not any("by construction" in note for note in result.warnings())
+
+
+def test_a_local_neighborhood_is_reported_as_informative():
+    """The other half of the guard: it must not fire at a sane k."""
+    result = run()
+    assert result.informative
+    assert result.neighborhood_fraction < 0.1
+    assert not any("most of the cohort" in note for note in result.warnings())

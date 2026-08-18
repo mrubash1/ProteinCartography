@@ -21,6 +21,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
+from diagnostics.partition import CONTROL_DESCRIPTIONS
 from enrichment import ENCODINGS
 from fusion import STRATEGY_PARAMS
 from spaces.base import (
@@ -681,6 +682,32 @@ class DiagnosticsConfig:
             "diagnostics.subsample_fraction",
             0 < self.subsample_fraction <= 1,
             f"must be in (0, 1], got {self.subsample_fraction}",
+        )
+        for value in self.leiden_resolution_sweep:
+            _require_number("diagnostics.leiden_resolution_sweep", value)
+            _require(
+                "diagnostics.leiden_resolution_sweep",
+                value > 0,
+                f"resolutions must be positive, got {value}",
+            )
+        _require(
+            "diagnostics.leiden_resolution_sweep",
+            len(self.leiden_resolution_sweep) != 1,
+            "a sweep of one resolution has no adjacent pair to compare, so it "
+            "measures nothing. Give at least two, or none at all.",
+        )
+        _require(
+            "diagnostics.leiden_resolution_sweep",
+            len(set(self.leiden_resolution_sweep)) == len(self.leiden_resolution_sweep),
+            f"resolutions must be distinct, got {list(self.leiden_resolution_sweep)}",
+        )
+        unknown = [c for c in self.negative_controls if c not in CONTROL_DESCRIPTIONS]
+        _require(
+            "diagnostics.negative_controls",
+            not unknown,
+            f"unknown control(s) {unknown}. Known: {sorted(CONTROL_DESCRIPTIONS)}. "
+            "A control named here and implemented nowhere is silently skipped, "
+            "which is indistinguishable from one that ran and found nothing.",
         )
 
     @classmethod

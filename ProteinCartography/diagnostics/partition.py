@@ -41,6 +41,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 __all__ = [
+    "CONTROL_DESCRIPTIONS",
     "MEANINGFUL_MARGIN",
     "PLATEAU_THRESHOLD",
     "ControlResult",
@@ -54,6 +55,22 @@ __all__ = [
     "resolution_sweep",
     "silhouette",
 ]
+
+#: What ``diagnostics.negative_controls`` may name, and what each one holds
+#: fixed. Enumerated here rather than in the config schema for the reason
+#: ``fusion.STRATEGY_PARAMS`` is: the module that implements a thing owns the
+#: list of what it implements, and the validator imports it, so a control
+#: cannot be named in a config without existing.
+CONTROL_DESCRIPTIONS = {
+    "shuffled_labels": (
+        "the same clusters of the same sizes, assigned to proteins at random. "
+        "Needs no clusterer, and isolates correspondence from every marginal."
+    ),
+    "random_distances": (
+        "a clustering fitted to a random matrix of the same shape. The "
+        "alarming one: it returns a genuinely positive silhouette."
+    ),
+}
 
 #: Adjacent resolutions agreeing at or above this are treated as one level of
 #: the tree. A reporting band, like ``embedding``'s: no literature fixes it.
@@ -317,6 +334,13 @@ class NegativeControlReport:
     space_id: str
     observed: ControlResult
     controls: list
+    #: Controls the caller asked for and could not produce, name to reason. A
+    #: control that silently vanishes is worse than one that fails: the reader
+    #: sees a shorter list and cannot tell "ran and found nothing" from "never
+    #: ran". The demo produced exactly that -- one space's random-distance
+    #: control returned a single cluster and disappeared from the report while
+    #: six other spaces kept theirs.
+    skipped: dict = field(default_factory=dict)
 
     def margin(self, name: str) -> float:
         for control in self.controls:
@@ -330,11 +354,15 @@ class NegativeControlReport:
             "observed": self.observed.to_dict(),
             "controls": [control.to_dict() for control in self.controls],
             "margins": {control.name: self.margin(control.name) for control in self.controls},
+            "skipped": dict(self.skipped),
             "warnings": self.warnings(),
         }
 
     def warnings(self) -> list:
-        notes = []
+        notes = [
+            f"the '{name}' control was requested and not produced: {reason}"
+            for name, reason in sorted(self.skipped.items())
+        ]
         for control in self.controls:
             margin = self.margin(control.name)
             if margin <= 0:
@@ -359,6 +387,7 @@ def negative_controls(
     labels,
     *,
     extra=(),
+    skipped=None,
     permutations: int = 20,
     seed: int = 0,
 ) -> NegativeControlReport:
@@ -375,6 +404,7 @@ def negative_controls(
         labels: the observed cluster assignment.
         extra: ``(name, description, distances, labels)`` tuples the caller
             computed, which is where "cluster a random matrix" goes.
+        skipped: name to reason, for controls the caller could not produce.
         permutations: how many shuffles to average the permutation null over.
         seed: makes the permutation null reproducible.
     """
@@ -416,4 +446,6 @@ def negative_controls(
                 ),
             )
         )
-    return NegativeControlReport(space_id=space_id, observed=observed, controls=controls)
+    return NegativeControlReport(
+        space_id=space_id, observed=observed, controls=controls, skipped=dict(skipped or {})
+    )

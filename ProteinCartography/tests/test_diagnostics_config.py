@@ -22,6 +22,7 @@ shrinks as group 8c lands rather than being left behind as a stale comment.
 """
 
 from __future__ import annotations
+import ast
 import dataclasses
 from pathlib import Path
 
@@ -30,31 +31,44 @@ from config_schema import ConfigError, DiagnosticsConfig, from_legacy
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 
-#: Fields no diagnostic reads yet, and the Phase 5 item that will read each.
-#: Shrinking this to empty is what finishes FOLLOWUPS #36.
-NOT_YET_CONSUMED = {
-    "bootstrap_replicates": "Phase 5 item 3, neighborhood stability (group 8c)",
-    "subsample_fraction": "Phase 5 item 3, neighborhood stability (group 8c)",
-    "leiden_resolution_sweep": "Phase 5 item 7, cluster stability tree; needs per-space clustering",
-    "negative_controls": "Phase 5 item 8, negative controls; needs per-space clustering",
-}
+#: Empty as of group 8c, which is what finishes FOLLOWUPS #36. Every field is
+#: now read by `diagnose_space.py`, and both tests below stay in place: the
+#: first fails if a future field arrives dead, the second if this list is ever
+#: refilled with something that is not.
+NOT_YET_CONSUMED: dict = {}
 
 
 def _consumers(field_name: str) -> list:
-    """Modules outside `config_schema` that mention ``diagnostics.<field>``.
+    """Modules outside `config_schema` that *read* ``....diagnostics.<field>``.
 
-    Deliberately coarse. It cannot prove a field changes behavior -- that is
-    what :func:`test_the_neighborhood_size_actually_reaches_the_statistic`
-    does for the one live field -- but it does catch the case that has
-    recurred, which is a field nothing anywhere so much as names.
+    Parsed rather than grepped. The first version of this searched for the
+    literal string, and it fired twice in one commit group on prose: a
+    docstring saying which config key to raise, and a comment naming the key a
+    validator enumerates. Both were false positives, and the pressure they
+    create is to word documentation around the test, which is exactly
+    backwards -- the fields that most need explaining are the ones this list
+    covers.
+
+    So it looks for the attribute access itself: an ``Attribute`` node named
+    for the field whose own value is an ``Attribute`` named ``diagnostics``.
+    That is narrower than a grep, and deliberately: it cannot see
+    ``getattr(config.diagnostics, name)``. It still catches the case that has
+    actually recurred three times, which is a field no code anywhere reaches.
     """
-    needle = "diagnostics." + field_name
     found = []
     for path in sorted(PACKAGE_ROOT.rglob("*.py")):
         if path.name in ("config_schema.py",) or "tests" in path.parts:
             continue
-        if needle in path.read_text():
-            found.append(path.relative_to(PACKAGE_ROOT).as_posix())
+        tree = ast.parse(path.read_text(), filename=str(path))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Attribute)
+                and node.attr == field_name
+                and isinstance(node.value, ast.Attribute)
+                and node.value.attr == "diagnostics"
+            ):
+                found.append(path.relative_to(PACKAGE_ROOT).as_posix())
+                break
     return found
 
 
@@ -77,9 +91,10 @@ def test_every_field_is_either_consumed_or_explained():
 def test_the_exemption_list_shrinks_rather_than_going_stale():
     """The other direction, and the reason this is a test rather than a note.
 
-    When group 8c implements neighborhood stability, `bootstrap_replicates`
-    starts being read and this fails, forcing the list to be trimmed in the
-    same commit.
+    It did its job: implementing neighborhood stability made
+    `bootstrap_replicates` live and this failed until the entry point read it,
+    forcing the list to be trimmed in the same commit rather than left behind
+    as a stale comment. The list is empty now and the test stays.
     """
     for name, reason in NOT_YET_CONSUMED.items():
         assert name in _fields(), f"NOT_YET_CONSUMED names {name!r}, which is not a field"

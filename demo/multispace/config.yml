@@ -238,3 +238,48 @@ enrichment:
 #   report. It is the same reason mutation testing found the demo fixture cannot
 #   exercise the censoring path at all, and it is why the censoring section here
 #   reads "no problems detected" rather than being absent.
+#
+# **Group 8c adds three more, and two of them are opt-in below.** Neighborhood
+# stability needs no clustering and runs for every space; the resolution sweep
+# and the negative controls need a partition, which spaces now have because
+# `clustering.py` gives them one -- scanpy's Leiden, the same call the legacy
+# `leiden_clustering` rule makes, verified to return identical labels (ADR
+# 0015). The per-space partition is written to `spaces/{space_id}/clusters.tsv`.
+#
+# Turning them on here is deliberate even though eleven proteins cannot support
+# them, because *that* is the result worth showing. Measured on this cohort:
+#
+# * **Stability reports `informative: false` for all seven spaces**, and that
+#   field exists because of this demo. `k` clamps from 15 to 8 and an 80%
+#   subsample holds 9 proteins, so every protein's eight nearest are *all* the
+#   others and the Jaccard is 1.0 whatever the noise. Every space scored a
+#   perfect 1.000 under a sigma half the size of the data. A statistic with no
+#   room left to be wrong in reporting 1.000 is the most confident possible way
+#   to say nothing, so it now says which it is.
+# * **The two clusters each space finds are not reproducible across conda
+#   environments at this N** -- and at N=250 they are, exactly, in both. Same
+#   scanpy 1.9.3, same leidenalg 0.9.1, same igraph; the difference is scipy
+#   1.13.1 against 1.15.2, whose arpack gives `sc.tl.pca` a different answer on
+#   an 11x11 matrix. With `n_neighbors` clamped to 10 of 11 the graph is nearly
+#   complete and Leiden's optimum is degenerate, so the tie-break decides. This
+#   is a property of the existing `leiden_clustering` rule too, not something
+#   the multi-space path introduced (`docs/FOLLOWUPS.md` #42).
+# * **`fused_early`'s `random_distances` control cannot run**: its random matrix
+#   clusters into one group, which has no silhouette. It appears under
+#   `negative_controls.skipped` with that reason rather than vanishing -- a
+#   control that silently disappears leaves a shorter list that reads as "ran
+#   and found nothing".
+#
+# The one number here that is worth reading is the comparison the controls make
+# possible: `structure` separates at silhouette 0.503 where a shuffle of its own
+# labels gives -0.024 and a clustering of pure noise gives 0.105. The gap is
+# real. `fused_early` separates at 0.176 against the same 0.105 baseline, which
+# is not.
+diagnostics:
+  # Four resolutions spanning an order of magnitude. Fewer than two is refused
+  # -- a sweep with no adjacent pair has nothing to compare.
+  leiden_resolution_sweep: [0.25, 0.5, 1.0, 2.0]
+  # `shuffled_labels` needs no clusterer and holds every marginal fixed.
+  # `random_distances` fits the same Leiden to a random matrix of the same
+  # shape, and is the one that tends to be uncomfortable.
+  negative_controls: [shuffled_labels, random_distances]

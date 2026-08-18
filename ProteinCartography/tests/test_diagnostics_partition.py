@@ -314,3 +314,24 @@ def test_the_permutation_control_is_reproducible():
     first = negative_controls("wide", WIDE, FOLD, seed=5)
     second = negative_controls("wide", WIDE, FOLD, seed=5)
     assert first.margin("shuffled_labels") == second.margin("shuffled_labels")
+
+
+def test_a_requested_control_that_could_not_run_is_named_in_the_report():
+    """A control that silently vanishes is worse than one that fails.
+
+    The demo produced exactly this: one space's random-distance control
+    returned a single cluster and disappeared, while six other spaces kept
+    theirs. A reader comparing the two cannot tell "ran and found nothing"
+    from "never ran", and the shorter list reads as the former.
+    """
+    report = negative_controls(
+        "wide", WIDE, FOLD, skipped={"random_distances": "the random matrix gave one cluster"}
+    )
+    assert report.to_dict()["skipped"] == {"random_distances": "the random matrix gave one cluster"}
+    assert any("requested and not produced" in note for note in report.warnings())
+
+
+def test_no_skipped_controls_means_no_such_warning():
+    assert not any(
+        "requested and not produced" in n for n in negative_controls("w", WIDE, FOLD).warnings()
+    )
