@@ -1486,8 +1486,10 @@ can actually occur.
 - Lint: `ruff check`, `ruff format --check`, `snakefmt --check` all clean.
 - DAGs: cluster **16**, search **25**, both unchanged. Multispace **28 → 35**, one rule
   per space, and it runs **35/35** end to end.
-- Pre-existing files touched: still **10**. This group edits none — `Snakefile` is the
-  only pre-existing file in the diff and it was already in the count from group 5.
+- Pre-existing files touched: still **10**, recounted rather than assumed. This group
+  adds none to that count: it edits `Snakefile`, which group 5 already put in the diff,
+  and no other pre-existing file. Everything else it touches is a file this work
+  created.
 
 ## Gate D — after commit group 8 (fusion and diagnostics)
 

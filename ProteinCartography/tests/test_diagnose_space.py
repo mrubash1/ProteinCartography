@@ -122,6 +122,51 @@ def test_a_manifest_lands_beside_the_report(fusion):
     assert "redundancy" in manifest["extra"]["sections"]
 
 
+def test_the_manifest_names_only_sections_that_are_sections(fusion):
+    """`strategy` and `n_proteins` describe the space rather than diagnosing
+    it, and listing them as sections would tell a reader that four diagnostics
+    ran when two did. A section's *absence* is information -- this space has no
+    embedding passed in and no cohort report -- so the set has to be accurate."""
+    from diagnose_space import SECTIONS
+
+    root, output_dir, config = fusion
+    _run(["-c", config, "-s", "independent", "-o", str(output_dir)])
+    path = output_dir / "spaces" / "independent" / "manifest_diagnostics.json"
+    sections = json.loads(path.read_text())["extra"]["sections"]
+    assert set(sections) <= set(SECTIONS)
+    assert "strategy" not in sections
+    assert "n_proteins" not in sections
+    # This space is two feature blocks with no censoring channel, no embedding
+    # argument and no cohort report, so exactly one of the four can be answered.
+    assert sections == ["redundancy"]
+
+
+def test_a_section_that_could_not_be_answered_is_absent_from_the_manifest(single, tmp_path):
+    """The other direction: a single-block space cannot report redundancy, and
+    the manifest has to say so by omission rather than by listing an empty one."""
+    from diagnose_space import SECTIONS
+
+    root, output_dir, config, cohort = single
+    path = tmp_path / "iso.tsv"
+    cohort.write_embedding(path, ISOMETRIC)
+    _run(
+        [
+            "-c",
+            config,
+            "-s",
+            "structure",
+            "-o",
+            str(output_dir),
+            "--embedding",
+            f"pca_umap={path}",
+        ]
+    )
+    manifest = output_dir / "spaces" / "structure" / "manifest_diagnostics.json"
+    sections = json.loads(manifest.read_text())["extra"]["sections"]
+    assert sections == ["faithfulness"]
+    assert set(sections) < set(SECTIONS)
+
+
 # --- a single-block space ---------------------------------------------------
 
 

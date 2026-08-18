@@ -49,6 +49,12 @@ from spaces.store import BlockStore
 
 DIAGNOSTICS_FILENAME = "diagnostics.json"
 
+#: The four questions, in the order the module docstring asks them. A section is
+#: absent when this run could not answer it -- a single-block space has no
+#: redundancy, a cluster-mode run has no cohort report -- so the set that landed
+#: is itself information and is recorded in the manifest.
+SECTIONS = ("censoring", "cohort", "redundancy", "faithfulness")
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -246,7 +252,11 @@ def main() -> int:
         params={"space_id": args.space_id, "reducers": sorted(embeddings)},
         inputs={"block:" + block.spec.id: block.manifest.get("cache_key", "") for block in blocks},
         protids=protids,
-        extra={"sections": sorted(k for k in report if k not in ("space_id", "blocks"))},
+        # The diagnostic sections this run actually produced, which is not the
+        # same as the report's keys: `strategy` and `n_proteins` describe the
+        # space rather than diagnosing it. A reader checking "was censoring
+        # reported for this space" needs the difference.
+        extra={"sections": sorted(set(report) & set(SECTIONS))},
     )
     manifest.write(os.path.join(space_dir, "manifest_diagnostics.json"))
 
