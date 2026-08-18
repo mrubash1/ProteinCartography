@@ -70,15 +70,43 @@ def set_env_variables(pytestconfig):
     should_use_mocks = "PROTEINCARTOGRAPHY_SHOULD_USE_MOCKS"
     should_log_api_requests = "PROTEINCARTOGRAPHY_SHOULD_LOG_API_REQUESTS"
 
-    if not pytestconfig.getoption("no_mocks"):
+    using_mocks = not pytestconfig.getoption("no_mocks")
+    if using_mocks:
         os.environ[should_use_mocks] = "true"
 
     # Don't log API requests during the tests.
     should_log_api_requests_value = os.environ.pop(should_log_api_requests, None)
 
+    # `foldseek_apiquery.py` waits 30 s between polls of the public Foldseek
+    # server, and this test's DAG runs it. Under mocks the ticket is answered
+    # instantly, so that is pure wall clock -- about 30 s of this file's ~47 s.
+    # `parity.py` removes it for the parity runs without editing any source
+    # file, by handing the child processes a `usercustomize` module; the same
+    # mechanism works here, and for the same reason the comment above gives:
+    # rule environments inherit this process's environment.
+    #
+    # **Gated on mocks, and that is not a detail.** With `--no-mocks` this test
+    # polls the real server, where the 30 s wait is politeness toward a shared
+    # public resource rather than dead time. The cluster-mode test is left alone
+    # entirely for the same reason: it has no mocking fixture at all, and its
+    # `key_protids` pulls `run_foldseek` into the DAG, so its sleep is always
+    # against the real server.
+    previous_user_base = os.environ.get("PYTHONUSERBASE")
+    previous_no_user_site = os.environ.pop("PYTHONNOUSERSITE", None)
+    if using_mocks:
+        from parity import foldseek_sleep_user_base
+
+        os.environ["PYTHONUSERBASE"] = str(foldseek_sleep_user_base())
+
     yield
 
     os.environ.pop(should_use_mocks, None)
+    if previous_user_base is None:
+        os.environ.pop("PYTHONUSERBASE", None)
+    else:
+        os.environ["PYTHONUSERBASE"] = previous_user_base
+    if previous_no_user_site is not None:
+        os.environ["PYTHONNOUSERSITE"] = previous_no_user_site
 
     # As a convenience, restore the logging env variable to its original value.
     if should_log_api_requests_value is not None:

@@ -66,6 +66,37 @@ def noise(cohort):
     return FusionInput(NOISE_BLOCK, cohort.blocks[NOISE_BLOCK])
 
 
+# The three default `graph` fusions, computed once each rather than once per
+# test. `fuse_graph` is by some distance the most expensive call in this file --
+# ~101 ms for two blocks, ~153 ms for three -- and these three argument sets
+# account for eight calls between them, so sharing them takes the file from
+# 2.4 s to 1.9 s.
+#
+# Sharing is safe only because `FusionResult` hands out its numpy arrays without
+# copying (`frozen=True` protects the binding, not the buffer). Verified as of
+# this commit: no test in this module writes into `result.values`,
+# `result.contributions` or `params_used` -- the only `fill_diagonal` calls here
+# are on locally built arrays. A single in-place write into one of these
+# fixtures would silently corrupt every later test in the module, so treat them
+# as read-only; a test that needs to mutate must call `fuse_graph` itself.
+#
+# The calls that pass a non-default `k`, `mu` or `iterations` deliberately keep
+# their own `fuse_graph`: the parameter *is* the thing under test there.
+@pytest.fixture(scope="module")
+def graph_wide_narrow(wide, narrow):
+    return fuse_graph([wide, narrow])
+
+
+@pytest.fixture(scope="module")
+def graph_wide_noise(wide, noise):
+    return fuse_graph([wide, noise])
+
+
+@pytest.fixture(scope="module")
+def graph_wide_narrow_noise(wide, narrow, noise):
+    return fuse_graph([wide, narrow, noise])
+
+
 @pytest.fixture(scope="module")
 def fold(cohort):
     return cohort.partitions["fold"].labels
@@ -486,8 +517,8 @@ def test_graph_rejects_nonsense_hyperparameters(wide, narrow):
         fuse_graph([wide, narrow], iterations=0)
 
 
-def test_graph_returns_a_symmetric_affinity_with_no_self_affinity(wide, narrow):
-    result = fuse_graph([wide, narrow])
+def test_graph_returns_a_symmetric_affinity_with_no_self_affinity(graph_wide_narrow):
+    result = graph_wide_narrow
     assert result.representation == "affinity_profile"
     np.testing.assert_allclose(result.values, result.values.T, atol=1e-15)
     np.testing.assert_array_equal(np.diag(result.values), 0.0)
@@ -510,8 +541,8 @@ def test_the_iterates_stay_row_stochastic():
     assert (local == 0).sum() > 0, "sparsification kept every entry"
 
 
-def test_graph_converges_and_says_so(wide, narrow):
-    result = fuse_graph([wide, narrow])
+def test_graph_converges_and_says_so(graph_wide_narrow):
+    result = graph_wide_narrow
     assert result.params_used["final_delta"] < 1e-6
     assert not any("not converged" in w for w in result.warnings)
 
@@ -522,8 +553,8 @@ def test_graph_warns_when_it_has_not_converged(wide, narrow):
     assert any("had not converged" in w for w in result.warnings)
 
 
-def test_graph_finds_both_partitions(wide, narrow, fold, chemistry):
-    result = fuse_graph([wide, narrow])
+def test_graph_finds_both_partitions(graph_wide_narrow, fold, chemistry):
+    result = graph_wide_narrow
     assert separation(result.values, fold) > 1.2
     assert separation(result.values, chemistry) > 1.1
 
@@ -550,7 +581,7 @@ def test_two_identical_blocks_split_every_protein_exactly_evenly(wide):
         assert contribution.realized_share == pytest.approx(0.5, rel=1e-12)
 
 
-def test_an_informative_block_outweighs_a_noise_block_per_protein(wide, noise):
+def test_an_informative_block_outweighs_a_noise_block_per_protein(graph_wide_noise):
     """What `graph` has that `late` does not: an unconfigured, earned weight.
 
     Both blocks are weighted 1.0, so `late` would report exactly 50/50 whatever
@@ -558,22 +589,22 @@ def test_an_informative_block_outweighs_a_noise_block_per_protein(wide, noise):
     fused network agrees with it more, and it does so for every protein rather
     than on average.
     """
-    result = fuse_graph([wide, noise])
+    result = graph_wide_noise
     by_id = {c.block_id: c for c in result.contributions}
     assert by_id[WIDE_BLOCK].share == pytest.approx(0.5, rel=1e-12)
     assert by_id[WIDE_BLOCK].realized_share > 0.55
     assert (by_id[WIDE_BLOCK].per_protein_share > by_id[NOISE_BLOCK].per_protein_share).all()
 
 
-def test_the_per_protein_shares_sum_to_one_for_every_protein(wide, narrow, noise):
-    result = fuse_graph([wide, narrow, noise])
+def test_the_per_protein_shares_sum_to_one_for_every_protein(graph_wide_narrow_noise):
+    result = graph_wide_narrow_noise
     stacked = np.stack([c.per_protein_share for c in result.contributions])
     np.testing.assert_allclose(stacked.sum(axis=0), 1.0, rtol=1e-12)
 
 
-def test_the_per_protein_shares_vary_between_proteins(wide, noise):
+def test_the_per_protein_shares_vary_between_proteins(graph_wide_noise):
     """Otherwise they are a scalar with N copies, which is what `late` already has."""
-    result = fuse_graph([wide, noise])
+    result = graph_wide_noise
     shares = result.contributions[0].per_protein_share
     assert shares.max() - shares.min() > 0.01
 
@@ -628,14 +659,16 @@ def test_fuse_rejects_a_parameter_the_strategy_does_not_use(wide, narrow):
         fuse("late", [wide, narrow], {"k": 5})
 
 
-def test_graph_parameters_reach_the_algorithm(wide, narrow):
+def test_graph_parameters_reach_the_algorithm(wide, narrow, graph_wide_narrow):
     result = fuse("graph", [wide, narrow], {"k": 7, "mu": 0.4, "iterations": 3})
     assert result.params_used["k"] == 7
     assert result.params_used["mu"] == 0.4
     assert result.params_used["iterations"] == 3
-    # And they changed the answer, rather than being recorded and ignored.
-    default = fuse("graph", [wide, narrow])
-    assert not np.allclose(result.values, default.values)
+    # And they changed the answer, rather than being recorded and ignored. The
+    # comparison is against the shared default fusion, which `fuse` reaches by
+    # the same `fuse_graph(inputs)` call this parametrized one does with an
+    # empty params dict -- only the parameters differ between the two sides.
+    assert not np.allclose(result.values, graph_wide_narrow.values)
 
 
 def test_describe_shows_the_weight_vector_and_the_shares(wide, narrow):
@@ -646,9 +679,8 @@ def test_describe_shows_the_weight_vector_and_the_shares(wide, narrow):
     assert WIDE_BLOCK in text and NARROW_BLOCK in text
 
 
-def test_the_result_serializes_everything_a_manifest_needs(wide, narrow, noise):
-    result = fuse_graph([wide, narrow, noise])
-    data = result.to_dict()
+def test_the_result_serializes_everything_a_manifest_needs(graph_wide_narrow_noise):
+    data = graph_wide_narrow_noise.to_dict()
     assert data["strategy"] == "graph"
     assert data["representation"] == "affinity_profile"
     assert {c["block_id"] for c in data["contributions"]} == {

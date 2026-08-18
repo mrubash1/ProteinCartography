@@ -52,6 +52,7 @@ Run it directly for a report:
 
 from __future__ import annotations
 import argparse
+import atexit
 import filecmp
 import fnmatch
 import os
@@ -59,10 +60,13 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
 
 __all__ = [
+    "foldseek_sleep_user_base",
     "ADDITIVE_OUTPUTS",
     "CRITICAL_OUTPUTS",
     "EXCLUSIONS",
@@ -179,6 +183,57 @@ def normalize_bytes(relpath: str, data: bytes) -> bytes:
     return data
 
 
+#: Normalized file contents, keyed on `(path, st_size, st_mtime_ns)`, most
+#: recently used last.
+_normalized_by_stat: OrderedDict[tuple[str, int, int], bytes] = OrderedDict()
+
+#: How much normalized content to keep. A single output tree holds 21 MB of
+#: Plotly HTML, and all four of those files reach the normalizer every time
+#: (their uuids always differ, so `filecmp` never short-circuits them). 128 MB
+#: therefore covers the four trees the parity fixture compares -- but the same
+#: cache is used by `mutation_check.py`, which produces fourteen trees in one
+#: process, and an unbounded memo there would be a 300 MB leak in exchange for
+#: a second. Eviction is least-recently-used rather than oldest-first because
+#: the entries worth keeping are the reference tree's: they are inserted first
+#: and touched by every subsequent comparison.
+_NORMALIZED_CACHE_BUDGET_BYTES = 128 * 1024 * 1024
+_normalized_cached_bytes = 0
+
+
+def _normalized_file_bytes(relpath: str, path: Path) -> bytes:
+    """`normalize_bytes` over a file on disk, memoised on path + size + mtime.
+
+    Only files that already failed `filecmp` reach here, which in a real run
+    means the Plotly HTMLs; the `re.sub` over them is 98% of the cost of
+    `compare_trees` (0.94 s per comparison, of which 0.005 s is I/O). Trees get
+    compared more than once -- each of `head_a` and `base_a` is read for its
+    self-diff and again for the parity comparison -- and the repeat is what this
+    recovers, ~0.7 s per parity run.
+
+    The key includes size and mtime_ns, not just the path, because
+    `run_pipeline` rmtree's and rewrites its workdir. Serving a stale entry
+    across two runs into the same directory would make a *changed* file compare
+    equal, which is the single failure this module must never produce; a
+    spurious miss only costs a re-read.
+    """
+    global _normalized_cached_bytes
+    stat = path.stat()
+    key = (str(path), stat.st_size, stat.st_mtime_ns)
+    cached = _normalized_by_stat.get(key)
+    if cached is not None:
+        _normalized_by_stat.move_to_end(key)
+        return cached
+    cached = normalize_bytes(relpath, path.read_bytes())
+    _normalized_by_stat[key] = cached
+    _normalized_cached_bytes += len(cached)
+    while (
+        _normalized_cached_bytes > _NORMALIZED_CACHE_BUDGET_BYTES and len(_normalized_by_stat) > 1
+    ):
+        _, evicted = _normalized_by_stat.popitem(last=False)
+        _normalized_cached_bytes -= len(evicted)
+    return cached
+
+
 @dataclass
 class ParityReport:
     identical: list = field(default_factory=list)
@@ -280,13 +335,156 @@ def compare_trees(
         if filecmp.cmp(a / rel, b / rel, shallow=False):
             report.identical.append(rel)
             continue
-        da = normalize_bytes(rel, (a / rel).read_bytes())
-        db = normalize_bytes(rel, (b / rel).read_bytes())
+        da = _normalized_file_bytes(rel, a / rel)
+        db = _normalized_file_bytes(rel, b / rel)
         if da == db:
             report.normalized_identical.append(rel)
         else:
             report.differing.append(rel)
     return report
+
+
+# ---------------------------------------------------------------------------
+# the mocked Foldseek poll sleep
+# ---------------------------------------------------------------------------
+#
+# `foldseek_apiquery.py` waits 30 s between polls of the public Foldseek server.
+# Under mocks the ticket is answered instantly, so those 30 s are pure wall
+# clock -- measured at 31.2 s of a 49.3 s pipeline run, paid in every one of the
+# runs this harness makes, from both checkouts.
+#
+# It is removed here without editing any source file, by handing the child
+# processes a throwaway *user site* directory holding a `usercustomize` module.
+# CPython imports `usercustomize` at interpreter start-up from
+# `{PYTHONUSERBASE}/lib/pythonX.Y/site-packages`, and snakemake's `--use-conda`
+# job environment strips only `R_LIBS`, `PYTHONPATH`, `PERLLIB` and `PERL5LIB`
+# (`snakemake/shell.py`), so `PYTHONUSERBASE` reaches each rule's conda
+# interpreter intact.
+#
+# Two properties are why it is done this way rather than with a source patch or
+# with `PYTHONPATH`:
+#
+# * It is symmetric. `../pc-baseline` is a checkout of a commit that predates
+#   this branch and cannot be taught to read a new environment variable, but it
+#   runs on the same interpreters -- so an interpreter-level hook applies to it
+#   exactly as it applies to HEAD. An asymmetric speedup would be close to
+#   worthless: two of the four runs are the baseline's.
+# * It cannot redirect an import. A `sitecustomize` on `PYTHONPATH` would also
+#   put *this* checkout's `ProteinCartography` package on the baseline's import
+#   path, and a parity test that compares HEAD against HEAD passes vacuously.
+#
+# Measured: pipeline run 49.3 s -> 19.7 s, the `run_foldseek` benchmark 31.2 s
+# -> 1.64 s, with foldseek's `.tar.gz` byte-identical either way.
+#
+# The failure mode is silence. If a future environment is built with
+# `site.ENABLE_USER_SITE = False`, or some activation path sets
+# `PYTHONNOUSERSITE`, the hook is simply never imported and every run quietly
+# costs 30 s more again. So `run_pipeline` does not merely set the variable, it
+# checks the recorded benchmark afterwards.
+
+_FOLDSEEK_SLEEP_HOOK = '''\
+"""Return immediately from `time.sleep` inside the mocked Foldseek poll loop.
+
+Written by ProteinCartography/tests/parity.py, and imported by CPython at
+interpreter start-up in any process whose PYTHONUSERBASE points at the tree this
+file lives in. Nothing imports it explicitly.
+"""
+import sys
+import time
+
+_real_sleep = time.sleep
+
+
+def _sleep(seconds):
+    # Evaluated at call time rather than at import time on purpose: every
+    # process snakemake launches imports this hook, and only the Foldseek poll
+    # loop may be short-circuited. `foldseek_apiquery.py` sleeps solely to wait
+    # for a server ticket, which under mocks is already answered.
+    if sys.argv and str(sys.argv[0]).endswith("foldseek_apiquery.py"):
+        return _real_sleep(0)
+    return _real_sleep(seconds)
+
+
+time.sleep = _sleep
+'''
+
+#: `usercustomize` is looked up under the *running* interpreter's
+#: `lib/pythonX.Y`, so one user base covers an environment only if that
+#: environment's version is present. The rule environments are 3.9 today; the
+#: rest of the range is here so that rebuilding them onto a newer Python does
+#: not silently switch the 30 s sleep back on.
+_HOOK_PYTHON_VERSIONS = ("3.9", "3.10", "3.11", "3.12")
+
+_hook_user_base: Path | None = None
+
+
+def foldseek_sleep_user_base() -> Path:
+    """The user-site tree carrying the sleep hook, materialised once per process.
+
+    Cached rather than rebuilt per run because `mutation_check.py` calls
+    `run_pipeline` twelve times in one process, and because a single directory
+    shared by every child is what makes head and baseline runs identical in
+    this respect. It holds nothing but `usercustomize.py`, so putting it on the
+    user-site path cannot shadow an import.
+    """
+    global _hook_user_base
+    if _hook_user_base is not None:
+        return _hook_user_base
+    root = Path(tempfile.mkdtemp(prefix="pc-parity-usersite-"))
+    for version in _HOOK_PYTHON_VERSIONS:
+        site_packages = root / "lib" / f"python{version}" / "site-packages"
+        site_packages.mkdir(parents=True)
+        (site_packages / "usercustomize.py").write_text(_FOLDSEEK_SLEEP_HOOK)
+    atexit.register(shutil.rmtree, str(root), ignore_errors=True)
+    _hook_user_base = root
+    return root
+
+
+#: The mocked `run_foldseek` rule takes ~1.6 s with the hook installed and ~31 s
+#: without it, because the sleep is a fixed 30 s and the work either side of it
+#: is under two seconds. 15 s is nine times the working figure and half the
+#: failing one: a loaded machine cannot reach it, and one skipped hook cannot
+#: stay under it.
+FOLDSEEK_BENCHMARK_CEILING_SECONDS = 15.0
+
+
+def _assert_the_foldseek_sleep_was_neutralised(output_dir: Path) -> None:
+    """Fail unless the mocked Foldseek rule really did skip its poll sleep.
+
+    The hook above has no way to announce that it did not load, and a suite that
+    is 150 s slower than it should be looks exactly like a suite that is slow.
+    A comment describing the mechanism would not catch that; reading what the
+    run actually recorded does.
+
+    Missing benchmarks are treated as a failure rather than as "nothing to
+    check". Every configuration this harness runs is search mode over the actin
+    fixture, which always executes `run_foldseek`; if that stops being true, the
+    guard should be revisited deliberately and not quietly satisfied by absence.
+    """
+    benchmarks = sorted((Path(output_dir) / "benchmarks").glob("*.run_foldseek.txt"))
+    if not benchmarks:
+        raise RuntimeError(
+            f"no benchmarks/*.run_foldseek.txt under {output_dir}, so there is no "
+            "evidence the mocked Foldseek query skipped its 30 s poll sleep"
+        )
+    # snakemake writes a header row and then one row per repeat; column 0 is
+    # wall-clock seconds.
+    slow = []
+    for path in benchmarks:
+        for row in path.read_text().splitlines()[1:]:
+            if not row.strip():
+                continue
+            seconds = float(row.split("\t")[0])
+            if seconds >= FOLDSEEK_BENCHMARK_CEILING_SECONDS:
+                slow.append(f"{path.name}: {seconds:.1f} s")
+    if slow:
+        raise RuntimeError(
+            "the mocked Foldseek query slept: "
+            f"{', '.join(slow)} (ceiling {FOLDSEEK_BENCHMARK_CEILING_SECONDS} s).\n"
+            "The usercustomize sleep hook did not take effect. Check that the "
+            "rule environment has site.ENABLE_USER_SITE True and that nothing "
+            "sets PYTHONNOUSERSITE."
+        )
 
 
 def run_pipeline(
@@ -342,6 +540,11 @@ def run_pipeline(
     env = dict(os.environ)
     env["PROTEINCARTOGRAPHY_SHOULD_USE_MOCKS"] = "true"
     env.pop("PROTEINCARTOGRAPHY_SHOULD_LOG_API_REQUESTS", None)
+    # Removes ~30 s of Foldseek poll sleep from this run, identically on both
+    # checkouts -- see the section above. PYTHONNOUSERSITE would disable the
+    # hook outright, and conda activation scripts are known to set it.
+    env["PYTHONUSERBASE"] = str(foldseek_sleep_user_base())
+    env.pop("PYTHONNOUSERSITE", None)
 
     cmd = [
         sys.executable,
@@ -367,6 +570,7 @@ def run_pipeline(
             f"--- stdout tail ---\n{proc.stdout[-3000:]}\n"
             f"--- stderr tail ---\n{proc.stderr[-5000:]}"
         )
+    _assert_the_foldseek_sleep_was_neutralised(output_dir)
     return output_dir
 
 

@@ -19,6 +19,7 @@ import platform
 import sys
 from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass, field
+from functools import lru_cache
 
 __all__ = [
     "Manifest",
@@ -86,17 +87,41 @@ def hash_params(params: Mapping, algorithm: str = "sha256") -> str:
     return f"{algorithm}:{hashlib.new(algorithm, payload.encode()).hexdigest()}"
 
 
-def package_versions(packages: Iterable = TRACKED_PACKAGES) -> dict:
-    """Installed versions of the packages whose changes can move a coordinate."""
+# Bounded rather than unbounded: `packages` is caller-supplied, and in every
+# call path in this repo it is exactly TRACKED_PACKAGES.
+@lru_cache(maxsize=8)
+def _package_versions(packages: tuple) -> tuple:
+    """Version lookup for a fixed package tuple, memoised for the process.
+
+    ``importlib.metadata.version`` walks ``sys.path`` and parses metadata on every
+    call: 5.0-5.5 ms for :data:`TRACKED_PACKAGES`. :meth:`Manifest.build` calls it
+    on every block written, so the unit suite paid it 257 times for one distinct
+    answer -- 1.76 s measured in ``cartography_tidy``, out of a 13 s run.
+
+    Installed versions cannot change inside a process without an interpreter-level
+    reinstall, so the cache cannot go stale in any way a caller could observe.
+
+    The cached value is a tuple of pairs rather than a dict *on purpose*:
+    :attr:`Manifest.versions` is a plain mutable field, so handing out the cached
+    object itself would give every manifest in the process the same dict, and one
+    caller mutating its own manifest would silently rewrite the provenance of all
+    the others. An immutable cached value makes that impossible rather than merely
+    discouraged.
+    """
     import importlib.metadata as importlib_metadata
 
-    versions = {}
+    versions = []
     for name in packages:
         try:
-            versions[name] = importlib_metadata.version(name)
+            versions.append((name, importlib_metadata.version(name)))
         except importlib_metadata.PackageNotFoundError:
-            versions[name] = None
-    return versions
+            versions.append((name, None))
+    return tuple(versions)
+
+
+def package_versions(packages: Iterable = TRACKED_PACKAGES) -> dict:
+    """Installed versions of the packages whose changes can move a coordinate."""
+    return dict(_package_versions(tuple(packages)))
 
 
 @dataclass
