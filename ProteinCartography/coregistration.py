@@ -480,6 +480,12 @@ class PairComparison:
     jaccard: np.ndarray
     spearman: np.ndarray
     disparity: float | None
+    #: Adjusted Rand index between the two spaces' own cluster assignments, or
+    #: None when either space could not be clustered. Phase 6's fourth metric,
+    #: unblocked by group 8c: until spaces clustered in their own right there
+    #: was only one partition in the pipeline and comparing it to itself is
+    #: not a cross-space measurement.
+    cluster_ari: float | None
     diagnostics: dict
 
     def summary(self) -> dict:
@@ -494,6 +500,7 @@ class PairComparison:
             if not np.all(np.isnan(self.spearman))
             else None,
             "procrustes_disparity": self.disparity,
+            "cluster_ari": self.cluster_ari,
             "diagnostics": self.diagnostics,
             "geometry_caveats": list(GEOMETRY_CAVEATS),
         }
@@ -509,6 +516,8 @@ def compare_pair(
     k: int = 10,
     embedding_a=None,
     embedding_b=None,
+    clusters_a=None,
+    clusters_b=None,
 ) -> PairComparison:
     """Compare two spaces already aligned to the shared index.
 
@@ -517,6 +526,12 @@ def compare_pair(
     embeddings are optional because Procrustes needs both spaces reduced by the
     same reducer, which a config is not obliged to arrange; when they are absent
     the disparity is `None` rather than a fabricated number.
+
+    `clusters_a` and `clusters_b` are optional for the same reason and follow
+    the same rule: clustering a space needs scanpy, a space of fewer than three
+    proteins has no partition worth comparing, and a missing partition gives
+    `cluster_ari = None` rather than a number. They must be label sequences over
+    `protids`, in that order.
     """
     distances_a = pairwise_distances(features_a)
     distances_b = pairwise_distances(features_b)
@@ -527,6 +542,35 @@ def compare_pair(
     if embedding_a is not None and embedding_b is not None:
         disparity = procrustes_disparity(embedding_a, embedding_b)
 
+    # Imported inside the function rather than at module scope. `diagnostics`
+    # already depends on this module -- `redundancy` imports `average_ranks` --
+    # and a top-level import back the other way would make the direction of that
+    # dependency a matter of import order.
+    cluster_ari = None
+    cluster_note = "no partition was supplied for at least one space"
+    if clusters_a is not None and clusters_b is not None:
+        from diagnostics.partition import adjusted_rand_index
+
+        groups_a, groups_b = len(set(clusters_a)), len(set(clusters_b))
+        if groups_a < 2 or groups_b < 2:
+            # ARI is 1.0 for two all-in-one-cluster partitions and 0.0 when one
+            # side is degenerate and the other is not. Both are conventions
+            # rather than measurements, and the first is actively misleading:
+            # the demo produced `families vs fused_late` at ARI 1.000 with a
+            # neighborhood Jaccard of 0.291, which reads as "these two spaces
+            # agree perfectly" when neither found any structure. The value is
+            # withheld here rather than in `adjusted_rand_index`, which keeps
+            # matching scikit-learn and is tested against it.
+            cluster_note = (
+                f"withheld: {space_a} has {groups_a} cluster(s) and {space_b} has "
+                f"{groups_b}. The adjusted Rand index of a single-cluster partition is "
+                "a convention (1.0 against another single cluster, 0.0 against anything "
+                "else), not a measurement of agreement."
+            )
+        else:
+            cluster_ari = adjusted_rand_index(list(clusters_a), list(clusters_b))
+            cluster_note = f"{groups_a} against {groups_b} clusters"
+
     return PairComparison(
         space_a=space_a,
         space_b=space_b,
@@ -534,9 +578,12 @@ def compare_pair(
         jaccard=jaccard,
         spearman=spearman,
         disparity=disparity,
+        cluster_ari=cluster_ari,
         diagnostics={
             **jaccard_diagnostics,
             "spearman_undefined": spearman_diagnostics["undefined"],
             "procrustes_compared": disparity is not None,
+            "clusters_compared": cluster_ari is not None,
+            "cluster_ari_note": cluster_note,
         },
     )

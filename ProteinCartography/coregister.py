@@ -99,6 +99,35 @@ def read_embedding(path: str, protids) -> np.ndarray:
     return frame.loc[list(protids)].to_numpy(dtype=np.float64)
 
 
+def _partitions_for(compared, aligned, protids) -> dict:
+    """``{space_id: labels}`` for every space that can be clustered.
+
+    Absent rather than faked for a space that cannot be: without scanpy, or
+    below three proteins, that space simply has no ARI column, the same way a
+    space without a matching embedding has no Procrustes disparity. The reason
+    is logged once rather than per pair.
+    """
+    from clustering import ClusteringError, is_available, leiden_partition
+
+    available, explanation = is_available()
+    if not available:
+        print(f"[coregister] no cluster ARI: {explanation}", file=sys.stderr)
+        return {}
+    if len(protids) < 3:
+        print(
+            f"[coregister] no cluster ARI: {len(protids)} shared proteins is too few " "to cluster",
+            file=sys.stderr,
+        )
+        return {}
+    partitions = {}
+    for space_id in compared:
+        try:
+            partitions[space_id] = leiden_partition(aligned[space_id], protids).labels
+        except ClusteringError as error:
+            print(f"[coregister] space {space_id!r} not clustered: {error}", file=sys.stderr)
+    return partitions
+
+
 def main() -> int:
     args = parse_args()
     config = from_legacy(load_config(args.configfile))
@@ -166,7 +195,15 @@ def main() -> int:
         if space_id in compared
     }
 
+    # Each space's own partition, for the cluster-assignment ARI. Computed here
+    # rather than read from `spaces/{space_id}/clusters.tsv`, which
+    # `diagnose_space` writes: that file is deliberately not a declared
+    # snakemake output -- whether it exists depends on scanpy and on the cohort
+    # size -- so this rule cannot order itself after it. `leiden_partition` is
+    # deterministic in its input and seed, so the two agree, and
+    # `test_coregister` asserts that rather than assuming it.
     protids = report.index.as_list
+    partitions = _partitions_for(compared, aligned, protids)
     summaries = []
     for space_a, space_b in pairs_of(compared):
         comparison = compare_pair(
@@ -178,6 +215,8 @@ def main() -> int:
             k=coregistration.k,
             embedding_a=embeddings.get(space_a),
             embedding_b=embeddings.get(space_b),
+            clusters_a=partitions.get(space_a),
+            clusters_b=partitions.get(space_b),
         )
         per_protein = pd.DataFrame(
             {
@@ -200,6 +239,7 @@ def main() -> int:
                 "jaccard_median": s["jaccard_median"],
                 "rank_correlation_mean": s["spearman_mean"],
                 "procrustes_disparity": s["procrustes_disparity"],
+                "cluster_ari": s["cluster_ari"],
                 "boundary_ties_a": s["diagnostics"]["boundary_ties_a"],
                 "boundary_ties_b": s["diagnostics"]["boundary_ties_b"],
                 "rank_correlation_undefined": s["diagnostics"]["spearman_undefined"],
