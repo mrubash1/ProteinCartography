@@ -11,8 +11,12 @@ pipeline produces -- `leiden_features.tsv` beside `uniprot_features.tsv` --
 because the join between them is one of the things that can go wrong.
 """
 
+import contextlib
+import io
 import json
 import sys
+from pathlib import Path
+from typing import NamedTuple
 
 import numpy as np
 import pandas as pd
@@ -35,8 +39,7 @@ def cohort():
     return annotated_cohort()
 
 
-@pytest.fixture
-def run_dir(tmp_path, cohort):
+def write_input_tables(root, cohort):
     """The two tables the pipeline writes, in the two places it writes them.
 
     The annotation table keeps the cluster column, because the pipeline's does:
@@ -47,7 +50,7 @@ def run_dir(tmp_path, cohort):
     clusters = frame[["protid", cohort.cluster_column]]
     annotations = frame
 
-    output = tmp_path / "output"
+    output = root / "output"
     clusters_path = output / "foldseek_clustering_results" / "leiden_features.tsv"
     clusters_path.parent.mkdir(parents=True)
     clusters.to_csv(clusters_path, sep="\t", index=False)
@@ -56,7 +59,19 @@ def run_dir(tmp_path, cohort):
     annotations_path.parent.mkdir(parents=True)
     annotations.to_csv(annotations_path, sep="\t", index=False)
 
-    return tmp_path, clusters_path, annotations_path
+    return root, clusters_path, annotations_path
+
+
+@pytest.fixture
+def run_dir(tmp_path, cohort):
+    """A private input tree, for the tests that write into it.
+
+    Function-scoped on purpose. Every test that writes a second output
+    directory, a second config file, or a second run's tables needs a tree
+    nobody else is reading; `default_run` below covers only the read-only case.
+    Building it costs ~1.8 ms, so there is nothing to win by sharing it.
+    """
+    return write_input_tables(tmp_path, cohort)
 
 
 DEFAULT_ENRICHMENT = {
@@ -75,8 +90,8 @@ def write_config(tmp_path, enrichment=None, name="config.json"):
     return path
 
 
-def run(monkeypatch, config_path, output_dir, clusters, annotations):
-    argv = [
+def enrich_argv(config_path, output_dir, clusters, annotations):
+    return [
         "enrich_clusters.py",
         "--configfile",
         str(config_path),
@@ -87,7 +102,10 @@ def run(monkeypatch, config_path, output_dir, clusters, annotations):
         "--annotations",
         str(annotations),
     ]
-    monkeypatch.setattr(sys, "argv", argv)
+
+
+def run(monkeypatch, config_path, output_dir, clusters, annotations):
+    monkeypatch.setattr(sys, "argv", enrich_argv(config_path, output_dir, clusters, annotations))
     return main()
 
 
@@ -105,16 +123,68 @@ def numeric_table(output_dir):
     return frame
 
 
+class DefaultRun(NamedTuple):
+    status: int
+    output: Path
+    clusters: Path
+    annotations: Path
+    stderr: str
+
+
+@pytest.fixture(scope="module")
+def default_run(tmp_path_factory, cohort):
+    """One `main()` over `DEFAULT_ENRICHMENT`, for the tests that only read it.
+
+    Fourteen tests here ran that identical command -- same cohort, same config,
+    same argv -- and then asserted on different parts of the one table it wrote.
+    At ~50 ms a call that was ~700 ms of the file's ~1.15 s; running it once
+    takes the file to ~0.5 s.
+
+    Sharing is safe because what escapes is paths and a string: every consumer
+    re-parses `cluster_enrichment.tsv` or `manifest.json` from disk into its own
+    frame, so no test can hand another a mutated object. What is *not* safe is
+    sharing the directory with anything that writes, which is why `run_dir`
+    stays function-scoped and why the tests that run a second, differently
+    configured `main()` keep using it.
+
+    `test_two_runs_over_the_same_input_produce_the_same_bytes` must never take
+    this fixture. Its two `main()` calls are the assertion itself -- collapsing
+    them to one would leave it comparing a file against itself and passing
+    unconditionally.
+
+    stderr is captured with `redirect_stderr` rather than `capsys`, which is
+    function-scoped and so cannot see a module-scoped fixture's output.
+    `enrich_clusters` resolves `sys.stderr` at each `print` call, so the two
+    capture the same bytes.
+    """
+    root = tmp_path_factory.mktemp("enrich_default")
+    _, clusters, annotations = write_input_tables(root, cohort)
+    output = root / "output"
+    config = write_config(root)
+
+    captured = io.StringIO()
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(sys, "argv", enrich_argv(config, output, clusters, annotations))
+        with contextlib.redirect_stderr(captured):
+            status = main()
+
+    return DefaultRun(
+        status=status,
+        output=output,
+        clusters=clusters,
+        annotations=annotations,
+        stderr=captured.getvalue(),
+    )
+
+
 # ---------------------------------------------------------------------------
 # the happy path
 # ---------------------------------------------------------------------------
 
 
-def test_it_writes_a_tidy_table_and_a_manifest(monkeypatch, run_dir):
-    tmp_path, clusters, annotations = run_dir
-    output = tmp_path / "output"
-    config = write_config(tmp_path)
-    assert run(monkeypatch, config, output, clusters, annotations) == 0
+def test_it_writes_a_tidy_table_and_a_manifest(default_run):
+    output = default_run.output
+    assert default_run.status == 0
 
     table = read_table(output)
     assert list(table.columns) == list(TABLE_COLUMNS)
@@ -123,14 +193,11 @@ def test_it_writes_a_tidy_table_and_a_manifest(monkeypatch, run_dir):
     assert (output / "enrichment" / "manifest.json").exists()
 
 
-def test_every_planted_signal_survives_the_entry_point(monkeypatch, run_dir, cohort):
+def test_every_planted_signal_survives_the_entry_point(default_run, cohort):
     """The claim that matters. `test_enrichment` shows the statistic finds
     these when handed the counts; this shows the counts arrive intact through
     the config, the join, the encoding detection and the correction."""
-    tmp_path, clusters, annotations = run_dir
-    output = tmp_path / "output"
-    run(monkeypatch, write_config(tmp_path), output, clusters, annotations)
-    table = numeric_table(output)
+    table = numeric_table(default_run.output)
 
     significant = table[table["significant"].astype(str) == "True"]
     found = {
@@ -140,21 +207,15 @@ def test_every_planted_signal_survives_the_entry_point(monkeypatch, run_dir, coh
     assert cohort.signals() <= found, cohort.signals() - found
 
 
-def test_nothing_is_found_in_the_column_generated_null(monkeypatch, run_dir):
-    tmp_path, clusters, annotations = run_dir
-    output = tmp_path / "output"
-    run(monkeypatch, write_config(tmp_path), output, clusters, annotations)
-    table = numeric_table(output)
+def test_nothing_is_found_in_the_column_generated_null(default_run):
+    table = numeric_table(default_run.output)
     organism = table[table["annotation"] == "Organism"]
     assert len(organism) > 0
     assert not (organism["significant"].astype(str) == "True").any()
 
 
-def test_the_planted_effects_point_the_way_they_were_planted(monkeypatch, run_dir, cohort):
-    tmp_path, clusters, annotations = run_dir
-    output = tmp_path / "output"
-    run(monkeypatch, write_config(tmp_path), output, clusters, annotations)
-    table = numeric_table(output)
+def test_the_planted_effects_point_the_way_they_were_planted(default_run, cohort):
+    table = numeric_table(default_run.output)
 
     for shift in cohort.planted_shifts:
         row = table[
@@ -173,14 +234,12 @@ def test_the_planted_effects_point_the_way_they_were_planted(monkeypatch, run_di
         assert row["effect_kind"] == "fold_enrichment"
 
 
-def test_the_counts_on_a_row_reconstruct_its_own_test(monkeypatch, run_dir, cohort):
+def test_the_counts_on_a_row_reconstruct_its_own_test(default_run, cohort):
     """A row has to be checkable without rerunning anything. If `n_term_cluster`
     and `n_cluster` do not agree with the table the numbers came from, the
     p-value is unauditable however correct it happens to be."""
-    tmp_path, clusters, annotations = run_dir
-    output = tmp_path / "output"
-    run(monkeypatch, write_config(tmp_path), output, clusters, annotations)
-    table = read_table(output)
+    annotations = default_run.annotations
+    table = read_table(default_run.output)
 
     planted = cohort.planted_terms[1]  # Pfam / PF00022
     row = table[
@@ -204,9 +263,7 @@ def test_the_counts_on_a_row_reconstruct_its_own_test(monkeypatch, run_dir, coho
     )
 
 
-def test_the_universe_shrinks_to_the_annotated_background_and_says_so(
-    monkeypatch, run_dir, cohort, capsys
-):
+def test_the_universe_shrinks_to_the_annotated_background_and_says_so(default_run, cohort):
     """The consequence of the file format, not of the statistic.
 
     A protein carrying no Pfam families is written as an empty field and read
@@ -217,17 +274,13 @@ def test_the_universe_shrinks_to_the_annotated_background_and_says_so(
     the annotated background -- but it is not free, so it has to be visible
     rather than inferred from a number nobody compares against anything.
     """
-    tmp_path, clusters, annotations = run_dir
-    output = tmp_path / "output"
-    run(monkeypatch, write_config(tmp_path), output, clusters, annotations)
-
     assert (cohort.frame["Pfam"] == "").sum() == 168
-    assert pd.read_csv(annotations, sep="\t")["Pfam"].isna().sum() == 168
+    assert pd.read_csv(default_run.annotations, sep="\t")["Pfam"].isna().sum() == 168
 
-    manifest = json.loads((output / "enrichment" / "manifest.json").read_text())
+    manifest = json.loads((default_run.output / "enrichment" / "manifest.json").read_text())
     assert manifest["extra"]["categorical"]["Pfam"]["universe"] == 232
     assert manifest["extra"]["n_proteins"] == 400
-    assert "Pfam: tested against 232 of 400 proteins" in capsys.readouterr().err
+    assert "Pfam: tested against 232 of 400 proteins" in default_run.stderr
 
 
 # ---------------------------------------------------------------------------
@@ -235,13 +288,10 @@ def test_the_universe_shrinks_to_the_annotated_background_and_says_so(
 # ---------------------------------------------------------------------------
 
 
-def test_an_untested_hypothesis_appears_with_its_reason(monkeypatch, run_dir):
+def test_an_untested_hypothesis_appears_with_its_reason(default_run):
     """The cluster with no pLDDT and the constant column. Absent rows would
     read as "nothing to say here"; these say why there is nothing."""
-    tmp_path, clusters, annotations = run_dir
-    output = tmp_path / "output"
-    run(monkeypatch, write_config(tmp_path), output, clusters, annotations)
-    table = read_table(output)
+    table = read_table(default_run.output)
 
     confidence = table[(table["annotation"] == "pdb_confidence") & (table["cluster"] == "LC7")]
     assert len(confidence) == 1
@@ -252,11 +302,8 @@ def test_an_untested_hypothesis_appears_with_its_reason(monkeypatch, run_dir):
     assert all("no ordering to test" in note for note in constant["note"])
 
 
-def test_an_untested_row_is_never_significant_and_has_no_q(monkeypatch, run_dir):
-    tmp_path, clusters, annotations = run_dir
-    output = tmp_path / "output"
-    run(monkeypatch, write_config(tmp_path), output, clusters, annotations)
-    table = numeric_table(output)
+def test_an_untested_row_is_never_significant_and_has_no_q(default_run):
+    table = numeric_table(default_run.output)
     untested = table[table["note"] != ""]
     assert len(untested) > 0
     assert untested["q_value"].isna().all()
@@ -286,13 +333,10 @@ def test_a_requested_column_that_is_absent_is_named_not_skipped(monkeypatch, run
     assert read_table(output)["annotation"].unique().tolist() == ["Lineage"]
 
 
-def test_terms_below_the_minimum_count_are_dropped_and_counted(monkeypatch, run_dir):
+def test_terms_below_the_minimum_count_are_dropped_and_counted(default_run):
     """The singleton Pfam term. Testing it would cost every other term in the
     family a larger correction and it cannot reach significance anyway."""
-    tmp_path, clusters, annotations = run_dir
-    output = tmp_path / "output"
-    run(monkeypatch, write_config(tmp_path), output, clusters, annotations)
-
+    output = default_run.output
     assert "PF99999" not in set(read_table(output)["term"])
     manifest = json.loads((output / "enrichment" / "manifest.json").read_text())
     assert "PF99999" in manifest["extra"]["categorical"]["Pfam"]["dropped"]
@@ -313,21 +357,15 @@ def test_lowering_the_minimum_count_brings_the_singleton_back(monkeypatch, run_d
     assert not (singleton["significant"].astype(str) == "True").any()
 
 
-def test_the_report_reaches_stderr(monkeypatch, run_dir, capsys):
-    tmp_path, clusters, annotations = run_dir
-    output = tmp_path / "output"
-    run(monkeypatch, write_config(tmp_path), output, clusters, annotations)
-    err = capsys.readouterr().err
+def test_the_report_reaches_stderr(default_run):
+    err = default_run.stderr
     assert "hypotheses over 400 proteins in 8 clusters" in err
     assert "significant at q<=0.05" in err
     assert "untested" in err
 
 
-def test_the_manifest_records_what_the_table_rests_on(monkeypatch, run_dir):
-    tmp_path, clusters, annotations = run_dir
-    output = tmp_path / "output"
-    run(monkeypatch, write_config(tmp_path), output, clusters, annotations)
-    manifest = json.loads((output / "enrichment" / "manifest.json").read_text())
+def test_the_manifest_records_what_the_table_rests_on(default_run):
+    manifest = json.loads((default_run.output / "enrichment" / "manifest.json").read_text())
 
     assert manifest["params"]["min_term_count"] == 3
     assert set(manifest["inputs"]) == {"clusters", "annotations"}
@@ -344,20 +382,19 @@ def test_the_manifest_records_what_the_table_rests_on(monkeypatch, run_dir):
 # ---------------------------------------------------------------------------
 
 
-def test_the_correction_family_is_one_annotation_column(monkeypatch, run_dir):
+def test_the_correction_family_is_one_annotation_column(monkeypatch, tmp_path, default_run):
     """Pooling would let a large vocabulary set the correction for a small one,
     so a finding's q would depend on which other columns were configured."""
-    tmp_path, clusters, annotations = run_dir
-    output = tmp_path / "output"
+    together = numeric_table(default_run.output)
 
-    run(monkeypatch, write_config(tmp_path), output, clusters, annotations)
-    together = numeric_table(output)
-
+    # The Pfam-only run has to read the same two input tables as the shared run,
+    # or the comparison would be between two different cohorts. It writes into
+    # its own `tmp_path`, so nothing lands in the shared tree.
     alone = tmp_path / "alone"
     config = write_config(
         tmp_path, {**DEFAULT_ENRICHMENT, "categorical": ["Pfam"], "continuous": []}, "alone.json"
     )
-    run(monkeypatch, config, alone, clusters, annotations)
+    run(monkeypatch, config, alone, default_run.clusters, default_run.annotations)
     separate = numeric_table(alone)
 
     def pfam_q(frame):
@@ -367,11 +404,8 @@ def test_the_correction_family_is_one_annotation_column(monkeypatch, run_dir):
     np.testing.assert_allclose(pfam_q(together), pfam_q(separate), rtol=1e-12)
 
 
-def test_a_q_value_is_never_below_its_p_value(monkeypatch, run_dir):
-    tmp_path, clusters, annotations = run_dir
-    output = tmp_path / "output"
-    run(monkeypatch, write_config(tmp_path), output, clusters, annotations)
-    table = numeric_table(output)
+def test_a_q_value_is_never_below_its_p_value(default_run):
+    table = numeric_table(default_run.output)
     tested = table[table["note"] == ""]
     assert (tested["q_value"] >= tested["p_value"] - 1e-12).all()
 
@@ -382,6 +416,12 @@ def test_a_q_value_is_never_below_its_p_value(monkeypatch, run_dir):
 
 
 def test_two_runs_over_the_same_input_produce_the_same_bytes(monkeypatch, run_dir):
+    """Do NOT route this through `default_run`.
+
+    The two `main()` calls below are the assertion, not setup for it. Replacing
+    either with the shared run would leave this comparing one file against
+    itself, which passes whatever `main()` does.
+    """
     tmp_path, clusters, annotations = run_dir
     config = write_config(tmp_path)
     first, second = tmp_path / "first", tmp_path / "second"
@@ -392,11 +432,8 @@ def test_two_runs_over_the_same_input_produce_the_same_bytes(monkeypatch, run_di
     ).read_bytes()
 
 
-def test_the_table_is_sorted_by_q_with_untested_rows_last(monkeypatch, run_dir):
-    tmp_path, clusters, annotations = run_dir
-    output = tmp_path / "output"
-    run(monkeypatch, write_config(tmp_path), output, clusters, annotations)
-    table = numeric_table(output)
+def test_the_table_is_sorted_by_q_with_untested_rows_last(default_run):
+    table = numeric_table(default_run.output)
     q_values = table["q_value"].to_numpy()
     tested = ~np.isnan(q_values)
     assert np.all(np.diff(q_values[tested]) >= -1e-12)

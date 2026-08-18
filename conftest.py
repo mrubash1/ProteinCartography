@@ -49,3 +49,29 @@ def pytest_collection_modifyitems(config, items):
     for item in items:
         if "slow" in item.keywords:
             item.add_marker(skip_slow)
+
+
+@pytest.fixture(scope="session")
+def synthetic_matrix_750(tmp_path_factory):
+    """The default 750-protein similarity matrix, generated once per session.
+
+    `test_determinism.py`, `test_clustering.py` and `test_parity.py` each build
+    an identical copy under ``--runslow``, at 203.8 ms a time; copying the file
+    is 0.9 ms. The bytes are a pure function of the generator's seed, so one
+    copy is the same fixture three times.
+
+    Deliberately a fixture rather than a memo inside `parity.synthetic_matrix`:
+    `test_parity.py::test_the_synthetic_fixture_is_reproducible` compares the
+    bytes of two calls with the same arguments, and memoising the function would
+    reduce that to comparing one cached object with itself. Same trap as
+    `docs/FOLLOWUPS.md`-adjacent R12 in the test-speed plan -- a cache that
+    makes a test pass by making it vacuous.
+
+    The import is inside the body because the tests directory is not on
+    ``sys.path`` when this root-level conftest is first imported.
+    """
+    from parity import synthetic_matrix
+
+    return synthetic_matrix(
+        tmp_path_factory.mktemp("synthetic_750") / "all_by_all_tmscore_pivoted.tsv"
+    )

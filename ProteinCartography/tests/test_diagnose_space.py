@@ -95,17 +95,38 @@ def test_a_space_of_two_redundant_blocks_says_so(fusion):
     assert any("counts one view twice" in w for w in report["redundancy"]["warnings"])
 
 
-def test_a_space_of_independent_blocks_says_that_too(fusion):
+@pytest.fixture(scope="module")
+def independent(fusion):
+    """One run of ``-s independent``, shared by the five tests that read it.
+
+    All five invoked the entry point with byte-identical argv into the same
+    module-scoped output dir, so four of them were doing nothing but
+    overwriting the first one's files -- measured 5 x ~130 ms, about 0.5 s of
+    this file's 2.3 s.
+
+    The return code is handed back rather than asserted here so
+    ``test_a_space_of_independent_blocks_says_that_too`` keeps making that
+    assertion: a fixture that swallowed a nonzero exit would turn one clear
+    failure into four confusing KeyErrors.
+
+    Read-only. The output tree is shared, and `spaces/independent/` is written
+    by nothing else in this module -- the `redundant` space is a different argv
+    and stays where it is, run once, in its own test.
+    """
     root, output_dir, config = fusion
-    assert _run(["-c", config, "-s", "independent", "-o", str(output_dir)]) == 0
+    return output_dir, _run(["-c", config, "-s", "independent", "-o", str(output_dir)])
+
+
+def test_a_space_of_independent_blocks_says_that_too(independent):
+    output_dir, code = independent
+    assert code == 0
     report = _report(output_dir, "independent")
     assert report["redundancy"]["pairs"][0]["redundant"] is False
     assert any("something the others do not" in w for w in report["redundancy"]["warnings"])
 
 
-def test_the_report_records_what_the_space_is(fusion):
-    root, output_dir, config = fusion
-    _run(["-c", config, "-s", "independent", "-o", str(output_dir)])
+def test_the_report_records_what_the_space_is(independent):
+    output_dir, _ = independent
     report = _report(output_dir, "independent")
     assert report["space_id"] == "independent"
     assert report["strategy"] == "late"
@@ -113,24 +134,22 @@ def test_the_report_records_what_the_space_is(fusion):
     assert report["n_proteins"] == 240
 
 
-def test_a_manifest_lands_beside_the_report(fusion):
-    root, output_dir, config = fusion
-    _run(["-c", config, "-s", "independent", "-o", str(output_dir)])
+def test_a_manifest_lands_beside_the_report(independent):
+    output_dir, _ = independent
     path = output_dir / "spaces" / "independent" / "manifest_diagnostics.json"
     manifest = json.loads(path.read_text())
     assert manifest["provider"] == "diagnose_space"
     assert "redundancy" in manifest["extra"]["sections"]
 
 
-def test_the_manifest_names_only_sections_that_are_sections(fusion):
+def test_the_manifest_names_only_sections_that_are_sections(independent):
     """`strategy` and `n_proteins` describe the space rather than diagnosing
     it, and listing them as sections would tell a reader that four diagnostics
     ran when two did. A section's *absence* is information -- this space has no
     embedding passed in and no cohort report -- so the set has to be accurate."""
     from diagnose_space import SECTIONS
 
-    root, output_dir, config = fusion
-    _run(["-c", config, "-s", "independent", "-o", str(output_dir)])
+    output_dir, _ = independent
     path = output_dir / "spaces" / "independent" / "manifest_diagnostics.json"
     sections = json.loads(path.read_text())["extra"]["sections"]
     assert set(sections) <= set(SECTIONS)
@@ -189,10 +208,28 @@ def single(tmp_path_factory):
     return root, output_dir, config, cohort
 
 
-def test_a_single_block_space_reports_no_redundancy_section(single):
+@pytest.fixture(scope="module")
+def single_bare(single):
+    """One bare ``-s structure`` run over the single-block space, snapshotted.
+
+    Two tests assert on this run -- no redundancy section, no censoring section
+    -- and each used to invoke the entry point itself, ~150 ms together.
+
+    The parsed *report* is captured here rather than the output dir on purpose.
+    The tests in between run the same space with ``--embedding`` and overwrite
+    `spaces/structure/diagnostics.json`, so a fixture handing back only the
+    directory would let the second consumer read a different run's file and
+    still pass -- the assertions are absence assertions, which is exactly the
+    shape that passes against the wrong file. Read-only: the dict is shared.
+    """
     root, output_dir, config, _ = single
-    assert _run(["-c", config, "-s", "structure", "-o", str(output_dir)]) == 0
-    assert "redundancy" not in _report(output_dir)
+    return _run(["-c", config, "-s", "structure", "-o", str(output_dir)]), _report(output_dir)
+
+
+def test_a_single_block_space_reports_no_redundancy_section(single_bare):
+    code, report = single_bare
+    assert code == 0
+    assert "redundancy" not in report
 
 
 def test_a_faithful_layout_is_reported_as_faithful(single, tmp_path):
@@ -396,10 +433,9 @@ def test_supplying_clusters_turns_on_cross_cluster_edge_retention(censored):
     assert retention["between_over_within"] < 0.5
 
 
-def test_a_block_with_no_censoring_channel_gets_no_censoring_section(single):
-    root, output_dir, config, _ = single
-    _run(["-c", config, "-s", "structure", "-o", str(output_dir)])
-    assert "censoring" not in _report(output_dir)
+def test_a_block_with_no_censoring_channel_gets_no_censoring_section(single_bare):
+    _, report = single_bare
+    assert "censoring" not in report
 
 
 def test_a_cluster_table_without_a_protid_column_is_refused(censored, tmp_path):
@@ -485,12 +521,11 @@ def test_a_malformed_embedding_argument_is_refused(single):
         _run(["-c", config, "-s", "structure", "-o", str(output_dir), "--embedding", "justapath"])
 
 
-def test_the_report_is_plain_json(fusion):
+def test_the_report_is_plain_json(independent):
     """numpy scalars are not JSON, and the report is assembled from four
     modules that each produce their own. A crashed rule is a worse diagnostic
     than a rounded one."""
-    root, output_dir, config = fusion
-    _run(["-c", config, "-s", "independent", "-o", str(output_dir)])
+    output_dir, _ = independent
     raw = (output_dir / "spaces" / "independent" / "diagnostics.json").read_text()
     assert json.loads(raw) == json.loads(json.dumps(json.loads(raw)))
 

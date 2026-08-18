@@ -111,10 +111,12 @@ def conda_prefix(repo_dirpath):
 
 @pytest.fixture(scope="module")
 def runs(tmp_path_factory, repo_dirpath, baseline_repo, conda_prefix):
-    """Three pipeline runs: HEAD twice and the baseline once.
+    """Four pipeline runs: HEAD twice and the baseline twice.
 
-    Module-scoped because each run takes about a minute and all three tests
-    share them.
+    Two of each, not one, because the comparison needs a measured
+    nondeterminism floor rather than a declared one -- see
+    :func:`nondeterminism_floor`. Module-scoped because each run is the
+    expensive thing in this file and every test here shares them.
     """
     work = tmp_path_factory.mktemp("parity")
     head_a = run_pipeline(Path(repo_dirpath), work / "head_a", conda_prefix=conda_prefix)
@@ -125,26 +127,42 @@ def runs(tmp_path_factory, repo_dirpath, baseline_repo, conda_prefix):
 
 
 @pytest.fixture(scope="module")
-def nondeterminism_floor(runs):
+def self_diffs(runs):
+    """Each checkout compared against itself: the baseline's pair, then HEAD's.
+
+    One place computes these, because three consumers need the same two
+    reports -- the nondeterminism floor and the two determinism tests -- and
+    `compare_trees` over these trees costs ~0.75 s each, almost all of it one
+    `re.sub` over the run's Plotly HTML. Computing them once recovered 1.5 s.
+
+    The reports are shared, so consumers must treat them as read-only;
+    `ParityReport` is a plain dataclass of lists and nothing here copies them.
+    """
+    return {
+        "base": compare_trees(runs["base_a"], runs["base_b"]),
+        "head": compare_trees(runs["head_a"], runs["head_b"]),
+    }
+
+
+@pytest.fixture(scope="module")
+def nondeterminism_floor(self_diffs):
     """Files that differ between two runs of identical code.
 
     Established empirically rather than declared, so the parity test cannot be
     weakened by quietly adding an exclusion.
     """
-    base_self = compare_trees(runs["base_a"], runs["base_b"])
-    head_self = compare_trees(runs["head_a"], runs["head_b"])
-    return set(base_self.differing) | set(head_self.differing)
+    return set(self_diffs["base"].differing) | set(self_diffs["head"].differing)
 
 
 @pytest.mark.slow
-def test_the_baseline_is_deterministic(runs):
+def test_the_baseline_is_deterministic(self_diffs):
     """Two runs of the baseline must agree on every scientific output.
 
     PLAN.md makes this a precondition: a parity test against a nondeterministic
     baseline proves nothing. If this fails, PR #106 did not fully land and the
     port must not proceed.
     """
-    report = compare_trees(runs["base_a"], runs["base_b"])
+    report = self_diffs["base"]
 
     # Two classes of file are allowed to differ between runs of identical code,
     # and they are named rather than pattern-excluded so that a *new* source of
@@ -163,9 +181,9 @@ def test_the_baseline_is_deterministic(runs):
 
 
 @pytest.mark.slow
-def test_head_is_deterministic(runs, nondeterminism_floor):
+def test_head_is_deterministic(self_diffs, nondeterminism_floor):
     """The branch must be no less deterministic than the baseline."""
-    report = compare_trees(runs["head_a"], runs["head_b"])
+    report = self_diffs["head"]
     unexplained = [r for r in report.differing if not _run_to_run_expected(r)]
     assert not unexplained, f"this branch introduced nondeterminism:\n{report.describe()}"
 

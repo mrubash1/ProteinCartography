@@ -42,6 +42,22 @@ def cohort():
     return fusion_cohort()
 
 
+@pytest.fixture(scope="module")
+def wide_narrow(cohort):
+    """``correlate_distances(wide, narrow)`` -- the crossed pair, computed once.
+
+    Six tests in this file want exactly this value: the crossed-partition test
+    and the five parametrizations of the rescaling test, which each recomputed
+    it as their unscaled baseline. Measured ~50 ms a call, so five of the six
+    were paying for an answer the module already had -- about 0.25 s of a 2.3 s
+    file.
+
+    Sharing it is free of the usual fixture hazard: it is a tuple of two
+    floats, so there is nothing a consumer could mutate for the next one.
+    """
+    return correlate_distances(cohort.values(WIDE_BLOCK), cohort.values(NARROW_BLOCK))
+
+
 # --- the two planted ends of the scale --------------------------------------
 
 
@@ -64,10 +80,10 @@ def test_a_rescaled_block_is_perfectly_redundant_with_its_original(cohort):
     assert abs(pearson - 1.0) < 1e-12, f"Pearson off by {abs(pearson - 1.0):.2e}"
 
 
-def test_blocks_carrying_crossed_partitions_are_not_redundant(cohort):
+def test_blocks_carrying_crossed_partitions_are_not_redundant(wide_narrow):
     """`wide` and `narrow` show different, exactly independent partitions of
     the same proteins, so there is nothing for them to agree about."""
-    pearson, spearman = correlate_distances(cohort.values(WIDE_BLOCK), cohort.values(NARROW_BLOCK))
+    pearson, spearman = wide_narrow
     assert abs(pearson) < 0.05
     assert abs(spearman) < 0.05
 
@@ -82,15 +98,14 @@ def test_noise_is_redundant_with_nothing(cohort):
 
 
 @pytest.mark.parametrize("factor", [1e-6, 0.5, 3.0, RESCALE_FACTOR, 1e9])
-def test_rescaling_either_block_changes_nothing(cohort, factor):
+def test_rescaling_either_block_changes_nothing(cohort, factor, wide_narrow):
     """The property that makes this diagnostic reportable before a fusion
     strategy has been chosen: it cannot depend on ADR 0002's unit-mean-distance
     step having run, because a positive rescale moves neither correlation."""
-    baseline = correlate_distances(cohort.values(WIDE_BLOCK), cohort.values(NARROW_BLOCK))
     scaled = correlate_distances(
         np.asarray(cohort.values(WIDE_BLOCK)) * factor, cohort.values(NARROW_BLOCK)
     )
-    np.testing.assert_allclose(scaled, baseline, rtol=1e-12)
+    np.testing.assert_allclose(scaled, wide_narrow, rtol=1e-12)
 
 
 @pytest.mark.parametrize("block_id", [WIDE_BLOCK, NARROW_BLOCK])

@@ -25,6 +25,7 @@ dependencies.md``.
 from __future__ import annotations
 import importlib.metadata as importlib_metadata
 from dataclasses import dataclass
+from functools import lru_cache
 
 __all__ = [
     "BLOCK_GROUP",
@@ -80,10 +81,30 @@ def clear_builtins(group: str | None = None) -> None:
         _BUILTINS[g] = {}
 
 
+@lru_cache(maxsize=1)
+def _all_entry_points():
+    """The raw ``importlib.metadata`` scan, memoised for the process.
+
+    The scan walks every distribution on ``sys.path`` and parses its metadata --
+    1.5-10 ms a call depending on machine load -- and :func:`_entry_point_factories`
+    is reached from every provider lookup: 52 scans and 0.41 s across the unit
+    suite for one unchanging answer. Nothing can install a distribution into a
+    running interpreter in a way this would need to notice.
+
+    The cache deliberately stops here, at the bare scan. Caching
+    :func:`_iter_entry_points` or :func:`_entry_point_factories` instead would
+    answer from the cache *before* the monkeypatch in
+    ``test_spaces_registry_and_store.py`` -- two tests replace
+    ``_iter_entry_points`` to inject a fake and a deliberately broken entry
+    point, and both would silently stop testing anything.
+    """
+    return importlib_metadata.entry_points()
+
+
 def _iter_entry_points(group: str):
     """Yield entry points for `group` across importlib.metadata API versions."""
     try:
-        entry_points = importlib_metadata.entry_points()
+        entry_points = _all_entry_points()
     except Exception:  # pragma: no cover - a broken installation, not our bug
         return
     select = getattr(entry_points, "select", None)
