@@ -34,12 +34,13 @@ from config_io import load_config
 from config_schema import from_legacy
 from coregistration import GEOMETRY_CAVEATS, CoregistrationError, compare_pair, shared_index
 from reduce_space import features_for
+from spaces import layout
 from spaces.manifest import Manifest
 from spaces.store import BlockStore
 
-COREGISTRATION_SUBDIR = "coregistration"
+COREGISTRATION_SUBDIR = layout.COREGISTRATION_DIRNAME
 INDEX_FILENAME = "index.json"
-SUMMARY_FILENAME = "summary.tsv"
+SUMMARY_FILENAME = layout.SUMMARY_FILENAME
 
 
 def parse_args():
@@ -284,13 +285,13 @@ def main() -> int:
     return 0
 
 
-#: Separates the two space ids in a per-pair filename.
-PAIR_SEPARATOR = "__vs__"
+#: Separates the two space ids in a per-pair filename. Defined in `spaces.layout`
+#: so the explorer, which cannot import this module (it pulls numpy and pandas),
+#: reads the same spelling this writes rather than its own copy of it.
+PAIR_SEPARATOR = layout.PAIR_SEPARATOR
 
-
-def pair_filename(space_a: str, space_b: str) -> str:
-    """The per-protein file for one pair."""
-    return f"{space_a}{PAIR_SEPARATOR}{space_b}.tsv"
+#: Re-exported for the same reason.
+pair_filename = layout.pair_filename
 
 
 def check_pair_filenames_are_distinct(space_ids) -> None:

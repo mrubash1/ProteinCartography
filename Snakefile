@@ -549,9 +549,16 @@ checkpoint download_pdbs:
         cohort_report_args=lambda wildcards, output: (
             "--cohort-report " + output.cohort_report if MULTISPACE_ENABLED else ""
         ),
-        significance_args=(
+        # Reads the path off `input` rather than rebuilding it. The same file is
+        # declared by `aggregate_hit_significance` a hundred lines above and was
+        # spelled out a second time here, so the two could drift: snakemake would
+        # still satisfy the input and hand the script a path that no longer
+        # exists. Two spellings of one path is the defect family that produced
+        # four silent explorer defects; `spaces/layout.py` closes the
+        # cross-module instances and this closes the one inside this file.
+        significance_args=lambda wildcards, input: (
             "--significance-table "
-            + str(PROTEIN_FEATURES_DIR / "hit_significance.tsv")
+            + str(input.significance)
             + " --significance-measure "
             + COHORT_MEASURE
             if COHORT_NEEDS_SIGNIFICANCE

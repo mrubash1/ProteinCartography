@@ -31,6 +31,8 @@ import json
 import os
 from dataclasses import dataclass, field
 
+from spaces import layout
+
 __all__ = [
     "SpacePayload",
     "ExplorerPayload",
@@ -195,7 +197,7 @@ def _readable_mask(directory: str, diagnostics, protids: list) -> list:
     readable = dict.fromkeys(protids, True)
     seen_any = False
     for entry in (diagnostics or {}).get("faithfulness") or []:
-        path = os.path.join(directory, f"faithfulness_{entry.get('reducer')}.tsv")
+        path = os.path.join(directory, layout.faithfulness_filename(entry.get("reducer")))
         if not os.path.exists(path):
             continue
         seen_any = True
@@ -282,14 +284,14 @@ def build_payload(config, output_dir: str, analysis_name: str = "analysis") -> E
         directory = os.path.join(output_dir, "spaces", space_id)
         embeddings, protids = {}, None
         for reducer in space.reducers:
-            path = os.path.join(directory, f"embedding_{reducer}.tsv")
+            path = os.path.join(directory, layout.embedding_filename(reducer))
             if not os.path.exists(path):
                 continue
             protids, coordinates = read_embedding(path)
             embeddings[reducer] = coordinates
         if not embeddings:
             continue
-        diagnostics = _read_json(os.path.join(directory, "diagnostics.json")) or {}
+        diagnostics = _read_json(os.path.join(directory, layout.DIAGNOSTICS_FILENAME)) or {}
         summary = {k: diagnostics[k] for k in SUMMARY_SECTIONS if k in diagnostics}
         summary["stability"] = diagnostics.get("stability")
         summary["faithfulness"] = [
@@ -305,7 +307,7 @@ def build_payload(config, output_dir: str, analysis_name: str = "analysis") -> E
                 space_id=space_id,
                 protids=protids,
                 embeddings=embeddings,
-                clusters=_read_clusters(os.path.join(directory, "clusters.tsv")),
+                clusters=_read_clusters(os.path.join(directory, layout.CLUSTERS_FILENAME)),
                 readable=_readable_mask(directory, diagnostics, protids),
                 verdict=space_verdict(diagnostics, len(protids)),
                 diagnostics=summary,
@@ -314,7 +316,7 @@ def build_payload(config, output_dir: str, analysis_name: str = "analysis") -> E
         )
         index_order = index_order or protids
 
-    comparisons = _read_comparisons(os.path.join(output_dir, "coregistration", "summary.tsv"))
+    comparisons = _read_comparisons(layout.summary_path(output_dir))
     overlays = _overlays_from_features(
         _features_table(output_dir, analysis_name), index_order or []
     )
@@ -340,7 +342,9 @@ def _features_table(output_dir: str, analysis_name: str) -> str:
     """
     import glob
 
-    named = os.path.join(output_dir, "final_results", f"{analysis_name}_aggregated_features.tsv")
+    named = os.path.join(
+        output_dir, "final_results", layout.aggregated_features_filename(analysis_name)
+    )
     if os.path.exists(named):
         return named
     matches = sorted(
@@ -393,7 +397,7 @@ def _per_protein_jaccard(directory: str, space_a, space_b) -> dict:
         return {}
     import pandas as pd
 
-    path = os.path.join(directory, f"{space_a}__vs__{space_b}.tsv")
+    path = os.path.join(directory, layout.pair_filename(space_a, space_b))
     if not os.path.exists(path):
         return {}
     frame = pd.read_csv(path, sep="\t")
@@ -406,13 +410,15 @@ def _per_protein_jaccard(directory: str, space_a, space_b) -> dict:
 def _space_manifest(directory: str, reducers) -> dict:
     """A space's manifest, under whichever reducer wrote one.
 
-    The store writes one manifest per reducer (`manifest_pca_umap.json`) and one
-    for the diagnostics run, never a bare `manifest.json`. Any of them carries
+    `reduce_space` writes one manifest per reducer (`manifest_pca_umap.json`)
+    and `diagnose_space` writes one for the diagnostics run. Neither writes a
+    bare `manifest.json` -- that name belongs to the *block* store, which is a
+    different directory. Reading it here is GE.5. Any of these carries
     the provenance this needs; the reducers are tried in the order the panel
     would draw them so the reported `params` match what is on screen.
     """
-    for reducer in list(reducers) + ["diagnostics"]:
-        manifest = _read_json(os.path.join(directory, f"manifest_{reducer}.json"))
+    for reducer in list(reducers) + [layout.DIAGNOSTICS_MANIFEST_KEY]:
+        manifest = _read_json(os.path.join(directory, layout.manifest_filename(reducer)))
         if manifest:
             return manifest
     return {}
