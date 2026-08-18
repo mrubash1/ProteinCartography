@@ -704,3 +704,48 @@ def test_the_normalization_memo_still_serves_a_repeat_read(tmp_path):
     size_before = len(_normalized_by_stat)
     _normalized_file_bytes("g.html", path)
     assert len(_normalized_by_stat) == size_before
+
+
+def test_the_sleep_guard_refuses_a_header_only_benchmark(tmp_path):
+    """Gate E: a benchmark file with a header and no rows passed silently.
+
+    That is precisely the failure the guard's own docstring says it refuses --
+    "missing benchmarks are a failure rather than nothing to check, because the
+    silent mode is otherwise satisfied by silence" -- and the header-only case
+    is silence wearing a file.
+    """
+    from parity import _assert_the_foldseek_sleep_was_neutralised
+
+    benchmarks = tmp_path / "benchmarks"
+    benchmarks.mkdir()
+    (benchmarks / "P60709.run_foldseek.txt").write_text("s\th:m:s\tmax_rss\n")
+    with pytest.raises(RuntimeError, match="header and no timings"):
+        _assert_the_foldseek_sleep_was_neutralised(tmp_path)
+
+
+def test_the_sleep_guard_accepts_a_fast_run_and_refuses_a_slow_one(tmp_path):
+    """Both halves. A guard that cannot fail is decoration; one that always
+    fails is noise."""
+    from parity import (
+        FOLDSEEK_BENCHMARK_CEILING_SECONDS,
+        _assert_the_foldseek_sleep_was_neutralised,
+    )
+
+    benchmarks = tmp_path / "benchmarks"
+    benchmarks.mkdir()
+    path = benchmarks / "P60709.run_foldseek.txt"
+
+    path.write_text("s\th:m:s\n1.3253\t0:00:01\n")
+    _assert_the_foldseek_sleep_was_neutralised(tmp_path)
+
+    path.write_text(f"s\th:m:s\n{FOLDSEEK_BENCHMARK_CEILING_SECONDS + 16}\t0:00:31\n")
+    with pytest.raises(RuntimeError, match="mocked Foldseek query slept"):
+        _assert_the_foldseek_sleep_was_neutralised(tmp_path)
+
+
+def test_the_sleep_guard_refuses_a_missing_benchmark(tmp_path):
+    from parity import _assert_the_foldseek_sleep_was_neutralised
+
+    (tmp_path / "benchmarks").mkdir()
+    with pytest.raises(RuntimeError, match="no benchmarks"):
+        _assert_the_foldseek_sleep_was_neutralised(tmp_path)
