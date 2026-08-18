@@ -59,6 +59,7 @@ __all__ = [
     "DEFAULT_REPLICATES",
     "DEFAULT_SUBSAMPLE_FRACTION",
     "STABLE_THRESHOLD",
+    "VACUOUS_FRACTION",
     "NeighborhoodStability",
     "StabilityError",
     "jaccard_rows",
@@ -83,6 +84,16 @@ DEFAULT_NOISE = 0.10
 #: the lower one -- "a point at 0.3 stability is a coin flip, not a finding".
 STABLE_THRESHOLD = 0.70
 COIN_FLIP_THRESHOLD = 0.30
+
+#: Above this share of the subsample, a "neighborhood" is most of the cohort
+#: and the score stops discriminating. Found by running the demo rather than by
+#: reasoning: at eleven proteins k clamps to 8 and a subsample holds 9, so every
+#: protein's k nearest are *all* the others and the Jaccard is 1.0 whatever the
+#: noise. All seven demo spaces reported perfect stability under a sigma half
+#: the size of the data. That is not a stable cohort; it is a statistic with no
+#: room left to be wrong in, and reporting 1.000 for it is the most confident
+#: possible way to say nothing.
+VACUOUS_FRACTION = 0.5
 
 
 class StabilityError(ValueError):
@@ -156,6 +167,10 @@ class NeighborhoodStability:
     replicates_seen: np.ndarray
     replicates: int
     subsample_fraction: float
+    #: How many proteins each replicate actually held. The denominator that
+    #: matters for whether k leaves any room, and not recoverable from the
+    #: fraction alone once rounding is involved.
+    subsample_size: int
     noise: float
     noise_sigma: float
     #: The k that was asked for, when it did not fit the subsample.
@@ -168,6 +183,16 @@ class NeighborhoodStability:
     @property
     def measured(self) -> np.ndarray:
         return ~np.isnan(self.stability)
+
+    @property
+    def neighborhood_fraction(self) -> float:
+        """k as a share of the candidates a replicate offers."""
+        return self.k / max(1, self.subsample_size - 1)
+
+    @property
+    def informative(self) -> bool:
+        """False when k leaves the statistic no room to discriminate."""
+        return self.neighborhood_fraction < VACUOUS_FRACTION
 
     def coin_flips(self) -> list:
         """Proteins at or below :data:`COIN_FLIP_THRESHOLD`."""
@@ -202,6 +227,9 @@ class NeighborhoodStability:
             "noise_sigma": self.noise_sigma,
             "n_proteins": len(self.protids),
             "n_measured": int(self.measured.sum()),
+            "subsample_size": self.subsample_size,
+            "neighborhood_fraction": self.neighborhood_fraction,
+            "informative": self.informative,
             "stability_mean": self.mean_stability,
             "stability_min": float(np.nanmin(self.stability)),
             "n_stable": len(self.stable()),
@@ -219,11 +247,24 @@ class NeighborhoodStability:
                 f"leaves {int(round(self.subsample_fraction * len(self.protids)))}, which "
                 f"can supply at most {self.k} neighbors."
             )
+        if self.k >= self.subsample_size - 1:
+            notes.append(
+                f"k={self.k} and a replicate holds {self.subsample_size} proteins, so every "
+                "protein's k nearest are all the others and the Jaccard is 1.0 by "
+                "construction. This section measures nothing on a cohort this small."
+            )
+        elif not self.informative:
+            notes.append(
+                f"k={self.k} is {self.neighborhood_fraction:.0%} of the "
+                f"{self.subsample_size - 1} candidates a replicate offers, so a "
+                '"neighborhood" here is most of the cohort. The score is real but it '
+                "is not measuring anything local."
+            )
         unmeasured = int((~self.measured).sum())
         if unmeasured:
             notes.append(
                 f"{unmeasured} of {len(self.protids)} proteins appeared in no replicate and "
-                "have no stability value. Raise the replicate count."
+                "have no stability value. Raise `diagnostics.bootstrap_replicates`."
             )
         flips = len(self.coin_flips())
         if flips:
@@ -286,7 +327,7 @@ def neighborhood_stability(
         raise StabilityError(
             f"a {subsample_fraction:.0%} subsample of {n} proteins leaves "
             f"{int(round(subsample_fraction * n))}, which cannot supply a single neighbor. "
-            "Raise the subsample fraction, or do not ask for stability on a "
+            "Raise `diagnostics.subsample_fraction`, or do not ask for stability on a "
             "cohort this small."
         )
     used = min(k, ceiling)
@@ -325,6 +366,7 @@ def neighborhood_stability(
         replicates_seen=counts,
         replicates=replicates,
         subsample_fraction=float(subsample_fraction),
+        subsample_size=size,
         noise=float(noise),
         noise_sigma=float(sigma),
     )

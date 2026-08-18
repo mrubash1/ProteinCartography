@@ -137,8 +137,10 @@ def test_the_manifest_names_only_sections_that_are_sections(fusion):
     assert "strategy" not in sections
     assert "n_proteins" not in sections
     # This space is two feature blocks with no censoring channel, no embedding
-    # argument and no cohort report, so exactly one of the four can be answered.
-    assert sections == ["redundancy"]
+    # argument and no cohort report. Redundancy and stability are the two that
+    # can still be answered: stability needs only the space's own distances,
+    # and the two partition sections are opt-in and unrequested here.
+    assert sections == ["redundancy", "stability"]
 
 
 def test_a_section_that_could_not_be_answered_is_absent_from_the_manifest(single, tmp_path):
@@ -163,7 +165,7 @@ def test_a_section_that_could_not_be_answered_is_absent_from_the_manifest(single
     )
     manifest = output_dir / "spaces" / "structure" / "manifest_diagnostics.json"
     sections = json.loads(manifest.read_text())["extra"]["sections"]
-    assert sections == ["faithfulness"]
+    assert sections == ["faithfulness", "stability"]
     assert set(sections) < set(SECTIONS)
 
 
@@ -341,18 +343,40 @@ def censored(tmp_path_factory):
 
 
 def test_censoring_is_reported_for_a_block_that_carries_a_mask(censored):
+    """Group 8c changed what this test can assert, and the change is the point.
+
+    Before spaces clustered, omitting ``--clusters`` left the space with no
+    partition and cross-cluster edge retention was absent. Now the space
+    supplies its own, so the retention is reported *from the space's own
+    grouping* -- which is FOLLOWUPS #41: the legacy structural partition is the
+    right one for `structure` and the wrong one for `physicochemistry`, and
+    until now every space got the structural one. The section is therefore
+    present exactly when the space could be clustered.
+    """
+    from clustering import is_available
+
     root, output_dir, config, _ = censored
     assert _run(["-c", config, "-s", "structure", "-o", str(output_dir)]) == 0
-    section = _report(output_dir)["censoring"]
+    report = _report(output_dir)
+    section = report["censoring"]
     assert len(section) == 1
     assert section[0]["block_id"] == "tmscore"
     assert section[0]["matrix"]["censoring_rate"] > 0.3
-    assert "cross_cluster_edge_retention" not in section[0]
+    if is_available()[0]:
+        assert report["partition"]["source"] == "this space"
+        assert "cross_cluster_edge_retention" in section[0]
+    else:
+        assert "cross_cluster_edge_retention" not in section[0]
 
 
 def test_supplying_clusters_turns_on_cross_cluster_edge_retention(censored):
-    """The number worth reading, and the reason `--clusters` exists. Between-
-    cluster pairs are the weakest, so they are censored first."""
+    """The number worth reading, and the reason `--clusters` exists.
+
+    Between-cluster pairs are the weakest, so they are censored first. Since
+    group 8c the supplied partition is the *fallback* rather than the only
+    source: a space that can cluster itself uses its own, and a space that
+    cannot uses this one and says so in the report's `partition.caveat`.
+    """
     root, output_dir, config, clusters = censored
     _run(
         [
@@ -469,3 +493,220 @@ def test_the_report_is_plain_json(fusion):
     _run(["-c", config, "-s", "independent", "-o", str(output_dir)])
     raw = (output_dir / "spaces" / "independent" / "diagnostics.json").read_text()
     assert json.loads(raw) == json.loads(json.dumps(json.loads(raw)))
+
+
+# --- group 8c: stability, the sweep, and the negative controls ---------------
+
+
+def _diag_config(path, spaces, blocks, diagnostics):
+    path.write_text(json.dumps({"blocks": blocks, "spaces": spaces, "diagnostics": diagnostics}))
+    return str(path)
+
+
+@pytest.fixture(scope="module")
+def crossed(tmp_path_factory):
+    """A space fusing both blocks of ``fusion_cohort``, so its right answer is
+    the twelve cells of the crossed partition rather than either block's four
+    or three."""
+    from fusion_cohort import write_fusion_cohort
+
+    root = tmp_path_factory.mktemp("diagnose_8c")
+    output_dir = root / "output"
+    cohort = fusion_cohort()
+    write_fusion_cohort(output_dir, cohort, [WIDE_BLOCK, NARROW_BLOCK])
+    return root, output_dir, cohort
+
+
+def _run_crossed(root, output_dir, diagnostics, name="fused"):
+    config = _diag_config(
+        root / f"config_{name}.json",
+        {name: {"blocks": [WIDE_BLOCK, NARROW_BLOCK], "strategy": "late", "reducers": ["pca"]}},
+        {WIDE_BLOCK: {"provider": "tmscore"}, NARROW_BLOCK: {"provider": "tmscore"}},
+        diagnostics,
+    )
+    assert _run(["-c", config, "-s", name, "-o", str(output_dir)]) == 0
+    return _report(output_dir, name)
+
+
+def test_stability_is_reported_for_a_space_with_no_optional_dependency(crossed):
+    """It needs only the space's own distances, so it is the one section that
+    is always available."""
+    root, output_dir, _ = crossed
+    report = _run_crossed(root, output_dir, {"k": 10}, name="always")
+    stability = report["stability"][0]
+    assert stability["n_proteins"] == 240
+    assert stability["k"] == 10
+    assert 0.0 <= stability["stability_mean"] <= 1.0
+    assert stability["n_measured"] == 240
+
+
+def test_the_configured_replicate_count_and_fraction_reach_the_statistic(crossed):
+    """Both fields were dead until this commit; asserting they round-trip
+    through `from_legacy` would not have noticed."""
+    root, output_dir, _ = crossed
+    report = _run_crossed(
+        root,
+        output_dir,
+        {"k": 10, "bootstrap_replicates": 7, "subsample_fraction": 0.5},
+        name="tuned",
+    )
+    stability = report["stability"][0]
+    assert stability["replicates"] == 7
+    assert stability["subsample_fraction"] == 0.5
+
+
+def test_zero_replicates_turns_stability_off(crossed):
+    root, output_dir, _ = crossed
+    report = _run_crossed(root, output_dir, {"bootstrap_replicates": 0}, name="off")
+    assert "stability" not in report
+
+
+def test_stability_k_is_clamped_to_the_subsample_not_the_cohort(crossed):
+    """A 50% subsample of 240 leaves 120, so k cannot exceed 119 whatever the
+    cohort could support. Group 8b's defect, one level deeper."""
+    root, output_dir, _ = crossed
+    report = _run_crossed(root, output_dir, {"k": 150, "subsample_fraction": 0.5}, name="clamped")
+    stability = report["stability"][0]
+    assert stability["k"] == 119
+    assert stability["k_requested"] == 150
+    assert any("reduced from 150" in note for note in stability["warnings"])
+
+
+def test_the_partition_section_records_which_partition_was_used(crossed):
+    """Whether a space clustered in its own right or borrowed the legacy
+    structural clustering changes what every partition-dependent number means,
+    so it is recorded rather than inferable."""
+    from clustering import is_available
+
+    root, output_dir, _ = crossed
+    report = _run_crossed(root, output_dir, {"k": 10}, name="whichpart")
+    available, _ = is_available()
+    if available:
+        assert report["partition"]["source"] == "this space"
+        assert report["partition"]["n_clusters"] >= 2
+    else:
+        assert "partition" not in report
+
+
+def test_an_unclusterable_space_still_produces_the_other_sections(crossed):
+    """ADR 0006 rule 2, at the level of a rule rather than a provider: without
+    scanpy the partition sections vanish and nothing else does."""
+    root, output_dir, _ = crossed
+    report = _run_crossed(
+        root,
+        output_dir,
+        {"k": 10, "leiden_resolution_sweep": [0.5, 1.0], "negative_controls": ["shuffled_labels"]},
+        name="degraded",
+    )
+    from clustering import is_available
+
+    assert "stability" in report and "redundancy" in report
+    if not is_available()[0]:
+        assert "resolution_sweep" not in report
+        assert "negative_controls" not in report
+
+
+@pytest.mark.skipif(not __import__("clustering").is_available()[0], reason="needs scanpy")
+def test_the_space_is_clustered_and_the_partition_written_beside_the_report(crossed):
+    root, output_dir, cohort = crossed
+    _run_crossed(root, output_dir, {"k": 10}, name="clustered")
+    path = output_dir / "spaces" / "clustered" / "clusters.tsv"
+    assert path.exists()
+    lines = path.read_text().splitlines()
+    assert lines[0] == "protid\tcluster"
+    assert len(lines) == cohort.n_proteins + 1
+
+
+@pytest.mark.skipif(not __import__("clustering").is_available()[0], reason="needs scanpy")
+def test_a_late_fusion_of_two_crossed_blocks_recovers_twelve_cells(crossed):
+    """The planted answer, recovered through the entry point.
+
+    `wide` shows four fold groups and `narrow` three chemistry groups, crossed
+    exactly. A space fusing both should see the twelve cells -- not four, not
+    three. Nothing about that is inferable from either block alone, which is
+    what makes it a test of the whole path rather than of the clusterer.
+    """
+    root, output_dir, _ = crossed
+    report = _run_crossed(root, output_dir, {"k": 10}, name="twelve")
+    assert report["partition"]["n_clusters"] == 12
+
+
+@pytest.mark.skipif(not __import__("clustering").is_available()[0], reason="needs scanpy")
+def test_the_resolution_sweep_lands_in_the_report(crossed):
+    root, output_dir, _ = crossed
+    report = _run_crossed(
+        root, output_dir, {"k": 10, "leiden_resolution_sweep": [0.25, 1.0, 4.0]}, name="swept"
+    )
+    sweep = report["resolution_sweep"]
+    assert [step["resolution"] for step in sweep["steps"]] == [0.25, 1.0, 4.0]
+    assert len(sweep["adjacent_ari"]) == 2
+    assert sweep["plateau"]["n_resolutions"] >= 1
+
+
+@pytest.mark.skipif(not __import__("clustering").is_available()[0], reason="needs scanpy")
+def test_the_negative_controls_land_in_the_report(crossed):
+    """Both controls, and the observed partition beating both. On a fixture
+    with a planted answer that is the expected result; a space where it did not
+    hold is exactly what item 8 exists to surface."""
+    root, output_dir, _ = crossed
+    report = _run_crossed(
+        root,
+        output_dir,
+        {"k": 10, "negative_controls": ["shuffled_labels", "random_distances"]},
+        name="controlled",
+    )
+    controls = report["negative_controls"]
+    assert {c["name"] for c in controls["controls"]} == {"shuffled_labels", "random_distances"}
+    assert all(margin > 0 for margin in controls["margins"].values())
+    assert controls["observed"]["silhouette_mean"] > 0.5
+
+
+@pytest.mark.skipif(not __import__("clustering").is_available()[0], reason="needs scanpy")
+def test_the_manifest_lists_the_new_sections(crossed):
+    from diagnose_space import SECTIONS
+
+    root, output_dir, _ = crossed
+    _run_crossed(
+        root,
+        output_dir,
+        {"k": 10, "leiden_resolution_sweep": [0.5, 1.0], "negative_controls": ["shuffled_labels"]},
+        name="manifested",
+    )
+    path = output_dir / "spaces" / "manifested" / "manifest_diagnostics.json"
+    sections = json.loads(path.read_text())["extra"]["sections"]
+    assert set(sections) <= set(SECTIONS)
+    assert {"stability", "resolution_sweep", "negative_controls"} <= set(sections)
+    assert "partition" not in sections
+
+
+# --- the config keys these sections read -------------------------------------
+
+
+def test_an_unknown_negative_control_is_refused():
+    from config_schema import ConfigError, from_legacy
+
+    with pytest.raises(ConfigError, match="unknown control"):
+        from_legacy({"diagnostics": {"negative_controls": ["shufled_labels"]}})
+
+
+def test_a_sweep_of_one_resolution_is_refused():
+    """It has no adjacent pair, so it measures nothing -- the same reasoning
+    that makes a single-block space produce no redundancy section."""
+    from config_schema import ConfigError, from_legacy
+
+    with pytest.raises(ConfigError, match="no adjacent pair"):
+        from_legacy({"diagnostics": {"leiden_resolution_sweep": [1.0]}})
+
+
+def test_a_repeated_resolution_is_refused():
+    from config_schema import ConfigError, from_legacy
+
+    with pytest.raises(ConfigError, match="distinct"):
+        from_legacy({"diagnostics": {"leiden_resolution_sweep": [1.0, 1.0]}})
+
+
+def test_a_non_positive_resolution_is_refused():
+    from config_schema import ConfigError, from_legacy
+
+    with pytest.raises(ConfigError, match="must be positive"):
+        from_legacy({"diagnostics": {"leiden_resolution_sweep": [0.5, 0.0]}})
