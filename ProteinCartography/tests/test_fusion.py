@@ -659,16 +659,23 @@ def test_fuse_rejects_a_parameter_the_strategy_does_not_use(wide, narrow):
         fuse("late", [wide, narrow], {"k": 5})
 
 
-def test_graph_parameters_reach_the_algorithm(wide, narrow, graph_wide_narrow):
+def test_graph_parameters_reach_the_algorithm(wide, narrow):
     result = fuse("graph", [wide, narrow], {"k": 7, "mu": 0.4, "iterations": 3})
     assert result.params_used["k"] == 7
     assert result.params_used["mu"] == 0.4
     assert result.params_used["iterations"] == 3
-    # And they changed the answer, rather than being recorded and ignored. The
-    # comparison is against the shared default fusion, which `fuse` reaches by
-    # the same `fuse_graph(inputs)` call this parametrized one does with an
-    # empty params dict -- only the parameters differ between the two sides.
-    assert not np.allclose(result.values, graph_wide_narrow.values)
+    # And they changed the answer, rather than being recorded and ignored.
+    #
+    # **Both sides go through `fuse`, and that is the test.** A speedup pass
+    # once replaced this control with the module-scoped `graph_wide_narrow`
+    # fixture, which calls `fuse_graph` directly, on the reasoning that `fuse`
+    # with an empty params dict *is* `fuse_graph(inputs)`. That is true today
+    # and it is exactly the assumption under test: with the fixture as the
+    # control, a `fuse` that quietly substituted its own defaults would produce
+    # two identical sides and pass. Gate E's adversarial pass demonstrated it
+    # with that mutation -- caught before the change, missed after.
+    default = fuse("graph", [wide, narrow], {})
+    assert not np.allclose(result.values, default.values)
 
 
 def test_describe_shows_the_weight_vector_and_the_shares(wide, narrow):

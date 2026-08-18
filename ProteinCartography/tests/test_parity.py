@@ -662,3 +662,45 @@ def test_the_synthetic_fixture_is_reproducible(tmp_path):
     a = synthetic_matrix(tmp_path / "a.tsv", n=40, cap=10).read_bytes()
     b = synthetic_matrix(tmp_path / "b.tsv", n=40, cap=10).read_bytes()
     assert a == b
+
+
+# --- Gate E: the caches the speedup added, tested rather than argued ----------
+
+
+def test_the_normalization_memo_notices_a_same_size_same_mtime_rewrite(tmp_path):
+    """The failure Gate E demonstrated, and the reason the key is a hash.
+
+    The first version keyed on ``(path, st_size, st_mtime_ns)``. Rewrite a file
+    with a real payload change at the same byte length, restore its mtime, and
+    `compare_trees` called the two trees identical. Forcing the mtime with
+    `os.utime` was needed to trigger it here -- but `cp -p`, `rsync -a`,
+    `tar -x` and a coarse-mtime filesystem all preserve mtime, and "no caller
+    currently does that" is a convention rather than a property.
+    """
+    import os
+
+    from parity import _normalized_file_bytes
+
+    path = tmp_path / "f.html"
+    path.write_bytes(b"<div>AAAA</div>")
+    before = _normalized_file_bytes("f.html", path)
+    stat = path.stat()
+
+    path.write_bytes(b"<div>BBBB</div>")  # same length, different content
+    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    assert path.stat().st_size == stat.st_size
+    assert path.stat().st_mtime_ns == stat.st_mtime_ns
+
+    assert _normalized_file_bytes("f.html", path) != before
+
+
+def test_the_normalization_memo_still_serves_a_repeat_read(tmp_path):
+    """The other half: it has to actually cache, or it is pure overhead."""
+    from parity import _normalized_by_stat, _normalized_file_bytes
+
+    path = tmp_path / "g.html"
+    path.write_bytes(b"<div>hello</div>")
+    _normalized_file_bytes("g.html", path)
+    size_before = len(_normalized_by_stat)
+    _normalized_file_bytes("g.html", path)
+    assert len(_normalized_by_stat) == size_before
