@@ -39,6 +39,13 @@ CORE_MODULES = [
     "blocks.biophys",
     "blocks.domains",
     "diagnostics.censoring",
+    "diagnostics.embedding",
+    "diagnostics.redundancy",
+    "diagnostics.stability",
+    "diagnostics.partition",
+    # scanpy-backed, and listed here for exactly that reason: the import must
+    # stay inside the function so that `is_available()` can be consulted first.
+    "clustering",
 ]
 
 HEAVY = ["sklearn", "umap", "scipy", "scanpy", "torch"]
