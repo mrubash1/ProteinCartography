@@ -301,11 +301,26 @@ rule map_refseq_ids:
     input:
         blast_hits=rules.extract_blast_hits.output.blast_hits,
     output:
+        # The from/to pairs behind the hit list. That list alone loses which
+        # RefSeq accession became which UniProt entry, and the correspondence is
+        # the only way to key a BLAST e-value to a cohort candidate.
+        #
+        # Declared only when `aggregate_hit_significance` is in the DAG to read
+        # it. An output nothing consumes is not free: see the comment on
+        # `download_pdbs`, where the same shape silently drops a rule.
+        **(
+            {"refseq_mapping": BLAST_RESULTS_DIR / "{protid}.blast_hits.mapping.tsv"}
+            if COHORT_NEEDS_SIGNIFICANCE
+            else {}
+        ),
         blast_hits_uniprot_ids=BLAST_RESULTS_DIR / "{protid}.blast_hits.uniprot.txt",
-        # The from/to pairs behind that list. The list alone loses which RefSeq
-        # accession became which UniProt entry, and that correspondence is the
-        # only way to key a BLAST e-value to a cohort candidate.
-        refseq_mapping=BLAST_RESULTS_DIR / "{protid}.blast_hits.mapping.tsv",
+    params:
+        # A function of `output`, not a formatted string: a params string is
+        # substituted into the shell command verbatim and is never re-expanded,
+        # so a `{protid}` written here would reach the command line literally.
+        mapping_args=lambda wildcards, output: (
+            "--mapping-output " + output.refseq_mapping if COHORT_NEEDS_SIGNIFICANCE else ""
+        ),
     benchmark:
         BENCHMARKS_DIR / "{protid}.map_refseq_ids.txt"
     conda:
@@ -315,7 +330,7 @@ rule map_refseq_ids:
         python ProteinCartography/map_refseq_ids.py \
             --input {input.blast_hits} \
             --output {output.blast_hits_uniprot_ids} \
-            --mapping-output {output.refseq_mapping}
+            {params.mapping_args}
         """
 
 
@@ -409,11 +424,23 @@ rule aggregate_hit_significance:
     the header of hit_significance.py.
     """
     input:
+        # Guarded by the same flag that declares the output. This rule only
+        # enters the DAG under `significance` selection, but its input block is
+        # evaluated at parse time for every config, so an unguarded reference
+        # to an output that is no longer declared is an AttributeError on the
+        # default path.
+        **(
+            {
+                "refseq_mapping": expand(
+                    rules.map_refseq_ids.output.refseq_mapping,
+                    protid=SEARCH_MODE_INPUT_PROTIDS,
+                )
+            }
+            if COHORT_NEEDS_SIGNIFICANCE
+            else {}
+        ),
         m8_files=expand(rules.run_foldseek.output.m8_files, protid=SEARCH_MODE_INPUT_PROTIDS),
         blast_results=expand(rules.run_blast.output.blast_results, protid=SEARCH_MODE_INPUT_PROTIDS),
-        refseq_mapping=expand(
-            rules.map_refseq_ids.output.refseq_mapping, protid=SEARCH_MODE_INPUT_PROTIDS
-        ),
     output:
         significance=PROTEIN_FEATURES_DIR / "hit_significance.tsv",
     benchmark:
@@ -519,6 +546,9 @@ checkpoint download_pdbs:
         uniprot_features=rules.fetch_uniprot_metadata.output.uniprot_features,
         aggregated_hits=rules.aggregate_hits.output.aggregated_hits,
     params:
+        cohort_report_args=lambda wildcards, output: (
+            "--cohort-report " + output.cohort_report if MULTISPACE_ENABLED else ""
+        ),
         significance_args=(
             "--significance-table "
             + str(PROTEIN_FEATURES_DIR / "hit_significance.tsv")
@@ -528,8 +558,20 @@ checkpoint download_pdbs:
             else ""
         ),
     output:
+        # Declared only when `diagnose_space` is in the DAG to read it, and the
+        # reason is not tidiness. This rule is a *checkpoint*. An output that no
+        # job requests is never a reason to re-run it, so on an output tree
+        # produced before this branch -- structures present, report absent --
+        # snakemake leaves the checkpoint alone, `checkpoints.download_pdbs.get`
+        # raises, `get_pdb_filepaths` contributes no `copy_pdb` job, and the run
+        # proceeds *silently* without the query proteins. Reproduced against
+        # `36a38c7`: 17 jobs with `copy_pdb`, 16 without. See REVIEW_LOG GE.2.
+        **(
+            {"cohort_report": PROTEIN_FEATURES_DIR / "cohort_report.json"}
+            if MULTISPACE_ENABLED
+            else {}
+        ),
         protein_structures_dir=directory(DOWNLOADED_PROTEIN_STRUCTURES_DIR),
-        cohort_report=PROTEIN_FEATURES_DIR / "cohort_report.json",
     benchmark:
         BENCHMARKS_DIR / "download_pdbs.txt"
     conda:
@@ -543,7 +585,7 @@ checkpoint download_pdbs:
             --selection {COHORT_SELECTION} \
             --uniprot-features {input.uniprot_features} \
             --candidates-before-filtering {input.aggregated_hits} \
-            --cohort-report {output.cohort_report} \
+            {params.cohort_report_args} \
             {params.significance_args}
         """
 
