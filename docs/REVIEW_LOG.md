@@ -2163,6 +2163,12 @@ Every row ran. The engineering survived; the packaging did not.
 - **The explorer was verified by parsing its payload, not by clicking it.** The
   shares, the seven manifests and 72 KB of syntactically valid JavaScript are
   confirmed; linked selection, the lasso and the disagreement toggle are not.
+  Attempted twice and blocked both times on browser selection rather than on
+  anything about the page. It is the one item on the Gate E list that is still
+  genuinely open, and what it should check is whether an `unreadable` space is
+  unmistakably different from a readable one at a glance — that distinction is
+  the whole design (ADR 0005 item 5), and no amount of payload inspection
+  answers it.
 - **Windows and Linux** — arm64 macOS locally, though CI now covers ubuntu.
 
 ### Verification, after the Gate E fixes
