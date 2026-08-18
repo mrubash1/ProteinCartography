@@ -235,10 +235,19 @@ jobs:
         shell: micromamba-shell {0}
 
       - name: The default output must be byte-identical to the baseline
+        # Redirect and replay rather than `| tee`: this step does not run under
+        # the job's `pipefail` default, so a pipeline's status is `tee`'s and a
+        # failing pytest reported success. On the job's first run that is exactly
+        # what happened -- four real failures, a green step, and only the guard
+        # below caught them.
         run: |
+          set +e
           PYTHONPATH="$PWD/ProteinCartography:$PWD/ProteinCartography/tests" \
             python -m pytest ProteinCartography/tests/test_parity.py \
-            -q --runslow -rs -p no:cacheprovider 2>&1 | tee /tmp/parity.txt
+            -q --runslow -rs -p no:cacheprovider > /tmp/parity.txt 2>&1
+          status=$?
+          cat /tmp/parity.txt
+          exit $status
         shell: micromamba-shell {0}
 
       - name: The comparison must have run, not skipped
@@ -253,5 +262,6 @@ jobs:
             fi
           done
           grep -qE "^[0-9]+ passed" /tmp/parity.txt \
-            || { echo "::error::no pytest summary line; the run did not complete"; exit 1; }
+            || { echo "::error::no all-passing pytest summary line in /tmp/parity.txt;"\
+                      " the run either failed or did not complete"; exit 1; }
         shell: bash -leo pipefail {0}
