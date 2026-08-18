@@ -1924,7 +1924,9 @@ space, which is a real reduction and the least bad of the three options above.
 
 Counted over `git ls-files` only: `docs/FOLLOWUPS.md` 59, `PLAN.md` 14,
 `CLAUDE.md` 9, `docs/EXPLORATION.md` 9, `docs/PR_NARRATIVE.md` 1 — 92 across 26
-tracked files. None of the five is tracked; all are local-only via
+tracked files. **Recounted after this entry was written: 107.** Writing up the
+gate added fifteen, which is the finding demonstrating itself — the document
+that holds the most references to files the PR will not contain is this one. None of the five is tracked; all are local-only via
 `.git/info/exclude`. `docs/REVIEW_LOG.md` is 45 of the 92 on its own, and its
 third line points at `PLAN.md` §4.3.
 
