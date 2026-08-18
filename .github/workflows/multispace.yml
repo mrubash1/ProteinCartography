@@ -173,3 +173,85 @@ jobs:
             exit 1
           fi
         shell: micromamba-shell {0}
+
+  parity:
+    # The evidence for this PR's central claim -- that the default configuration
+    # produces byte-identical output -- is `test_parity.py`. Every test in it
+    # that runs the pipeline is marked `slow`, so `make test` collects them and
+    # runs none, and `test.yml` passes a hundred percent green while proving
+    # nothing about backwards compatibility. Until this job existed the claim
+    # rested on one manual run on one laptop.
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash -leo pipefail {0}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The baseline is the merge-base with upstream, so the full history is
+          # required. The default depth-1 checkout cannot resolve it.
+          fetch-depth: 0
+
+      - name: Check out the upstream commit this branch forked from
+        # `baseline_repo` *skips* when ../pc-baseline is absent rather than
+        # failing, so without this step the job would be green and empty --
+        # which is the exact failure mode the job exists to close.
+        run: |
+          git remote get-url upstream 2>/dev/null \
+            || git remote add upstream https://github.com/Arcadia-Science/ProteinCartography.git
+          git fetch --quiet upstream main
+          base=$(git merge-base HEAD upstream/main)
+          echo "baseline is $base"
+          git worktree add --detach ../pc-baseline "$base"
+          test -f ../pc-baseline/Snakefile
+        shell: bash -leo pipefail {0}
+
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-file: envs/cartography_test.yml
+          environment-name: test-env
+          cache-environment: true
+          cache-downloads: true
+          generate-run-shell: true
+          init-shell: bash
+
+      - name: Cache snakemake conda envs
+        uses: actions/cache@v4
+        id: cache-snakemake-conda-envs
+        with:
+          path: .snakemake/conda
+          key: conda-${{ runner.os }}--${{ runner.arch }}--${{ hashFiles('envs/*.yml') }}
+
+      - name: Create the snakemake conda envs
+        # Both checkouts share this prefix, so the baseline does not rebuild it.
+        if: steps.cache-snakemake-conda-envs.outputs.cache-hit != 'true'
+        run: |
+          snakemake \
+            --configfile demo/search-mode/config_actin_small.yml \
+            --use-conda \
+            --conda-frontend conda \
+            --conda-create-envs-only \
+            --cores 1
+        shell: micromamba-shell {0}
+
+      - name: The default output must be byte-identical to the baseline
+        run: |
+          PYTHONPATH="$PWD/ProteinCartography:$PWD/ProteinCartography/tests" \
+            python -m pytest ProteinCartography/tests/test_parity.py \
+            -q --runslow -rs -p no:cacheprovider 2>&1 | tee /tmp/parity.txt
+        shell: micromamba-shell {0}
+
+      - name: The comparison must have run, not skipped
+        # `baseline_repo` and `conda_prefix` both skip when their prerequisite is
+        # missing. A skipped parity suite is indistinguishable from a passing one
+        # in the summary line, and it is the more likely of the two to be wrong.
+        run: |
+          for reason in "no baseline checkout" "no built conda environments"; do
+            if grep -qF "$reason" /tmp/parity.txt; then
+              echo "::error::parity skipped ($reason); this job proves nothing"
+              exit 1
+            fi
+          done
+          grep -qE "^[0-9]+ passed" /tmp/parity.txt \
+            || { echo "::error::no pytest summary line; the run did not complete"; exit 1; }
+        shell: bash -leo pipefail {0}
