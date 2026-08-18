@@ -350,15 +350,57 @@ def _features_table(output_dir: str, analysis_name: str) -> str:
 
 
 def _read_comparisons(path: str) -> list:
+    """The pairwise summary, each row carrying its own per-protein detail.
+
+    `summary.tsv` is aggregate only -- one row per pair, with `jaccard_mean` and
+    friends. The per-protein neighbourhood Jaccard lives beside it in
+    `{space_a}__vs__{space_b}.tsv`, and the explorer's disagreement mode needs
+    exactly that: it averages each protein's Jaccard across every pair it
+    appears in.
+
+    Attaching it here rather than in the template is what makes the feature
+    work at all. Before this the template looped over these rows testing
+    `if (!row.per_protein) continue`, no row had ever carried the key, the map
+    it built was empty, and every protein coloured `null` -- so ADR 0005 item
+    4's headline "one click, not buried in a menu" toggled a button that
+    conveyed nothing. Found by opening the page, which is the only thing that
+    could find it (REVIEW_LOG GE.17).
+    """
     if not os.path.exists(path):
         return []
     import pandas as pd
 
     frame = pd.read_csv(path, sep="\t")
+    directory = os.path.dirname(path)
     rows = []
     for record in frame.to_dict("records"):
-        rows.append({k: (None if pd.isna(v) else v) for k, v in record.items()})
+        row = {k: (None if pd.isna(v) else v) for k, v in record.items()}
+        row["per_protein"] = _per_protein_jaccard(directory, row.get("space_a"), row.get("space_b"))
+        rows.append(row)
     return rows
+
+
+def _per_protein_jaccard(directory: str, space_a, space_b) -> dict:
+    """`{protid: neighborhood_jaccard}` for one compared pair, or `{}`.
+
+    NaN is dropped rather than carried as null: a protein whose Jaccard is
+    undefined for this pair should not drag its mean down, and the template
+    already treats an absent protid as "no disagreement value" rather than as
+    zero. Averaging a missing comparison in as 0.0 would report maximal
+    disagreement for a pair that was never measured.
+    """
+    if not space_a or not space_b:
+        return {}
+    import pandas as pd
+
+    path = os.path.join(directory, f"{space_a}__vs__{space_b}.tsv")
+    if not os.path.exists(path):
+        return {}
+    frame = pd.read_csv(path, sep="\t")
+    if "protid" not in frame or "neighborhood_jaccard" not in frame:
+        return {}
+    pairs = zip(frame["protid"], frame["neighborhood_jaccard"])
+    return {str(protid): float(value) for protid, value in pairs if not pd.isna(value)}
 
 
 def _space_manifest(directory: str, reducers) -> dict:

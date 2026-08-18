@@ -408,3 +408,80 @@ def test_the_rendered_page_both_carries_and_draws_the_share():
         "to be visible on a fused map, and recording it was already true."
     )
     assert 'className = "shares"' in html
+
+
+# ==========================================================================
+# GE.17 -- disagreement mode read a key the payload never wrote
+# ==========================================================================
+
+
+def _write_coregistration(directory, pairs):
+    """`summary.tsv` plus one per-pair table, as `coregister.py` writes them."""
+    directory.mkdir(parents=True, exist_ok=True)
+    header = "space_a\tspace_b\tjaccard_mean\n"
+    rows = "".join(f"{a}\t{b}\t0.5\n" for a, b, _ in pairs)
+    (directory / "summary.tsv").write_text(header + rows)
+    for a, b, per_protein in pairs:
+        body = "protid\tneighborhood_jaccard\trank_correlation\n"
+        body += "".join(f"{p}\t{v}\t0.1\n" for p, v in per_protein)
+        (directory / f"{a}__vs__{b}.tsv").write_text(body)
+
+
+def test_each_comparison_row_carries_its_per_protein_detail(tmp_path):
+    """The defect: `summary.tsv` is aggregate, and nothing read the pair tables.
+
+    The template loops over these rows with `if (!row.per_protein) continue`.
+    No row had ever carried the key, so the map it built was empty and every
+    protein coloured `null` -- a headline feature (ADR 0005 item 4) that
+    toggled a button and conveyed nothing.
+    """
+    from explorer.payload import _read_comparisons
+
+    directory = tmp_path / "coregistration"
+    _write_coregistration(directory, [("a", "b", [("P1", 0.25), ("P2", 0.75)])])
+    rows = _read_comparisons(str(directory / "summary.tsv"))
+    assert len(rows) == 1
+    assert rows[0]["per_protein"] == {"P1": 0.25, "P2": 0.75}
+
+
+def test_a_protein_with_no_measurement_is_absent_rather_than_zero(tmp_path):
+    """NaN must not become 0.0.
+
+    The template averages each protein's Jaccard across the pairs it appears
+    in. A missing measurement carried through as 0.0 would report *maximal*
+    disagreement for a pair that was never measured, which is the
+    substituted-zero defect this codebase already has once (FOLLOWUPS #34).
+    """
+    from explorer.payload import _read_comparisons
+
+    directory = tmp_path / "coregistration"
+    (directory).mkdir(parents=True)
+    (directory / "summary.tsv").write_text("space_a\tspace_b\n a\tb\n".replace(" ", ""))
+    (directory / "a__vs__b.tsv").write_text("protid\tneighborhood_jaccard\nP1\t0.4\nP2\t\n")
+    rows = _read_comparisons(str(directory / "summary.tsv"))
+    assert rows[0]["per_protein"] == {"P1": 0.4}
+    assert "P2" not in rows[0]["per_protein"]
+
+
+def test_a_missing_pair_table_is_empty_rather_than_an_error(tmp_path):
+    from explorer.payload import _read_comparisons
+
+    directory = tmp_path / "coregistration"
+    directory.mkdir(parents=True)
+    (directory / "summary.tsv").write_text("space_a\tspace_b\na\tb\n")
+    assert _read_comparisons(str(directory / "summary.tsv"))[0]["per_protein"] == {}
+
+
+def test_the_template_reads_the_key_the_payload_writes():
+    """The cross-check that would have caught this without a browser.
+
+    Both halves were individually reasonable: the payload wrote what
+    `summary.tsv` contained, and the template read `per_protein`. Nothing
+    compared the two, which is the manifest-versus-honored pattern across a
+    language boundary.
+    """
+    from explorer.template import render
+
+    html = render({"comparisons": [{"per_protein": {"P1": 0.5}}], "spaces": []}, "", "t")
+    assert "row.per_protein" in html, "the template no longer reads per_protein"
+    assert '"per_protein": {"P1": 0.5}' in html, "the payload no longer writes per_protein"
