@@ -185,7 +185,14 @@ def foldseek_apiquery(input_file: str, output_file: str, mode: str, database: li
         elapsed += sleep_time
         repeat = status["status"] != "COMPLETE"
 
-    if elapsed > FOLDSEEK_SERVER_TIMEOUT:
+    # `repeat` is the loop's own answer to "did this ticket complete?", so it is
+    # what decides whether the search failed. Testing the clock instead was an
+    # off-by-one: the loop runs while `elapsed < FOLDSEEK_SERVER_TIMEOUT`, both
+    # poll intervals divide the timeout exactly, so a ticket that never
+    # completes leaves `elapsed` equal to it -- and `elapsed > timeout` is then
+    # False, so the search fell through to the download below and reported no
+    # error at all.
+    if repeat:
         sys.exit(f"The ticket failed to complete after {elapsed} seconds.")
 
     # download blast compatible result archive
