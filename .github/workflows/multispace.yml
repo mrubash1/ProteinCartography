@@ -1,0 +1,175 @@
+# Proves ADR 0006 rule 4 rather than asserting it: the multi-space pipeline runs
+# end to end with **zero optional dependencies** installed in the driver
+# environment, and the determinism guard runs at a cohort size where it can
+# actually fail.
+#
+# Two things this job exists to catch that `test.yml` cannot:
+#
+#   1. `make test` runs the unit suite. A unit suite passing is not evidence the
+#      entry points work -- seven defects in this work were reachable only by
+#      running the pipeline, several of them pure small-N. This runs the DAG.
+#   2. `test_determinism.py` is marked `slow`, so `make test` collects it and
+#      runs nothing. A guard that never executes is not a guard.
+name: multispace
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+    types: [opened, reopened, labeled, synchronize]
+  workflow_dispatch:
+
+jobs:
+  end-to-end-with-no-optional-dependencies:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash -leo pipefail {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          # Deliberately the same env `test.yml` uses: python, snakemake,
+          # requests, pandas, pytest. No scikit-learn, no umap, no scipy, no
+          # scanpy. The per-rule `conda:` environments supply those to the rules
+          # that need them, which is the separation ADR 0006 is about.
+          environment-file: envs/cartography_test.yml
+          environment-name: test-env
+          cache-environment: true
+          cache-downloads: true
+          generate-run-shell: true
+          init-shell: bash
+
+      - name: Guard the guard — the driver env must lack the optional stack
+        # If this env ever gains scikit-learn, every "works without optional
+        # dependencies" claim below becomes vacuous while still passing.
+        run: |
+          python - <<'PY'
+          import importlib.util, sys
+          present = [m for m in ("sklearn", "umap", "scipy", "scanpy", "torch")
+                     if importlib.util.find_spec(m) is not None]
+          if present:
+              sys.exit(f"envs/cartography_test.yml has gained {present}; "
+                       "this job no longer proves ADR 0006 rule 4.")
+          print("driver env is clean: none of sklearn, umap, scipy, scanpy, torch")
+          PY
+        shell: micromamba-shell {0}
+
+      - name: Cache snakemake conda envs
+        uses: actions/cache@v4
+        id: cache-snakemake-conda-envs
+        with:
+          path: .snakemake/conda
+          # Same key as `test.yml` on purpose, so the two jobs share one cache
+          # rather than each building a multi-gigabyte copy.
+          key: conda-${{ runner.os }}--${{ runner.arch }}--${{ hashFiles('envs/*.yml') }}
+
+      - name: Create the snakemake conda envs
+        if: steps.cache-snakemake-conda-envs.outputs.cache-hit != 'true'
+        run: |
+          rm -rf .snakemake/conda
+          snakemake \
+            --configfile demo/multispace/config.yml \
+            --use-conda \
+            --conda-frontend conda \
+            --conda-create-envs-only \
+            --cores 1
+        shell: micromamba-shell {0}
+
+      - name: The multi-space demo must RUN, not merely resolve
+        # A dry run checks the graph; it does not check the jobs. Both of the
+        # defects the demo found in group 8c were invisible to `-n`.
+        run: |
+          rm -rf demo/multispace/output
+          snakemake \
+            --configfile demo/multispace/config.yml \
+            --use-conda \
+            --conda-frontend conda \
+            --cores 2
+        shell: micromamba-shell {0}
+
+      - name: Every space produced its diagnostics
+        run: |
+          python - <<'PY'
+          import json, pathlib, sys
+          spaces = sorted(pathlib.Path("demo/multispace/output/spaces").iterdir())
+          if len(spaces) != 7:
+              sys.exit(f"expected 7 spaces, found {len(spaces)}: {[s.name for s in spaces]}")
+          for space in spaces:
+              report = space / "diagnostics.json"
+              if not report.exists():
+                  sys.exit(f"{space.name} produced no diagnostics.json")
+              body = json.loads(report.read_text())
+              # `stability` needs no optional dependency, so it must be present
+              # for every space whatever else was skipped.
+              if "stability" not in body:
+                  sys.exit(f"{space.name} has no stability section")
+          print(f"all {len(spaces)} spaces produced diagnostics")
+          PY
+        shell: micromamba-shell {0}
+
+      - name: The default DAGs are unchanged
+        # The whole PR rests on the default pipeline being untouched. 16 and 25
+        # are the counts at the commit this branch forked from.
+        run: |
+          for cfg_and_count in "demo/cluster-mode/config.yml:16" "demo/search-mode/config_actin_small.yml:25"; do
+            cfg="${cfg_and_count%:*}"; want="${cfg_and_count##*:}"
+            got=$(snakemake --configfile "$cfg" -n --quiet --rerun-incomplete 2>/dev/null \
+                  | awk '/^total/ {print $2}')
+            if [ "$got" != "$want" ]; then
+              echo "::error::$cfg resolves to $got rules, expected $want"
+              exit 1
+            fi
+            echo "$cfg: $got rules"
+          done
+        shell: micromamba-shell {0}
+
+  determinism:
+    # `test_determinism.py` is marked `slow`, so `make test` never runs it. This
+    # is the job that does. It needs the analysis environment's scikit-learn, so
+    # it runs against the per-rule conda envs rather than the driver env.
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash -leo pipefail {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-file: envs/analysis.yml
+          environment-name: analysis-env
+          cache-environment: true
+          cache-downloads: true
+          generate-run-shell: true
+          init-shell: bash
+
+      - name: Install pytest into the analysis environment
+        # `envs/analysis.yml` is a pipeline environment and does not carry a
+        # test runner. Installed here rather than added to the env file, which
+        # would change what every rule solves.
+        run: micromamba install -y -n analysis-env pytest=7.4.3
+        shell: bash -leo pipefail {0}
+
+      - name: Two runs above N=500 must be bit-identical
+        run: |
+          PYTHONPATH="$PWD/ProteinCartography:$PWD/ProteinCartography/tests" \
+            python -m pytest ProteinCartography/tests/test_determinism.py \
+            -q --runslow -p no:cacheprovider
+        shell: micromamba-shell {0}
+
+      - name: The guard must have run, not skipped
+        # An `importorskip` test can be written, be correct, and never execute.
+        run: |
+          PYTHONPATH="$PWD/ProteinCartography:$PWD/ProteinCartography/tests" \
+            python -m pytest ProteinCartography/tests/test_determinism.py \
+            -q --runslow -p no:cacheprovider -rs 2>&1 | tee /tmp/determinism.txt
+          if grep -q "SKIPPED" /tmp/determinism.txt; then
+            echo "::error::a determinism test skipped; this job proves nothing"
+            exit 1
+          fi
+        shell: micromamba-shell {0}
