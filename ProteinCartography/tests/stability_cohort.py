@@ -11,7 +11,7 @@ arbitrary and reproducible, which is the worst combination a map can offer.
 
 Group 8a met the same shape from another direction: `graph` fusion returned a
 matrix that was symmetric, row-stochastic, finite and correctly shaped, and
-carried no structure at all (REVIEW_LOG G8.4). Shape assertions cannot see this.
+carried no structure at all. Shape assertions cannot see this.
 Only a planted answer the statistic is *required* to reproduce can.
 
 So this plants three bands, and the middle one is as load-bearing as the ends:

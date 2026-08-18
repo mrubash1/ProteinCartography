@@ -1,6 +1,6 @@
 """Regression tests for defects found by the adversarial review gates.
 
-Every test here corresponds to a finding in ``docs/REVIEW_LOG.md``. They are
+Every test here corresponds to a finding from one of those gates. They are
 kept together rather than filed under the module they exercise because the
 useful property is the provenance: each one is a bug that was actually present
 and actually produced a wrong answer, so a failure here means a real regression
@@ -517,7 +517,7 @@ def test_the_default_search_path_declares_neither_new_output(tmp_path):
     assert orphans == [], (
         f"{orphans} are declared on the default path but no rule consumes them. "
         "An unconsumed output on the `download_pdbs` checkpoint drops `copy_pdb` "
-        "on any pre-existing output tree -- see REVIEW_LOG GE.2."
+        "on any pre-existing output tree."
     )
 
 

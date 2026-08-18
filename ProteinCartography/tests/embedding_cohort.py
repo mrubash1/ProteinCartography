@@ -12,7 +12,7 @@ Neither defect is visible in a fixture where the map is simply good or simply
 bad, because those give ``T == C`` and a wrong answer that agrees with itself
 reads as two agreeing answers. Group 8a met the same shape of problem from the
 other side: `graph` fusion returned a matrix that was symmetric, row-stochastic,
-finite and correctly shaped, and carried no structure at all (REVIEW_LOG G8.4).
+finite and correctly shaped, and carried no structure at all.
 Only a planted partition it was *required* to recover could fail it.
 
 So this fixture plants the 2x2 table, and every cell of it is occupied:

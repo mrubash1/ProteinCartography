@@ -418,8 +418,8 @@ def test_no_bare_array_accessor(aligned_file):
 
 
 # ==========================================================================
-# Regressions from the adversarial review. Each of these was a real defect;
-# see docs/REVIEW_LOG.md. Two returned wrong numbers and reported success.
+# Regressions from the adversarial review. Each of these was a real defect.
+# Two returned wrong numbers and reported success.
 # ==========================================================================
 
 # ==========================================================================

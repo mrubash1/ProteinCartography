@@ -42,7 +42,7 @@ Two failure modes this is built against, both found in earlier groups:
   the statistic is required to land there.
 * **A default that cannot fit the cohort.** Group 8b shipped ``DEFAULT_K = 15``
   against an 11-protein demo and broke all seven spaces while every unit test
-  passed at N=240 (REVIEW_LOG G8b.5). Here the ceiling is tighter still, because
+  passed at N=240. Here the ceiling is tighter still, because
   k must fit the *subsample* rather than the cohort, so it is clamped to
   ``round(f*N) - 1`` and the request is kept and reported.
 """

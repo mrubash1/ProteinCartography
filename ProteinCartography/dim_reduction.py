@@ -26,8 +26,7 @@ import pandas as pd
 # README advertises and which worked at the commit this branch forked from: the
 # flat form raises `ModuleNotFoundError: spaces` there, and this module -- with
 # its `__all__` of calculate_PCA/TSNE/UMAP -- is the one most likely to be used
-# as a library. It was the only import regression on the branch (REVIEW_LOG
-# GE.11).
+# as a library. It was the only import regression on the branch.
 try:
     from spaces.reducers.core import reduce_pca, reduce_tsne, reduce_umap
 except ModuleNotFoundError:  # pragma: no cover - exercised by test_packaging

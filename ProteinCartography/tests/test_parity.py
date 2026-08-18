@@ -143,7 +143,7 @@ def cohort_report_run(tmp_path_factory, repo_dirpath, conda_prefix):
     job requests is never a reason to re-run a checkpoint -- so on any output
     tree produced before this branch, `checkpoints.download_pdbs.get()` raised,
     `copy_pdb` was never scheduled, and the run finished silently without the
-    query proteins (REVIEW_LOG GE.2). Making the report a demanded target
+    query proteins. Making the report a demanded target
     instead would fix that by forcing the checkpoint to re-run, and snakemake
     deletes a `directory()` output before re-running its rule, so a resumed
     search would re-download every structure. Declaring it only when
@@ -190,8 +190,8 @@ def nondeterminism_floor(self_diffs):
 def test_the_baseline_is_deterministic(self_diffs):
     """Two runs of the baseline must agree on every scientific output.
 
-    PLAN.md makes this a precondition: a parity test against a nondeterministic
-    baseline proves nothing. If this fails, PR #106 did not fully land and the
+    This is a precondition of the whole comparison: a parity test against a
+    nondeterministic baseline proves nothing. If this fails, PR #106 did not fully land and the
     port must not proceed.
     """
     report = self_diffs["base"]

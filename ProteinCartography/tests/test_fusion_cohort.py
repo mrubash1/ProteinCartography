@@ -3,7 +3,7 @@
 Group 7b's fixture tests caught two generator defects -- planted labels that did
 not match the padding rule, and a recorded rate that was conditional rather than
 marginal -- both before any statistic existed, and both of which would have
-presented later as "the statistic missed the signal" (REVIEW_LOG G7.7). The same
+presented later as "the statistic missed the signal". The same
 reasoning applies here and the stakes are higher: every claim this fixture
 supports is a claim about *which block* a fused geometry came from, and if the
 two partitions are not really independent then every one of those claims is

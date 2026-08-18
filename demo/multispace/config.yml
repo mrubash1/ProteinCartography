@@ -24,8 +24,7 @@ plotting_modes:
 # `key_protids` is deliberately empty. Setting it pulls the Foldseek web API
 # into the DAG even in cluster mode -- `aggregate_foldseek_fraction_seq_identity`
 # and `calculate_concordance` are expanded for key protids as *common* inputs,
-# not search-mode-only -- so a config that sets it is not offline. See
-# docs/EXPLORATION.md.
+# not search-mode-only -- so a config that sets it is not offline.
 
 # ------------------------------------------------------------------------------
 # Multi-space configuration

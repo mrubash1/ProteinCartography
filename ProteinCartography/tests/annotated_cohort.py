@@ -3,7 +3,7 @@
 
 The demo cohort cannot test enrichment. Eleven proteins, four of them
 byte-identical in sequence, and a `Pfam` column with two distinct values across
-the whole set (REVIEW_LOG G7.2) -- a p-value computed on that is not evidence of
+the whole set -- a p-value computed on that is not evidence of
 anything, and a test asserting one would be asserting arithmetic rather than
 behaviour. So the fixture comes before the statistic.
 

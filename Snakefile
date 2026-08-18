@@ -565,7 +565,7 @@ checkpoint download_pdbs:
         # snakemake leaves the checkpoint alone, `checkpoints.download_pdbs.get`
         # raises, `get_pdb_filepaths` contributes no `copy_pdb` job, and the run
         # proceeds *silently* without the query proteins. Reproduced against
-        # `36a38c7`: 17 jobs with `copy_pdb`, 16 without. See REVIEW_LOG GE.2.
+        # `36a38c7`: 17 jobs with `copy_pdb`, 16 without.
         **(
             {"cohort_report": PROTEIN_FEATURES_DIR / "cohort_report.json"}
             if MULTISPACE_ENABLED

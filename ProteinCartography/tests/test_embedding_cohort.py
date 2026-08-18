@@ -5,7 +5,7 @@ These assert the *construction*, not any statistic computed from it. Nothing in
 `diagnostics/` exists yet, deliberately: group 7b's fixture caught two generator
 defects before the statistic it was built for was written, and both would
 otherwise have surfaced later as "the statistic missed the signal"
-(REVIEW_LOG G7.7).
+for the same reason.
 
 The two that matter are :func:`test_the_fold_moves_no_pair_apart` and
 :func:`test_the_split_moves_no_pair_together`. Between them they prove the
