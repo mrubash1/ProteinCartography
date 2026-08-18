@@ -19,7 +19,23 @@ from __future__ import annotations
 import argparse
 
 import pandas as pd
-from spaces.reducers.core import reduce_pca, reduce_tsne, reduce_umap
+
+# Snakemake runs this as `python ProteinCartography/dim_reduction.py`, which puts
+# the package directory on the path and makes the flat import the working one.
+# The fallback is for `from ProteinCartography import dim_reduction`, which the
+# README advertises and which worked at the commit this branch forked from: the
+# flat form raises `ModuleNotFoundError: spaces` there, and this module -- with
+# its `__all__` of calculate_PCA/TSNE/UMAP -- is the one most likely to be used
+# as a library. It was the only import regression on the branch (REVIEW_LOG
+# GE.11).
+try:
+    from spaces.reducers.core import reduce_pca, reduce_tsne, reduce_umap
+except ModuleNotFoundError:  # pragma: no cover - exercised by test_packaging
+    from ProteinCartography.spaces.reducers.core import (
+        reduce_pca,
+        reduce_tsne,
+        reduce_umap,
+    )
 
 __all__ = ["calculate_PCA", "calculate_TSNE", "calculate_UMAP"]
 
