@@ -181,6 +181,35 @@ UNIPROT_ADDITIONAL_FIELDS = config["uniprot_additional_fields"]
 DOMAIN_MAP = config_utils._get_domain_map(config)
 MIN_DOMAIN_LENGTH = config_utils._get_min_domain_length(config)
 USER_DOMAINS_FILE = config_utils._get_user_domains_file(config)
+
+# The domain path truncates its own hit list, so it makes a second cohort
+# decision that `cohort.selection` has to reach or silently contradict.
+# `domain_download_pdbs` passes `--selection` for that reason.
+#
+# `significance` is the one rule it cannot honor: ranking by significance needs
+# the per-accession table `aggregate_hit_significance` builds, and there is no
+# domain-side equivalent. Refusing the run would be wrong -- a search-mode
+# config with `selection: significance` is valid, predates the domain path, and
+# the protein map is unaffected. So give the domain path a *stated* reproducible
+# rule rather than letting it fall through to the script's `as_filtered`
+# default, and say so where somebody will see it. `accession` is the right
+# substitute: it is in `cohort.REPRODUCIBLE_RULES` and needs no extra input.
+#
+# What this removes is the silence. Before, one config truncated the protein map
+# by significance and the domain map by UniProt's response order, with no error
+# and no cohort report on the domain side to notice it from.
+# See docs/adr/0008-cohort-selection.md.
+DOMAIN_COHORT_SELECTION = COHORT_SELECTION
+if DOMAIN_MAP != "off" and COHORT_SELECTION == "significance":
+    DOMAIN_COHORT_SELECTION = "accession"
+    print(
+        "[cohort] selection 'significance' cannot be applied to the domain map "
+        "(there is no domain-side significance table), so the domain map uses "
+        "'accession'. Both are reproducible; they are not the same cut. Set "
+        "`domain_map: off` if the two maps must share one rule.",
+        file=sys.stderr,
+    )
+
 DOMAIN_DIR = OUTPUT_DIR / "domain_path"
 DOMAIN_BLAST_DIR = DOMAIN_DIR / "blast_results"
 DOMAIN_FOLDSEEK_DIR = DOMAIN_DIR / "foldseek_results"

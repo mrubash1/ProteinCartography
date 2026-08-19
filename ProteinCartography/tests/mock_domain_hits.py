@@ -17,10 +17,14 @@ def maybe_write_per_domain_hits(output_file: str) -> bool:
 
     Returns True when the caller should skip normal extraction.
     """
-    name = output_file.replace("\\", "/")
+    # Match the FILENAME's id segment, not the whole path. `token in name` also
+    # fires when any parent directory happens to contain `__d01.` -- a workdir,
+    # a tmpdir, a branch name -- and the caller then silently returns a mocked
+    # hit list for a protein-path invocation. Under snakemake that surfaces as a
+    # declared output never being written, which reads as a pipeline bug.
+    stem = Path(output_file).name.split(".", 1)[0]
     for suffix, hits in DOMAIN_SEARCH_HITS.items():
-        token = f"__{suffix}."
-        if token in name or name.endswith(f"__{suffix}"):
+        if stem.endswith(f"__{suffix}"):
             path = Path(output_file)
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("".join(hit + "\n" for hit in hits))

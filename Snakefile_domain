@@ -228,7 +228,8 @@ if MODE == config_utils.Mode.SEARCH:
             python ProteinCartography/download_pdbs.py \
                 --input {input} \
                 --output {output.hit_structures} \
-                --max-structures {MAX_STRUCTURES}
+                --max-structures {MAX_STRUCTURES} \
+                --selection {DOMAIN_COHORT_SELECTION}
             """
 
     checkpoint domain_prepare_structures:

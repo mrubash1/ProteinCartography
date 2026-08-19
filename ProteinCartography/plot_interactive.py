@@ -21,6 +21,7 @@ from color_utils import (
     arcadia_poppies_r,
     arcadia_viridis,
 )
+from domain_utils import is_domain_id
 
 # only import these functions when using import *
 __all__ = [
@@ -360,8 +361,12 @@ def generate_plotting_rules(
                 "cmin": 0,
                 "cmax": 1,
             }
-            # Domain maps only color by TM-score vs query domains (no fident/concordance layers).
-            if "__d" not in str(keyid):
+            # Domain maps only color by TM-score vs query domains (no fident/concordance
+            # layers). Tested with the anchored id pattern rather than `"__d" in keyid`:
+            # a substring test also matches a *protein* whose accession happens to
+            # contain the separator, and it would drop that protein's fident and
+            # concordance layers from the protein map with no error.
+            if not is_domain_id(str(keyid)):
                 plotting_rules[f"fident_v_{keyid}"] = {
                     "type": "continuous",
                     "apply": lambda x: round(x, num_decimals),

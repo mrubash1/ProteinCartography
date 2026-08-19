@@ -75,6 +75,18 @@ def make_domain_id(parent_protid: str, domain_index: int) -> str:
     return f"{parent_protid}{DOMAIN_ID_SEP}{domain_index:02d}"
 
 
+def is_domain_id(protid: str) -> bool:
+    """Is this a domain instance id, rather than a protein that merely contains
+    the separator?
+
+    ``DOMAIN_ID_SEP`` is ``"__d"``, and a substring test for it also matches an
+    ordinary accession that happens to contain those characters -- silently, in
+    whichever branch is guarded by it. The pattern is anchored and requires a
+    trailing index, so only a real ``{parent}__dNN`` matches.
+    """
+    return DOMAIN_ID_PATTERN.match(protid) is not None
+
+
 def parse_domain_id(domain_id: str) -> tuple[str, int]:
     match = DOMAIN_ID_PATTERN.match(domain_id)
     if not match:
