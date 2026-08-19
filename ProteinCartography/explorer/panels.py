@@ -3,7 +3,7 @@
 
 `docs/protein-map-geometry-options-v20.html` argues for a particular explorer
 across eight sheets. Most of what it proposes cannot be drawn from what this
-pipeline currently produces -- it wants a reconciled phylogeny for six panels
+pipeline currently produces — it wants a reconciled phylogeny for six panels
 and a perturbation scan for three more, and neither exists. The catalogue names
 every panel anyway, with the input it is waiting for, for one reason:
 
@@ -11,18 +11,18 @@ every panel anyway, with the input it is waiting for, for one reason:
 
 A panel that is silently absent cannot be told apart from one nobody thought
 of. A panel that renders its own missing input is a question someone can answer.
-So `requires` is not documentation -- it is what the page prints when the data
-is not there, and `fills_in` points at the POST-PLAN entry that would supply it.
+So requires is not documentation — it is what the page prints when the data
+is not there, and fills_in points at the POST-PLAN entry that would supply it.
 
 Nothing here fetches or computes. This module is deliberately dependency-free
-(`test_optional_dependencies` asserts the explorer imports in a bare env), so it
-is a description of panels, and `payload.py` decides which are satisfiable.
+(test_optional_dependencies asserts the explorer imports in a bare env), so it
+is a description of panels, and payload.py decides which are satisfiable.
 """
 
 from __future__ import annotations
 from dataclasses import dataclass, field
 
-#: The eight sheets, in the source document's own order. `maps` is this
+#: The eight sheets, in the source document's own order. maps is this
 #: pipeline's existing grid, which the document calls the primary architecture.
 SHEETS = (
     ("maps", "The maps"),
@@ -50,7 +50,7 @@ class PanelSpec:
     sheet: str
     #: Which renderer draws it. "note" and "table" need no numeric input.
     panel_type: str
-    #: real / mixed / synthetic / method -- see PROVENANCE.
+    #: real / mixed / synthetic / method — see PROVENANCE.
     provenance: str
     #: The source document's own section number, so any claim here is checkable.
     section: str
@@ -59,8 +59,8 @@ class PanelSpec:
     #: Payload keys that must be present and non-empty for this to draw. Empty
     #: means the panel needs no data and always draws.
     needs: tuple = ()
-    #: Printed verbatim when `needs` is unmet. Name the missing input, not the
-    #: fact of its absence -- "awaiting a reconciled tree" is actionable and
+    #: Printed verbatim when needs is unmet. Name the missing input, not the
+    #: fact of its absence — "awaiting a reconciled tree" is actionable and
     #: "no data" is not.
     requires: str = ""
     #: Where in POST-PLAN the work that would fill this panel is described.
@@ -91,7 +91,7 @@ _NO_TREE = (
     "a reconciled gene/species tree. Every cohort this pipeline builds is a "
     "single query's homolog set with no phylogeny attached, and 7.02 correction "
     "2 already refuses the rate ratio when the x-axis is identity-derived "
-    "rather than tree-derived -- which is the case here"
+    "rather than tree-derived — which is the case here"
 )
 _NO_SCAN = (
     "a perturbation scan: alanine, poly-Ala window, segment and domain "
@@ -148,7 +148,7 @@ CATALOGUE = (
         section="1.03",
         question=(
             "Eight quantities that may colour a map and must never enter its "
-            "geometry. Enforced, not merely listed -- see the geometry guard."
+            "geometry. Enforced, not merely listed — see the geometry guard."
         ),
     ),
     # --- how it works ---------------------------------------------------------
@@ -186,7 +186,7 @@ CATALOGUE = (
         ),
         needs=("censoring",),
         requires=(
-            "both matrices for one cohort -- the shipped capped one and an "
+            "both matrices for one cohort — the shipped capped one and an "
             "exhaustive one. N7 produced the second for actin_B and chymo_A1"
         ),
         fills_in="POST-PLAN, N7: the exhaustive matrices are on disk",
@@ -213,12 +213,12 @@ CATALOGUE = (
         section="3.01",
         question=(
             "The source calls this overlay not optional. Note it currently "
-            "measures the SPACE, not the layout -- FOLLOWUPS #62."
+            "measures the SPACE, not the layout — FOLLOWUPS #62."
         ),
         needs=("stability_series",),
         requires=(
-            "a per-protein stability series. `diagnostics/stability.py` computes "
-            "one and `diagnostics.json` exports only the coin-flip list, the "
+            "a per-protein stability series. diagnostics/stability.py computes "
+            "one and diagnostics.json exports only the coin-flip list, the "
             "mean and the min, so the ramp this panel needs is discarded"
         ),
         fills_in="POST-PLAN, the explorer build-out: per-protein stability export",
@@ -234,7 +234,7 @@ CATALOGUE = (
         question="Which parts of the chain hold the protein in position?",
         needs=("perturbation",),
         requires=_NO_SCAN,
-        fills_in="GEOMETRY_DIGEST 0.04 decision 3 -- Matt's call, not a build task",
+        fills_in="GEOMETRY_DIGEST 0.04 decision 3 — Matt's call, not a build task",
     ),
     PanelSpec(
         panel_id="variant_landing",
@@ -257,7 +257,7 @@ CATALOGUE = (
         section="4.02",
         question=(
             "Five perturbations against five observables. The source's point is "
-            "that the EMPTY CELLS are the content -- this grid is not a stub."
+            "that the EMPTY CELLS are the content — this grid is not a stub."
         ),
     ),
     # --- time and innovation --------------------------------------------------
@@ -359,7 +359,7 @@ CATALOGUE = (
         section="6.04",
         question=(
             "Ancestors as points, branches as routes. Requires a METRIC "
-            "embedding -- 6.04 forbids drawing branches on a UMAP."
+            "embedding — 6.04 forbids drawing branches on a UMAP."
         ),
         needs=("gene_tree", "metric_embedding"),
         requires=_NO_TREE,
@@ -413,8 +413,8 @@ def catalogue_for(available: set) -> list:
     """Every panel, each marked drawable or awaiting, given what the payload has.
 
     Returns dicts rather than PanelSpecs because this goes straight into the
-    page. `drawable` is computed here, once, so the template never has to decide
-    whether a panel has data -- a decision split across two languages is how a
+    page. drawable is computed here, once, so the template never has to decide
+    whether a panel has data — a decision split across two languages is how a
     panel ends up blank in one of them.
     """
     out = []

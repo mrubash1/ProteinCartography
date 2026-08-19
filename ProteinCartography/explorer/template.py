@@ -26,7 +26,7 @@ from __future__ import annotations
 
 __all__ = ["render"]
 
-_TEMPLATE = """<!doctype html>
+_TEMPLATE = r"""<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -83,7 +83,18 @@ button.on { background: var(--ink); color: #fff; border-color: var(--ink); }
 /* The source tags every section real / mixed / synthetic / method (4, 5 notes).
    A reader must never have to guess whether a panel shows measurements or a
    drawing of an argument, so the tag is on the panel, not in a caption. */
-.tag { float: right; font-size: 10px; text-transform: uppercase; letter-spacing: .05em;
+.colour-key { display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+  padding: 8px 22px 2px; font-size: 12px; color: var(--muted); }
+.key-chip { display: inline-flex; align-items: center; gap: 5px; }
+.key-chip i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+.key-ramp { display: inline-block; width: 110px; height: 10px; border-radius: 2px;
+  background: linear-gradient(90deg,#440154,#3b528b,#21918c,#5ec962,#fde725); }
+.key-note { font-style: italic; }
+/* Floated, the tag dropped out of the header and landed on the divider once a
+   title wrapped. The header is a flex row so the tag stays in it at any width. */
+.panel h2 { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.panel h2 .tag { flex: none; }
+.tag { font-size: 10px; text-transform: uppercase; letter-spacing: .05em;
   padding: 2px 6px; border-radius: 3px; font-weight: 600; }
 .tag-real { background: #eaf4ee; color: var(--ok); }
 .tag-mixed { background: #fdf7e8; color: var(--caution); }
@@ -92,13 +103,18 @@ button.on { background: var(--ink); color: #fff; border-color: var(--ink); }
 .question { padding: 7px 12px; font-size: 12px; color: var(--muted);
   border-bottom: 1px solid var(--line); }
 .awaiting .why { display: block; margin-top: 6px; font-size: 11.5px; }
-.awaiting .fills { display: block; margin-top: 4px; font-size: 11px; color: #7a838c; }
+/* 11px at #7a838c fails WCAG AA on this background. Darkened to meet it -- a
+   caption naming the work that fills a panel is the last thing to make faint. */
+.awaiting .fills { display: block; margin-top: 4px; font-size: 11px; color: #4a535c; }
 /* A panel with nothing to draw says so, in the panel's own footprint. The
    source document's rule (7.03 E2) is that refusals are shown as refusals and
    never as blanks; the same reasoning applies to a panel awaiting an input. */
 .awaiting { height: 330px; display: flex; align-items: center; justify-content: center;
   text-align: center; padding: 0 22px; color: var(--muted); font-size: 12.5px;
   background: repeating-linear-gradient(45deg, #fcfcfd, #fcfcfd 9px, #f6f7f9 9px, #f6f7f9 18px); }
+/* The table must scroll inside its own box. Letting it size the page made the
+   whole document scroll sideways on a narrow window. */
+.scroll-x { overflow-x: auto; }
 table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
 th, td { text-align: left; padding: 5px 9px; border-bottom: 1px solid var(--line); }
 th { color: var(--muted); font-weight: 600; font-size: 11px;
@@ -147,6 +163,8 @@ footer code { font-size: 11.5px; }
 
 <div id="sheets" class="sheets"></div>
 
+<div id="colour-key" class="colour-key" style="display:none"></div>
+
 <div class="legend">
   <b>Hollow points</b> are proteins whose 2-D position the diagnostics say should not be read.
   Selecting in any panel highlights the same proteins in all of them.
@@ -158,7 +176,7 @@ footer code { font-size: 11.5px; }
 
 <section id="maps-extra">
   <h3>Cross-space comparison</h3>
-  <div id="comparisons"></div>
+  <div id="comparisons" class="scroll-x"></div>
   <h3>Selection</h3>
   <div id="inspector">Nothing selected.</div>
 </section>
@@ -272,6 +290,79 @@ function rebuildDisagreement() {
 
 // --- drawing -----------------------------------------------------------------
 
+// The colour key has to mean the same thing in every panel of one figure.
+// Computing levels per panel -- which is what this did -- gave the same colour
+// opposite meanings side by side: in a space where every protein is readable
+// the single level "readable" took palette slot 0, the same slot "do not read"
+// took in a space that had both. A reader scanning the row saw one blue meaning
+// two things. So the domain is computed ONCE across all spaces, before any
+// panel is drawn, and the legend is rendered from that same domain.
+let colourDomain = { kind: "none", label: "", levels: [], min: null, max: null };
+
+function rebuildColourDomain() {
+  const label = colourFor(spaces[0] || { protids: [], readable: [], clusters: {} }).label;
+  const all = [];
+  let kind = "none";
+  for (const space of spaces) {
+    const c = colourFor(space);
+    kind = c.kind;
+    for (const v of c.values) if (v !== null && v !== undefined) all.push(v);
+  }
+  if (kind === "categorical") {
+    // Numeric-looking labels sort numerically; LC10 must not land before LC2.
+    const levels = [...new Set(all)].sort((a, b) => {
+      const na = Number(String(a).replace(/^\D+/, ""));
+      const nb = Number(String(b).replace(/^\D+/, ""));
+      if (Number.isFinite(na) && Number.isFinite(nb) && na !== nb) return na - nb;
+      return String(a).localeCompare(String(b));
+    });
+    colourDomain = { kind, label, levels, min: null, max: null };
+  } else if (kind === "continuous") {
+    const nums = all.filter((v) => typeof v === "number");
+    colourDomain = {
+      kind, label, levels: [],
+      min: nums.length ? Math.min(...nums) : 0,
+      max: nums.length ? Math.max(...nums) : 1,
+    };
+  } else {
+    colourDomain = { kind: "none", label: "", levels: [], min: null, max: null };
+  }
+}
+
+// Without this the reader has colour and no key. The source is explicit that a
+// map ships with what it needs to be read; a recoloured scatter with no legend
+// is the same failure as a diagnostic nobody prints.
+function renderColourKey() {
+  const box = el("colour-key");
+  box.textContent = "";
+  if (colourDomain.kind === "none") { box.style.display = "none"; return; }
+  box.style.display = "";
+  const label = document.createElement("b");
+  label.textContent = colourDomain.label + ": ";
+  box.append(label);
+  if (colourDomain.kind === "categorical") {
+    colourDomain.levels.forEach((level, i) => {
+      const chip = document.createElement("span");
+      chip.className = "key-chip";
+      const dot = document.createElement("i");
+      dot.style.background = PALETTE[i % PALETTE.length];
+      chip.append(dot, document.createTextNode(String(level)));
+      box.append(chip);
+    });
+  } else {
+    const ramp = document.createElement("span");
+    ramp.className = "key-ramp";
+    box.append(
+      document.createTextNode(fmtValue(colourDomain.min) + " "), ramp,
+      document.createTextNode(" " + fmtValue(colourDomain.max))
+    );
+  }
+  const note = document.createElement("span");
+  note.className = "key-note";
+  note.textContent = "one key for every panel";
+  box.append(note);
+}
+
 function colourFor(space) {
   const n = space.protids.length;
   if (state.disagreement) {
@@ -324,10 +415,16 @@ function traceFor(space) {
       marker.color = idx.map((i) => colour.values[i]);
       marker.colorscale = "Viridis";
       marker.showscale = false;
+      // Pin the scale to the domain shared by every panel. Without cmin/cmax
+      // Plotly rescales per trace, so the same value is a different colour in
+      // each panel -- which defeats the only thing a cross-panel colour is for.
+      if (colourDomain.kind === "continuous" && colourDomain.max > colourDomain.min) {
+        marker.cmin = colourDomain.min;
+        marker.cmax = colourDomain.max;
+      }
     } else if (colour.kind === "categorical") {
-      const levels = [...new Set(colour.values.filter((v) => v !== null))].sort();
       marker.color = idx.map((i) => {
-        const at = levels.indexOf(colour.values[i]);
+        const at = colourDomain.levels.indexOf(colour.values[i]);
         return at < 0 ? "#c9ced4" : PALETTE[at % PALETTE.length];
       });
     } else {
@@ -345,11 +442,22 @@ function traceFor(space) {
       y: idx.map((i) => coords[i][1]),
       text: idx.map((i) => {
         const p = space.protids[i];
-        const bits = [p];
-        if (space.clusters[p]) bits.push(`cluster ${space.clusters[p]}`);
+        const extra = (active.hover && active.hover[p]) || {};
+        const bits = [`<b>${escapeHtml(p)}</b>`];
+        // Species first: it is the thing a biologist recognises, and the
+        // accession above it is not.
+        if (extra.species) bits.push(escapeHtml(extra.species));
+        if (extra.leiden !== undefined && extra.leiden !== null) {
+          bits.push(`Leiden cluster ${escapeHtml(String(extra.leiden))} (whole-cohort)`);
+        }
+        // Attributed to its space on purpose. Each space partitions
+        // independently, so a bare "cluster 3" invites reading two unrelated
+        // partitions as the same grouping.
+        if (space.clusters[p]) {
+          bits.push(`${escapeHtml(space.space_id)} cluster ${escapeHtml(space.clusters[p])}`);
+        }
         if (colour.label && colour.values[i] !== null && colour.values[i] !== undefined) {
-          const v = colour.values[i];
-          bits.push(`${colour.label}: ${typeof v === "number" ? v.toFixed(3) : v}`);
+          bits.push(`${escapeHtml(colour.label)}: ${escapeHtml(fmtValue(colour.values[i]))}`);
         }
         if (!readable) bits.push("position not faithful — do not read");
         return bits.join("<br>");
@@ -371,7 +479,7 @@ const PANELS = {};
 
 //: Panel kinds drawn by a renderer that predates the catalogue, so the sheet
 //: body must not also draw them as cards.
-const BUILT_ELSEWHERE = new Set(["space_grid", "comparisons"]);
+const BUILT_ELSEWHERE = new Set(["space_grid", "comparisons", "contributions"]);
 
 // The chrome every panel kind shares, whatever it draws: level class, title and
 // the verdict banner. A panel that skipped this could render a map with no
@@ -459,6 +567,8 @@ function panelFor(space) {
 }
 
 function draw() {
+  rebuildColourDomain();
+  renderColourKey();
   const grid = el("grid");
   if (!grid.dataset.built) {
     spaces.forEach((space) => {
@@ -533,6 +643,19 @@ function renderSheet(sheetId) {
   el("grid").style.display = isMaps ? "" : "none";
   el("maps-extra").style.display = isMaps ? "" : "none";
   document.querySelector(".legend").style.display = isMaps ? "" : "none";
+  el("colour-key").style.display = isMaps && colourDomain.kind !== "none" ? "" : "none";
+  // These drive the scatter grid and nothing else. Left enabled on a sheet
+  // where the grid is hidden they read as controls for the cards, and a click
+  // on "Disagreement mode" silently recoloured five maps the reader could not
+  // see. Disabling is better than hiding: the row keeps its height, so the
+  // page does not jump on every tab change.
+  document.querySelectorAll(".controls select, .controls button").forEach((node) => {
+    if (node.id === "cohort") return;   // the cohort applies to every sheet
+    node.disabled = !isMaps;
+  });
+  document.querySelector(".controls").style.opacity = isMaps ? "" : "0.45";
+  document.querySelector(".controls").title = isMaps
+    ? "" : "these control the maps, which this sheet does not show";
 
   const body = el("sheet-body");
   body.textContent = "";
@@ -566,12 +689,11 @@ function drawablePlaceholder(panel) {
   const box = document.createElement("div");
   box.className = "awaiting";
   const inner = document.createElement("div");
+  // The card header already carries the question. Repeating it here printed
+  // the same sentence twice in every placeholder.
   const head = document.createElement("b");
   head.textContent = "inputs present, renderer not built";
-  const why = document.createElement("span");
-  why.className = "why";
-  why.textContent = panel.question || panel.title;
-  inner.append(head, why);
+  inner.append(head);
   box.append(inner);
   return box;
 }
@@ -584,14 +706,33 @@ function renderSheets() {
     if (!count) return;
     const button = document.createElement("button");
     button.dataset.sheet = sheet.sheet;
-    const waiting = (active.panels || []).filter(
-      (p) => p.sheet === sheet.sheet && !p.drawable
-    ).length;
-    button.textContent = waiting ? `${sheet.title} (${waiting} awaiting)` : sheet.title;
+    // Count panels that DRAW NOTHING, not panels that lack data. A panel whose
+    // inputs are present but whose renderer is unbuilt is just as empty to a
+    // reader, and counting only the first understated two sheets to zero while
+    // they rendered no content at all.
+    const sheetPanels = (active.panels || []).filter(
+      (p) => p.sheet === sheet.sheet && !BUILT_ELSEWHERE.has(p.panel_type)
+    );
+    const blank = sheetPanels.filter((p) => !p.drawable || !PANELS[p.panel_type]).length;
+    button.textContent = blank ? `${sheet.title} (${blank} empty)` : sheet.title;
     button.addEventListener("click", () => renderSheet(sheet.sheet));
     bar.append(button);
   });
   renderSheet("maps");
+}
+
+// `toFixed(3)` printed a chain length as "367.000" and a probability as
+// "0.000". Formatting by magnitude is the difference between a number a reader
+// can use and one they have to decode.
+function fmtValue(v) {
+  if (v === null || v === undefined) return "";
+  if (typeof v !== "number" || !Number.isFinite(v)) return String(v);
+  if (Number.isInteger(v)) return String(v);
+  const a = Math.abs(v);
+  if (a >= 100) return v.toFixed(0);
+  if (a >= 1) return v.toFixed(2);
+  if (a >= 0.001) return v.toFixed(3);
+  return v.toExponential(1);
 }
 
 function escapeHtml(text) {

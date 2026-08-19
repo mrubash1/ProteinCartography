@@ -225,6 +225,43 @@ def _readable_mask(directory: str, diagnostics, protids: list) -> list:
     return [bool(readable.get(p, True)) for p in protids]
 
 
+def _hover_fields(output_dir: str, protids: set) -> dict:
+    """Per protein, the two things a reader recognises: species and Leiden cluster.
+
+    Deliberately NOT sourced from the overlay table. Overlays come from
+    `final_results/*_aggregated_features.tsv`, which a run only has if
+    `aggregate_features` ran; neither cohort here has one, so every overlay is
+    absent and the tooltip would be an accession and nothing else. These two
+    come from files every run writes.
+
+    Species is `Organism` from the protein feature table. The Leiden cluster is
+    the whole-cohort partition from the TM matrix -- the one the published maps
+    are labelled by -- and is distinct from a space's own `clusters.tsv`, which
+    is why the tooltip names them differently.
+    """
+    import pandas as pd
+
+    out: dict = {}
+    features = os.path.join(output_dir, "protein_features", "uniprot_features.tsv")
+    if os.path.exists(features):
+        frame = pd.read_csv(features, sep="\t", dtype=str).fillna("")
+        if "protid" in frame.columns and "Organism" in frame.columns:
+            for protid, organism in zip(frame["protid"], frame["Organism"]):
+                if str(protid) in protids and organism:
+                    out.setdefault(str(protid), {})["species"] = str(organism)
+
+    leiden = os.path.join(output_dir, "foldseek_clustering_results", "leiden_features.tsv")
+    if os.path.exists(leiden):
+        frame = pd.read_csv(leiden, sep="\t", dtype=str).fillna("")
+        if "protid" in frame.columns:
+            column = next((c for c in frame.columns if c != "protid"), None)
+            if column:
+                for protid, value in zip(frame["protid"], frame[column]):
+                    if str(protid) in protids and value != "":
+                        out.setdefault(str(protid), {})["leiden"] = str(value)
+    return out
+
+
 @dataclass(frozen=True)
 class ExplorerPayload:
     """Everything the single HTML file embeds."""
@@ -241,6 +278,8 @@ class ExplorerPayload:
     panels: list = field(default_factory=list)
     #: The sheets those panels are grouped under, in the source's order.
     sheets: list = field(default_factory=list)
+    #: protid -> {species, leiden}. What the cursor shows beyond the accession.
+    hover: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -251,6 +290,7 @@ class ExplorerPayload:
             "provenance": self.provenance,
             "panels": self.panels,
             "sheets": self.sheets,
+            "hover": self.hover,
         }
 
 
@@ -356,6 +396,7 @@ def build_payload(config, output_dir: str, analysis_name: str = "analysis") -> E
         provenance=provenance,
         panels=panels.catalogue_for(available),
         sheets=panels.sheet_titles(),
+        hover=_hover_fields(output_dir, {p for space in spaces for p in space.protids}),
     )
 
 

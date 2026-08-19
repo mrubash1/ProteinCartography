@@ -15,6 +15,7 @@ and nothing in a shape assertion would notice.
 
 from __future__ import annotations
 import json
+import os
 import re
 
 import pytest
@@ -764,3 +765,102 @@ def test_parse_cohort_rejects_a_spec_it_cannot_split():
     for bad in ("no-equals", "name=", "=/tmp/c.json:/tmp/out", "name=/tmp/c.json"):
         with _pytest.raises(SystemExit):
             parse_cohort(bad)
+
+
+# ==========================================================================
+# The cursor, and one colour key for the whole figure. Both came out of the
+# adversarial browser pass, which is the only thing here that renders a DOM.
+# ==========================================================================
+
+
+def test_hover_fields_come_from_files_every_run_writes():
+    """Species and Leiden cluster must not depend on the overlay table.
+
+    Overlays are harvested from `final_results/*_aggregated_features.tsv`, which
+    a run only has if `aggregate_features` ran. Neither N7 cohort has one, so
+    sourcing the cursor from overlays would leave it showing an accession and
+    nothing else -- which is what it did.
+    """
+    import textwrap
+
+    import pytest as _pytest
+
+    _pytest.importorskip("pandas")
+    import tempfile
+
+    from explorer.payload import _hover_fields
+
+    with tempfile.TemporaryDirectory() as out:
+        os.makedirs(os.path.join(out, "protein_features"))
+        os.makedirs(os.path.join(out, "foldseek_clustering_results"))
+        with open(os.path.join(out, "protein_features", "uniprot_features.tsv"), "w") as fh:
+            fh.write(
+                textwrap.dedent(
+                    """\
+                protid\tOrganism\tLength
+                P1\tHomo sapiens\t100
+                P2\tMus musculus\t120
+                """
+                )
+            )
+        with open(
+            os.path.join(out, "foldseek_clustering_results", "leiden_features.tsv"), "w"
+        ) as fh:
+            fh.write("protid\tLeidenCluster\nP1\tLC3\nP2\tLC0\n")
+        got = _hover_fields(out, {"P1", "P2"})
+
+    assert got["P1"]["species"] == "Homo sapiens"
+    assert got["P1"]["leiden"] == "LC3"
+    assert got["P2"]["leiden"] == "LC0"
+
+
+def test_hover_fields_survive_both_files_being_absent():
+    """A run without these files must still build a page.
+
+    Optional inputs stay optional -- the cursor loses two lines, not the page.
+    """
+    import tempfile
+
+    import pytest as _pytest
+
+    _pytest.importorskip("pandas")
+    from explorer.payload import _hover_fields
+
+    with tempfile.TemporaryDirectory() as out:
+        assert _hover_fields(out, {"P1"}) == {}
+
+
+def test_the_colour_domain_is_shared_by_every_panel():
+    """The defect this replaced gave one colour two meanings side by side.
+
+    Levels were computed per space, so in a space where every protein was
+    readable the single level took palette slot 0 -- the slot "do not read"
+    occupied in the space next to it. Asserted on the source, because the bug
+    lived in how the domain was scoped, not in any value the payload carries.
+    """
+    from explorer.template import render
+
+    html = render({"spaces": []}, plotly_js="", title="t")
+    assert "function rebuildColourDomain" in html, "there is no shared domain"
+    assert (
+        "colourDomain.levels.indexOf" in html
+    ), "traceFor must index the shared domain, not a per-space level list"
+    assert (
+        "marker.cmin" in html and "marker.cmax" in html
+    ), "a continuous scale must be pinned across panels or Plotly rescales each"
+    assert "function renderColourKey" in html, "colour with no key is the other half of this bug"
+
+
+def test_numbers_in_the_cursor_are_formatted_by_magnitude():
+    """`toFixed(3)` rendered a chain length as 367.000."""
+    from explorer.template import render
+
+    html = render({"spaces": []}, plotly_js="", title="t")
+    assert "function fmtValue" in html
+    # Assert the CALL SITE, not the absence of a substring. The first version of
+    # this test searched for "toFixed(3)" and matched the comment that explains
+    # the bug -- it failed on its own documentation.
+    assert (
+        "fmtValue(colour.values[i])" in html
+    ), "the tooltip does not route its overlay value through fmtValue"
+    assert "fmtValue(colourDomain.min)" in html, "the colour key does not format its bounds"
