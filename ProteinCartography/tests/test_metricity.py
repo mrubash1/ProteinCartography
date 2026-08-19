@@ -7,7 +7,8 @@ if you know what a well-behaved matrix scores. So the tests pin both ends: a
 genuinely Euclidean distance matrix must come back at essentially zero, and a
 matrix with the same marginals but no consistent geometry must not. Without
 those two, an implementation that returned a plausible-looking constant would
-pass every shape assertion here (REVIEW_LOG G8.4).
+pass every shape assertion here -- which is exactly how a fused map once
+scored a separation of 1.005 while carrying no structure at all.
 
 The other half is the convention. This statistic has appeared in the project's
 notes as four different percentages for one name, all of them correctly
