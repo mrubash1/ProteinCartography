@@ -90,13 +90,34 @@ def baseline_repo(repo_dirpath):
     a contributor without the worktree should still be able to run the suite.
     """
     candidate = Path(repo_dirpath).parent / "pc-baseline"
+    commit = baseline_commit(repo_dirpath)
     if not (candidate / "Snakefile").exists():
-        commit = baseline_commit(repo_dirpath)
         target = commit if commit else f"$(git merge-base HEAD {BASELINE_REF})"
         pytest.skip(
             f"no baseline checkout at {candidate}. Create one with:\n"
             f"  git worktree add --detach ../pc-baseline {target}"
         )
+
+    # The worktree existing is not the same as it being at the right commit, and
+    # the difference is silent. `baseline_commit` resolves the merge-base at
+    # runtime, so *any* rebase onto a moved upstream retargets it while leaving
+    # a stale worktree in place -- and the suite would then compare HEAD against
+    # a commit nobody chose. This fires rather than skips: a stale baseline
+    # makes every number in this file describe the wrong comparison, and the
+    # resulting diff names output files, which reads like a real regression.
+    if commit:
+        actual = subprocess.run(
+            ["git", "-C", str(candidate), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        if actual and actual != commit:
+            raise AssertionError(
+                f"the baseline worktree at {candidate} is at {actual[:12]}, but the "
+                f"merge-base with {BASELINE_REF} is {commit[:12]}. Upstream moved, or this "
+                f"branch was rebased, and the worktree was not rebuilt. Fix it with:\n"
+                f"  git -C {candidate} checkout --detach {commit}"
+            )
     return candidate
 
 
