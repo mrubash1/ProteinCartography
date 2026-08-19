@@ -14,13 +14,19 @@ the positive mass -- so roughly a third of the structure in that matrix is not
 embeddable in any number of Euclidean dimensions, and every reducer that
 consumes it is discarding it. This module reports that number.
 
-**It reports; it does not gate.** Measured across four dense cohorts the
-fraction spans 36% to 65% -- and the widest gap is between two runs of the *same
-query*, not between families. Cohort composition moves it further than family
-identity does, so a threshold fitted to any one cohort would be a constant
-derived from that cohort (see ``docs/FOLLOWUPS.md`` #49). Emitting the number
-without a verdict is deliberate, and matches how ``docs/INTERPRETING.md``
-handles the other statistics whose thresholds are not yet earned.
+**It reports; it does not gate.** Measured across dense cohorts the fraction
+spans 32% to 93%, and the widest gap is between two *cohorts of the same query*,
+not between families: at a matched core of 100 proteins, two archived runs of
+one S1 peptidase query return 31.8% and 57.5%. Cohort composition moves this
+further than family identity does. The number also climbs with core size within
+a single cohort -- 79.1% to 92.9% between n=100 and n=600 on one actin cohort --
+so it is not comparable across cohorts even at a matched family, and a threshold
+fitted to any one of them would be a constant derived from that cohort (see
+``docs/FOLLOWUPS.md`` #49). Note that *repeated runs* are not a source of
+variation here at all: three archived runs of one identical query differ in none
+of their 4.7 million cells. Emitting the number without a verdict is deliberate,
+and matches how ``docs/INTERPRETING.md`` handles the other statistics whose
+thresholds are not yet earned.
 
 What *is* robust is the comparison to zero: a genuinely Euclidean distance
 matrix double-centres to a positive semi-definite Gram matrix and returns under
