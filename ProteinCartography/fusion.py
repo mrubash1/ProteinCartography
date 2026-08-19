@@ -778,9 +778,11 @@ def fuse_graph(
     # consumers already clamp (`_affinity` and `_sparsify` below), which it
     # refused. The refused case is the one every small cohort hits -- the
     # default k is 20, so any `strategy: graph` space under 20 proteins failed
-    # on default config. That is the N=240-parameter-meets-N=11-demo regression
-    # again (REVIEW_LOG G8b.5), which was previously worked around with a
-    # comment in the demo config instead of fixed here.
+    # on default config. That is the same shape as the earlier defect where a
+    # neighbour count tuned at N=240 broke every space on the 11-protein demo:
+    # a parameter validated at fixture scale, met by a cohort smaller than it.
+    # It was previously worked around with a comment in the demo config instead
+    # of being fixed here.
     if k < 2:
         raise FusionError(
             f"graph fusion: k must be at least 2, got {k}. k counts the protein "
