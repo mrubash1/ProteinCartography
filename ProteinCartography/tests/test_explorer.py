@@ -684,3 +684,83 @@ def test_the_page_builds_a_sheet_bar_and_can_render_an_awaiting_panel():
     assert (
         "function renderSheets" in html and "function awaitingBlock" in html
     ), "the page carries the catalogue but nothing that draws it"
+
+
+# ==========================================================================
+# Several cohorts in one page. The rule that matters is that a page built
+# without the option is byte-for-byte the page that existed before it.
+# ==========================================================================
+
+
+def test_a_single_cohort_page_carries_no_cohorts_key():
+    """Backward compatibility, asserted rather than assumed.
+
+    The Snakefile rule and the demo both call the single-cohort form. If that
+    grew a `cohorts` key the payload would change for every existing run, and
+    the template's single-cohort path would stop being the one that is exercised.
+    """
+    from explorer.template import render
+
+    html = render({"spaces": [], "analysis_name": "one"}, plotly_js="", title="t")
+    payload = _embedded_payload(html)
+    assert "cohorts" not in payload, "a single-cohort page must not gain the key"
+    assert "COHORTS" in html, "the template still needs its single-cohort fallback"
+
+
+def test_the_template_falls_back_to_one_cohort_when_the_key_is_absent():
+    """The fallback is what keeps the two code paths from drifting.
+
+    Without it, every existing page would need rebuilding to render at all.
+    """
+    from explorer.template import render
+
+    html = render({"spaces": [], "analysis_name": "one"}, plotly_js="", title="t")
+    assert (
+        "PAYLOAD.cohorts ||" in html
+    ), "the template must treat a page with no `cohorts` key as a single cohort"
+
+
+def test_a_multi_cohort_page_names_every_cohort():
+    """The selector's labels come from the payload, so they have to be in it."""
+    from explorer.template import render
+
+    document = {
+        "spaces": [],
+        "analysis_name": "first",
+        "cohorts": [
+            {"spaces": [], "cohort_name": "chymotrypsin", "comparisons": [], "overlays": {}},
+            {"spaces": [], "cohort_name": "actin", "comparisons": [], "overlays": {}},
+        ],
+    }
+    html = render(document, plotly_js="", title="t")
+    payload = _embedded_payload(html)
+    names = [c["cohort_name"] for c in payload["cohorts"]]
+    assert names == ["chymotrypsin", "actin"]
+    assert "showCohort" in html, "the page carries cohorts but nothing that switches them"
+
+
+def test_switching_cohorts_clears_the_cached_grid():
+    """The grid caches its DOM behind `dataset.built`.
+
+    A switch that rebuilt the payload but not the cache would draw the new
+    cohort's points into the old cohort's divs, which renders as a map that is
+    subtly wrong rather than one that is visibly broken -- the worst failure
+    mode this page has.
+    """
+    from explorer.template import render
+
+    html = render({"spaces": [], "analysis_name": "one"}, plotly_js="", title="t")
+    assert re.search(
+        r"delete\s+grid\.dataset\.built", html
+    ), "applyCohort must drop the grid's build cache"
+
+
+def test_parse_cohort_rejects_a_spec_it_cannot_split():
+    """A malformed --also-cohort must fail loudly, not build half a page."""
+    import pytest as _pytest
+    from build_explorer import parse_cohort
+
+    assert parse_cohort("actin=/tmp/c.json:/tmp/out") == ("actin", "/tmp/c.json", "/tmp/out")
+    for bad in ("no-equals", "name=", "=/tmp/c.json:/tmp/out", "name=/tmp/c.json"):
+        with _pytest.raises(SystemExit):
+            parse_cohort(bad)

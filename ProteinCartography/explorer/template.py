@@ -121,6 +121,10 @@ footer code { font-size: 11.5px; }
 </header>
 
 <div class="controls">
+  <div class="control" id="cohort-control" style="display:none">
+    <label for="cohort">Example</label>
+    <select id="cohort"></select>
+  </div>
   <div class="control">
     <label for="overlay">Colour by</label>
     <select id="overlay"></select>
@@ -168,42 +172,72 @@ const state = { overlay: "__none__", reducer: null, disagreement: false,
                 selected: new Set(), sheet: "maps" };
 
 const el = (id) => document.getElementById(id);
-const spaces = PAYLOAD.spaces;
+
+// One page can carry several cohorts. A page built without `--also-cohort` has
+// no `cohorts` key, so it becomes a single-cohort list here and every path
+// below is identical to what it was -- the selector simply never appears.
+const COHORTS = PAYLOAD.cohorts || [Object.assign({}, PAYLOAD, {
+  cohort_name: PAYLOAD.cohort_name || PAYLOAD.analysis_name,
+})];
+let active = COHORTS[0];
+let spaces = active.spaces;
 
 // Every reducer any space produced. A space missing the chosen one is drawn
 // with whatever it has, and says so, rather than vanishing from the grid.
-const reducers = [...new Set(spaces.flatMap((s) => Object.keys(s.embeddings)))].sort();
-state.reducer = reducers[0] || null;
+let reducers = [];
 
-el("subtitle").textContent =
-  `${spaces.length} space(s) over ${PAYLOAD.provenance.n_proteins} proteins` +
-  ` · k=${PAYLOAD.provenance.diagnostics_k}` +
-  ` · cohort rule: ${PAYLOAD.provenance.cohort_rule || "n/a"}`;
+// Everything that depends on WHICH cohort is showing. Called once at startup and
+// again on every switch, so the two paths cannot drift -- a switch that rebuilt
+// the panels but not the dropdowns would leave a control pointing at a feature
+// the new cohort does not have.
+function applyCohort(index) {
+  active = COHORTS[index];
+  spaces = active.spaces;
+  reducers = [...new Set(spaces.flatMap((s) => Object.keys(s.embeddings)))].sort();
+  state.reducer = reducers[0] || null;
+  state.selected = new Set();
+  state.overlay = "__none__";
 
-// --- controls ---------------------------------------------------------------
+  el("subtitle").textContent =
+    `${spaces.length} space(s) over ${active.provenance.n_proteins} proteins` +
+    ` · k=${active.provenance.diagnostics_k}` +
+    ` · cohort rule: ${active.provenance.cohort_rule || "n/a"}`;
+
+  const overlaySelect = el("overlay");
+  overlaySelect.textContent = "";
+  overlaySelect.append(new Option("nothing (uniform)", "__none__"));
+  const clusterGroup = document.createElement("optgroup");
+  clusterGroup.label = "this space's own clusters";
+  clusterGroup.append(new Option("cluster", "__cluster__"));
+  overlaySelect.append(clusterGroup);
+  const featureNames = Object.keys(active.overlays).sort();
+  if (featureNames.length) {
+    const group = document.createElement("optgroup");
+    group.label = "features";
+    featureNames.forEach((name) => group.append(new Option(name, name)));
+    overlaySelect.append(group);
+  }
+  // ADR 0005 item 5: diagnostics live in the same dropdown so they are one click
+  // away, and in their own group so a QC number is never mistaken for biology.
+  const diagGroup = document.createElement("optgroup");
+  diagGroup.label = "diagnostics — not biological findings";
+  diagGroup.append(new Option("position is readable", "__readable__"));
+  overlaySelect.append(diagGroup);
+
+  const reducerSelect = el("reducer");
+  reducerSelect.textContent = "";
+  reducers.forEach((r) => reducerSelect.append(new Option(r, r)));
+
+  // The grid caches its DOM behind this flag. Switching cohorts changes how many
+  // panels there are and what they are called, so the cache has to go with it --
+  // otherwise the new cohort draws into the old cohort's divs.
+  const grid = el("grid");
+  grid.textContent = "";
+  delete grid.dataset.built;
+  rebuildDisagreement();
+}
 
 const overlaySelect = el("overlay");
-overlaySelect.append(new Option("nothing (uniform)", "__none__"));
-const clusterGroup = document.createElement("optgroup");
-clusterGroup.label = "this space's own clusters";
-clusterGroup.append(new Option("cluster", "__cluster__"));
-overlaySelect.append(clusterGroup);
-const featureNames = Object.keys(PAYLOAD.overlays).sort();
-if (featureNames.length) {
-  const group = document.createElement("optgroup");
-  group.label = "features";
-  featureNames.forEach((name) => group.append(new Option(name, name)));
-  overlaySelect.append(group);
-}
-// ADR 0005 item 5: diagnostics live in the same dropdown so they are one click
-// away, and in their own group so a QC number is never mistaken for biology.
-const diagGroup = document.createElement("optgroup");
-diagGroup.label = "diagnostics — not biological findings";
-diagGroup.append(new Option("position is readable", "__readable__"));
-overlaySelect.append(diagGroup);
-
-reducers.forEach((r) => el("reducer").append(new Option(r, r)));
-
 overlaySelect.onchange = (e) => { state.overlay = e.target.value; draw(); };
 el("reducer").onchange = (e) => { state.reducer = e.target.value; draw(); };
 el("clear").onclick = () => { state.selected = new Set(); draw(); renderInspector(); };
@@ -219,9 +253,11 @@ el("disagreement").onclick = () => {
 // from the per-pair tables the pipeline already wrote. Low means this protein's
 // neighbours differ between spaces, which is the signal co-registration exists
 // to surface -- so it is one button, not a menu (ADR 0005 item 4).
-const disagreementByProtid = (() => {
+let disagreementByProtid = new Map();
+
+function rebuildDisagreement() {
   const sums = new Map(), counts = new Map();
-  for (const row of PAYLOAD.comparisons) {
+  for (const row of active.comparisons) {
     if (!row.per_protein) continue;
     for (const [protid, value] of Object.entries(row.per_protein)) {
       if (value === null) continue;
@@ -231,8 +267,8 @@ const disagreementByProtid = (() => {
   }
   const out = new Map();
   for (const [protid, total] of sums) out.set(protid, total / counts.get(protid));
-  return out;
-})();
+  disagreementByProtid = out;
+}
 
 // --- drawing -----------------------------------------------------------------
 
@@ -258,7 +294,7 @@ function colourFor(space) {
       label: "position is readable",
     };
   }
-  const overlay = PAYLOAD.overlays[state.overlay];
+  const overlay = active.overlays[state.overlay];
   if (!overlay) return { values: new Array(n).fill(null), kind: "none", label: "" };
   return { values: overlay.values, kind: overlay.kind, label: state.overlay };
 }
@@ -438,7 +474,7 @@ function draw() {
 // --- sheets ---------------------------------------------------------------
 // The source organises its argument into eight sheets and the panel catalogue
 // carries each panel's sheet. Only the `maps` sheet has the live grid; the rest
-// render from PAYLOAD.panels, which already says whether each panel has data.
+// render from the cohort's panels, which already say whether each has data.
 // That decision is made once, in Python, so a panel cannot be judged drawable
 // in one language and blank in the other.
 
@@ -503,7 +539,7 @@ function renderSheet(sheetId) {
   // Two kinds already have dedicated renderers older than this catalogue --
   // the live grid and the comparisons table. Listing them again as cards would
   // put "renderer not built" directly above the thing that is built.
-  const wanted = (PAYLOAD.panels || []).filter(
+  const wanted = (active.panels || []).filter(
     (p) => p.sheet === sheetId && !BUILT_ELSEWHERE.has(p.panel_type)
   );
   if (!wanted.length) {
@@ -543,12 +579,12 @@ function drawablePlaceholder(panel) {
 function renderSheets() {
   const bar = el("sheets");
   bar.textContent = "";
-  (PAYLOAD.sheets || []).forEach((sheet) => {
-    const count = (PAYLOAD.panels || []).filter((p) => p.sheet === sheet.sheet).length;
+  (active.sheets || []).forEach((sheet) => {
+    const count = (active.panels || []).filter((p) => p.sheet === sheet.sheet).length;
     if (!count) return;
     const button = document.createElement("button");
     button.dataset.sheet = sheet.sheet;
-    const waiting = (PAYLOAD.panels || []).filter(
+    const waiting = (active.panels || []).filter(
       (p) => p.sheet === sheet.sheet && !p.drawable
     ).length;
     button.textContent = waiting ? `${sheet.title} (${waiting} awaiting)` : sheet.title;
@@ -566,13 +602,13 @@ function escapeHtml(text) {
 // --- comparisons --------------------------------------------------------------
 
 function renderComparisons() {
-  if (!PAYLOAD.comparisons.length) {
+  if (!active.comparisons.length) {
     el("comparisons").textContent = "No pairs were co-registered in this run.";
     return;
   }
   const columns = ["space_a", "space_b", "jaccard_mean", "rank_correlation_mean",
                    "procrustes_disparity", "cluster_ari"];
-  const rows = PAYLOAD.comparisons.map((row) => {
+  const rows = active.comparisons.map((row) => {
     const cells = columns.map((c) => {
       const v = row[c];
       if (v === null || v === undefined) {
@@ -619,7 +655,7 @@ function renderInspector() {
 }
 
 function renderProvenance() {
-  const p = PAYLOAD.provenance;
+  const p = active.provenance;
   const manifests = Object.entries(p.manifests || {})
     .map(([space, m]) =>
       `<li><b>${escapeHtml(space)}</b> — ` +
@@ -635,11 +671,24 @@ function renderProvenance() {
     `<p>Read <code>docs/INTERPRETING.md</code> before treating anything here as a finding.</p>`;
 }
 
-draw();
-renderComparisons();
-renderInspector();
-renderProvenance();
-renderSheets();
+function showCohort(index) {
+  applyCohort(index);
+  draw();
+  renderComparisons();
+  renderInspector();
+  renderProvenance();
+  renderSheets();
+}
+
+if (COHORTS.length > 1) {
+  const control = el("cohort-control");
+  control.style.display = "";
+  const select = el("cohort");
+  COHORTS.forEach((cohort, i) => select.append(new Option(cohort.cohort_name, String(i))));
+  select.onchange = (e) => showCohort(Number(e.target.value));
+}
+
+showCohort(0);
 </script>
 </body>
 </html>

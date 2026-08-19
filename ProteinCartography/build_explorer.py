@@ -38,7 +38,38 @@ def parse_args():
         default=None,
         help="title for the page; defaults to the config's analysis_name",
     )
+    parser.add_argument(
+        "--also-cohort",
+        action="append",
+        default=[],
+        metavar="NAME=CONFIG:OUTPUT_DIR",
+        help=(
+            "an additional cohort to embed, switchable from a dropdown. Repeatable. "
+            "Cheap: of a single-cohort page's size, nearly all is the inlined Plotly "
+            "bundle, which every cohort shares. Omit it and the page is exactly what "
+            "it was before this option existed."
+        ),
+    )
     return parser.parse_args()
+
+
+def parse_cohort(spec: str) -> tuple:
+    """``NAME=CONFIG:OUTPUT_DIR`` -> ``(name, config_path, output_dir)``.
+
+    Split from the right on ``:`` so a Windows-style or absolute path with a
+    colon in it does not silently take the separator's place.
+    """
+    if "=" not in spec:
+        raise SystemExit(
+            f"[build_explorer] --also-cohort wants NAME=CONFIG:OUTPUT_DIR, got {spec!r}"
+        )
+    name, _, rest = spec.partition("=")
+    config_path, sep, output_dir = rest.rpartition(":")
+    if not sep or not name.strip() or not config_path or not output_dir:
+        raise SystemExit(
+            f"[build_explorer] --also-cohort wants NAME=CONFIG:OUTPUT_DIR, got {spec!r}"
+        )
+    return name.strip(), config_path, output_dir
 
 
 def is_available() -> tuple:
@@ -86,7 +117,25 @@ def main() -> int:
             "skipped for a missing provider."
         )
 
-    html = render(payload.to_dict(), get_plotlyjs(), title)
+    # Additional cohorts, each a complete payload of its own. The page keeps the
+    # first cohort's keys at the top level so a reader of the payload -- and every
+    # test that reads `PAYLOAD["spaces"]` -- sees exactly what it saw before.
+    document = payload.to_dict()
+    cohorts = [dict(document, cohort_name=title)]
+    for spec in args.also_cohort:
+        name, config_path, output_dir = parse_cohort(spec)
+        other_raw = load_config(config_path)
+        other = from_legacy(other_raw)
+        if not other.spaces:
+            raise SystemExit(f"[build_explorer] cohort {name!r} defines no spaces")
+        other_payload = build_payload(other, output_dir, analysis_name=name)
+        if not other_payload.spaces:
+            raise SystemExit(f"[build_explorer] cohort {name!r} produced no panels")
+        cohorts.append(dict(other_payload.to_dict(), cohort_name=name))
+    if len(cohorts) > 1:
+        document["cohorts"] = cohorts
+
+    html = render(document, get_plotlyjs(), title)
     os.makedirs(os.path.dirname(os.path.abspath(args.output)) or ".", exist_ok=True)
     with open(args.output, "w") as handle:
         handle.write(html)
