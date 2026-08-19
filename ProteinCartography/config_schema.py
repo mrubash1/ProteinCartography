@@ -449,6 +449,10 @@ class SpaceConfig:
     weights: dict = field(default_factory=dict)
     params: dict = field(default_factory=dict)
     reducers: tuple = ("pca_umap",)
+    #: reducer name -> parameter mapping. Empty means every reducer keeps its
+    #: own defaults, which is what every config written before this field did,
+    #: so adding it cannot move an existing map.
+    reducer_params: dict = field(default_factory=dict)
 
     def __post_init__(self):
         path = f"spaces.{self.id}"
@@ -473,6 +477,7 @@ class SpaceConfig:
         _require(f"{path}.weights", not unknown, f"weights for blocks not in this space: {unknown}")
         _require(f"{path}.reducers", bool(self.reducers), "at least one reducer is required")
         self._validate_params(path)
+        self._validate_reducer_params(path)
 
     def _validate_params(self, path: str) -> None:
         """Reject a parameter the chosen strategy will not read.
@@ -494,11 +499,43 @@ class SpaceConfig:
             f"Parameters it does read: {listed}."
         )
 
+    def _validate_reducer_params(self, path: str) -> None:
+        """Reject a reducer parameter that reducer will not read.
+
+        The same guard as `_validate_params`, for the same reason. UMAP's
+        `n_neighbors` is the parameter this field exists for, and it is exactly
+        the kind that fails quietly: a misspelling leaves the run on the default
+        of 80 while the manifest records the value that was asked for.
+        """
+        from reduce_space import REDUCER_PIPELINES, params_for
+
+        for reducer, values in self.reducer_params.items():
+            rpath = f"{path}.reducer_params.{reducer}"
+            _require(
+                rpath,
+                reducer in self.reducers,
+                f"{reducer!r} is not a reducer of this space: {sorted(self.reducers)}",
+            )
+            _require(
+                rpath,
+                reducer in REDUCER_PIPELINES,
+                f"{reducer!r} is not a known reducer: {sorted(REDUCER_PIPELINES)}",
+            )
+            values = _require_mapping(rpath, values)
+            allowed = params_for(reducer)
+            unknown = sorted(set(values) - set(allowed))
+            if unknown:
+                listed = ", ".join(sorted(allowed)) or "(none)"
+                raise ConfigError(
+                    f"{rpath}: reducer {reducer!r} does not read {unknown}. "
+                    f"Parameters it does read: {listed}."
+                )
+
     @classmethod
     def from_dict(cls, space_id: str, data: Mapping) -> SpaceConfig:
         path = f"spaces.{space_id}"
         data = _require_mapping(path, data)
-        known = {"blocks", "strategy", "weights", "params", "reducers"}
+        known = {"blocks", "strategy", "weights", "params", "reducers", "reducer_params"}
         _reject_unknown_keys(path, data, known)
         blocks = _require_sequence(f"{path}.blocks", data.get("blocks", []))
         reducers = _require_sequence(f"{path}.reducers", data.get("reducers", ["pca_umap"]))
@@ -511,6 +548,9 @@ class SpaceConfig:
             reducers=tuple(
                 _require_str(f"{path}.reducers[{i}]", r) for i, r in enumerate(reducers)
             ),
+            reducer_params={
+                str(k): dict(v or {}) for k, v in (data.get("reducer_params", {}) or {}).items()
+            },
         )
 
     @property

@@ -46,6 +46,24 @@ REDUCER_PIPELINES = {
     "pca_umap": ("pca30", "umap"),
 }
 
+#: Which reducer parameters each step will actually read, keyed by step. Same
+#: job as `fusion.STRATEGY_PARAMS` and for the same reason: `reducer_params` is
+#: a free-form mapping, so `n_neighbours` misspelled the British way would ride
+#: into the manifest looking configured while the run used the default. FOLLOWUPS
+#: #29 and #32 are both that failure. A step absent from here reads nothing.
+STEP_PARAMS = {
+    "umap": frozenset({"n_neighbors", "min_dist"}),
+    "tsne": frozenset({"perplexity"}),
+}
+
+
+def params_for(reducer: str) -> frozenset:
+    """Every parameter any step of ``reducer`` reads."""
+    names: set = set()
+    for step in REDUCER_PIPELINES.get(reducer, ()):
+        names |= STEP_PARAMS.get(step, frozenset())
+    return frozenset(names)
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -173,6 +191,10 @@ def main() -> int:
     values = fused.values
     protids = list(index)
     steps = REDUCER_PIPELINES[args.reducer]
+    # Anything absent here keeps the reducer's own default, so a space that does
+    # not mention `reducer_params` produces byte-identical coordinates to before
+    # the option existed. That is what the parity suite checks.
+    tuning = dict(space.reducer_params.get(args.reducer, {}))
     provenance = []
 
     for step in steps:
@@ -186,9 +208,15 @@ def main() -> int:
                 protids,
                 random_state=random_state,
                 input_column_names=provenance[-1]["column_names"] if provenance else None,
+                **{k: v for k, v in tuning.items() if k in STEP_PARAMS["umap"]},
             )
         elif step == "tsne":
-            result = reduce_tsne(values, protids, random_state=random_state)
+            result = reduce_tsne(
+                values,
+                protids,
+                random_state=random_state,
+                **{k: v for k, v in tuning.items() if k in STEP_PARAMS["tsne"]},
+            )
         else:  # pragma: no cover - REDUCER_PIPELINES is closed
             raise SystemExit(f"unknown reduction step {step!r}")
         values = result.coordinates

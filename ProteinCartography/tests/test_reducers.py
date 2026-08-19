@@ -181,3 +181,33 @@ def test_to_frame_is_labeled(data, protids):
     assert list(frame.index) == protids
     assert frame.index.name == "protid"
     assert list(frame.columns) == ["PC0", "PC1"]
+
+
+# ==========================================================================
+# `reducer_params` reaches the reducer. This test lives HERE, not beside the
+# schema tests, because the only env on this machine with umap has no PyYAML
+# and `test_config_schema.py` imports yaml at module scope -- so there the
+# gate could never be lifted and the test would skip forever.
+# ==========================================================================
+
+
+def test_umap_actually_honours_n_neighbors():
+    """Gated, and it must be RUN somewhere it does not skip.
+
+    A config option nothing reads is the defect this guards against, so
+    asserting on the schema alone would miss the only thing that matters. The
+    reducer records both the requested and the used value, so a clamp cannot
+    masquerade as compliance.
+    """
+    pytest.importorskip("umap")
+    import numpy as np
+    from spaces.reducers.core import reduce_umap
+
+    rng = np.random.default_rng(0)
+    values = rng.normal(size=(60, 8))
+    protids = [f"p{i}" for i in range(60)]
+    result = reduce_umap(values, protids, n_neighbors=7)
+    assert result.params_used["n_neighbors_requested"] == 7
+    assert (
+        result.params_used["n_neighbors_used"] == 7
+    ), "7 is well below n-1, so nothing should have clamped it"

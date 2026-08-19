@@ -461,3 +461,73 @@ def test_a_full_multispace_config_validates():
     assert list(config.overlay_only_blocks()) == ["taxonomy"]
     assert config.spaces["struct_plus_seq"].weight_for("plm") == 0.85
     assert config.spaces["multiview"].params == {"k": 20, "mu": 0.5}
+
+
+# ==========================================================================
+# reducer_params. UMAP's `n_neighbors` was hardcoded at 80 and unreachable
+# from a config; these prove the option exists, is read, and is guarded.
+# ==========================================================================
+
+
+def test_a_space_without_reducer_params_keeps_the_reducer_defaults():
+    """The whole point of the field is that not using it changes nothing.
+
+    80 is right at the production cohorts' scale and only questionable at a few
+    hundred proteins, so the default must survive the option being added --
+    otherwise every existing map moves and the parity suite is the thing that
+    finds out.
+    """
+    from config_schema import SpaceConfig
+
+    space = SpaceConfig(id="structure", blocks=("tmscore",))
+    assert space.reducer_params == {}
+
+
+def test_reducer_params_rejects_a_parameter_the_reducer_will_not_read():
+    """`n_neighbours` spelled the British way must not reach a manifest.
+
+    This is FOLLOWUPS #29 and #32's failure -- a value recorded as configured
+    while the run used the default -- and the cheap place to catch it is parse
+    time. Same guard as `params`/STRATEGY_PARAMS, deliberately.
+    """
+    from config_schema import ConfigError, SpaceConfig
+
+    with pytest.raises(ConfigError) as excinfo:
+        SpaceConfig(
+            id="structure",
+            blocks=("tmscore",),
+            reducer_params={"pca_umap": {"n_neighbours": 15}},
+        )
+    message = str(excinfo.value)
+    assert "n_neighbours" in message, "the rejection must name the offending key"
+    assert "n_neighbors" in message, "and must list what the reducer does read"
+
+
+def test_reducer_params_rejects_a_reducer_this_space_does_not_run():
+    """Configuring `tsne` on a space that only runs `pca_umap` is a typo.
+
+    It would otherwise sit in the config looking effective forever.
+    """
+    from config_schema import ConfigError, SpaceConfig
+
+    with pytest.raises(ConfigError):
+        SpaceConfig(
+            id="structure",
+            blocks=("tmscore",),
+            reducers=("pca_umap",),
+            reducer_params={"tsne": {"perplexity": 5}},
+        )
+
+
+def test_params_for_reports_what_each_pipeline_reads():
+    """The allow-list is derived from the pipeline's steps, not restated.
+
+    A new pipeline built from existing steps inherits the right parameters
+    without anyone remembering to update a second table.
+    """
+    from reduce_space import params_for
+
+    assert "n_neighbors" in params_for("pca_umap")
+    assert "n_neighbors" in params_for("umap")
+    assert "perplexity" in params_for("pca_tsne")
+    assert params_for("pca") == frozenset(), "PCA reads none of these"
