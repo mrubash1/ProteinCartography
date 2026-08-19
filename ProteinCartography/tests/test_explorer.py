@@ -579,3 +579,108 @@ def test_an_unknown_panel_type_is_drawn_as_a_mismatch_not_dropped():
     assert re.search(
         r"no renderer for panel_type", html
     ), "the fallback must put the mismatch on the page, not only in a console"
+
+
+# ==========================================================================
+# The panel catalogue and the sheets. The point of the catalogue is that a
+# panel nobody can draw still appears, saying what it is waiting for.
+# ==========================================================================
+
+
+def test_every_catalogue_panel_names_a_sheet_that_exists():
+    """A panel filed under an unknown sheet would never be reachable.
+
+    The tab bar is built from `sheets`, so a typo in `sheet` does not error --
+    it silently removes the panel from the page, which is the failure this
+    whole catalogue exists to prevent.
+    """
+    from explorer.panels import CATALOGUE, SHEETS
+
+    known = {s for s, _ in SHEETS}
+    for spec in CATALOGUE:
+        assert spec.sheet in known, f"{spec.panel_id} is filed under unknown sheet {spec.sheet!r}"
+
+
+def test_every_panel_that_needs_data_says_what_it_needs():
+    """`requires` is what the page prints, not a comment.
+
+    "Refusals are shown as refusals rather than as blanks" is the source's own
+    rule (7.03 E2). A panel with `needs` and no `requires` would render an
+    empty box, which is the thing being ruled out.
+    """
+    from explorer.panels import CATALOGUE
+
+    for spec in CATALOGUE:
+        if spec.needs:
+            assert spec.requires, f"{spec.panel_id} can be unmet but names no requirement"
+            assert spec.fills_in, f"{spec.panel_id} names no route to filling it in"
+
+
+def test_every_panel_carries_a_provenance_tag_and_a_section():
+    """The source tags every section real / mixed / synthetic / method.
+
+    A reader must not have to guess whether a panel shows measurements or a
+    drawing of an argument, and the section number is what makes any claim in
+    the catalogue checkable against the document.
+    """
+    from explorer.panels import CATALOGUE, PROVENANCE
+
+    for spec in CATALOGUE:
+        assert spec.provenance in PROVENANCE, f"{spec.panel_id}: {spec.provenance!r}"
+        assert spec.section, f"{spec.panel_id} cites no source section"
+
+
+def test_catalogue_marks_panels_drawable_only_when_their_inputs_are_present():
+    """The drawable decision is made once, in Python, and travels as a flag.
+
+    Splitting it across two languages is how a panel ends up judged drawable
+    here and blank in the browser.
+    """
+    from explorer.panels import catalogue_for
+
+    with_nothing = {p["panel_id"]: p for p in catalogue_for(set())}
+    assert with_nothing["comparisons"]["drawable"] is False
+    assert with_nothing["comparisons"]["missing"] == ["comparisons"]
+    # A panel needing nothing draws whatever the payload holds.
+    assert with_nothing["perturbation_grid"]["drawable"] is True
+
+    with_comparisons = {p["panel_id"]: p for p in catalogue_for({"comparisons"})}
+    assert with_comparisons["comparisons"]["drawable"] is True
+    assert with_comparisons["comparisons"]["missing"] == []
+
+
+def test_six_panels_are_blocked_on_one_missing_input_not_six():
+    """The catalogue should make the shape of the gap visible.
+
+    Most of what cannot be drawn is blocked on a phylogeny. If that ever stops
+    being true the plan in POST-PLAN is wrong, and this is where it shows.
+    """
+    from explorer.panels import CATALOGUE
+
+    tree_blocked = [s.panel_id for s in CATALOGUE if "reconciled gene/species tree" in s.requires]
+    assert (
+        len(tree_blocked) >= 5
+    ), f"expected the phylogeny to block most empty panels, blocks {tree_blocked}"
+
+
+def test_the_page_builds_a_sheet_bar_and_can_render_an_awaiting_panel():
+    """Both halves have to exist: the catalogue, and something that draws it.
+
+    Asserted on the source the page carries, because there is no browser here
+    -- which is exactly why this is the weakest test in the file and why the
+    browser pass is not optional.
+    """
+    from explorer.panels import catalogue_for, sheet_titles
+    from explorer.template import render
+
+    html = render(
+        {"spaces": [], "panels": catalogue_for(set()), "sheets": sheet_titles()},
+        plotly_js="",
+        title="t",
+    )
+    payload = _embedded_payload(html)
+    assert payload["sheets"], "the page carries no sheets"
+    assert any(not p["drawable"] for p in payload["panels"]), "no panel is awaiting anything"
+    assert (
+        "function renderSheets" in html and "function awaitingBlock" in html
+    ), "the page carries the catalogue but nothing that draws it"

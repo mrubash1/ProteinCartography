@@ -31,6 +31,7 @@ import json
 import os
 from dataclasses import dataclass, field
 
+from explorer import panels
 from spaces import layout
 
 __all__ = [
@@ -233,6 +234,13 @@ class ExplorerPayload:
     comparisons: list
     overlays: dict
     provenance: dict
+    #: Every panel the geometry analysis proposes, each already marked drawable
+    #: or awaiting a named input. Computed here rather than in the template: a
+    #: decision split across two languages is how a panel ends up blank in one
+    #: of them.
+    panels: list = field(default_factory=list)
+    #: The sheets those panels are grouped under, in the source's order.
+    sheets: list = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -241,6 +249,8 @@ class ExplorerPayload:
             "comparisons": self.comparisons,
             "overlays": self.overlays,
             "provenance": self.provenance,
+            "panels": self.panels,
+            "sheets": self.sheets,
         }
 
 
@@ -328,12 +338,24 @@ def build_payload(config, output_dir: str, analysis_name: str = "analysis") -> E
         _features_table(output_dir, analysis_name), index_order or []
     )
     provenance = _provenance(output_dir, config, spaces)
+    # What the page HAS, named the way the catalogue names it. A panel is
+    # drawable when everything it needs is in here; anything absent becomes the
+    # panel's printed "awaiting ..." line rather than a blank.
+    available = set()
+    if comparisons:
+        available.add("comparisons")
+    if any(space.contributions for space in spaces):
+        available.add("fused_spaces")
+    if overlays:
+        available.add("records")
     return ExplorerPayload(
         analysis_name=analysis_name,
         spaces=spaces,
         comparisons=comparisons,
         overlays=overlays,
         provenance=provenance,
+        panels=panels.catalogue_for(available),
+        sheets=panels.sheet_titles(),
     )
 
 

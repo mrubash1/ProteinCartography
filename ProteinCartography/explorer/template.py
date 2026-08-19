@@ -77,6 +77,22 @@ button.on { background: var(--ink); color: #fff; border-color: var(--ink); }
   border-bottom: 1px solid var(--line); background: #fbfbfc; }
 .shares .drift { color: var(--caution); }
 .plot { height: 330px; }
+.sheets { display: flex; flex-wrap: wrap; gap: 2px; padding: 8px 22px 0; }
+.sheets button { border-radius: 4px 4px 0 0; border-bottom-color: transparent; }
+.sheets button.on { background: var(--ink); color: #fff; border-color: var(--ink); }
+/* The source tags every section real / mixed / synthetic / method (4, 5 notes).
+   A reader must never have to guess whether a panel shows measurements or a
+   drawing of an argument, so the tag is on the panel, not in a caption. */
+.tag { float: right; font-size: 10px; text-transform: uppercase; letter-spacing: .05em;
+  padding: 2px 6px; border-radius: 3px; font-weight: 600; }
+.tag-real { background: #eaf4ee; color: var(--ok); }
+.tag-mixed { background: #fdf7e8; color: var(--caution); }
+.tag-synthetic { background: #f1f0f6; color: #5a4f8a; }
+.tag-method { background: #eef1f4; color: var(--muted); }
+.question { padding: 7px 12px; font-size: 12px; color: var(--muted);
+  border-bottom: 1px solid var(--line); }
+.awaiting .why { display: block; margin-top: 6px; font-size: 11.5px; }
+.awaiting .fills { display: block; margin-top: 4px; font-size: 11px; color: #7a838c; }
 /* A panel with nothing to draw says so, in the panel's own footprint. The
    source document's rule (7.03 E2) is that refusals are shown as refusals and
    never as blanks; the same reasoning applies to a panel awaiting an input. */
@@ -125,6 +141,8 @@ footer code { font-size: 11.5px; }
   </div>
 </div>
 
+<div id="sheets" class="sheets"></div>
+
 <div class="legend">
   <b>Hollow points</b> are proteins whose 2-D position the diagnostics say should not be read.
   Selecting in any panel highlights the same proteins in all of them.
@@ -132,7 +150,9 @@ footer code { font-size: 11.5px; }
 
 <div id="grid"></div>
 
-<section>
+<section id="sheet-body"></section>
+
+<section id="maps-extra">
   <h3>Cross-space comparison</h3>
   <div id="comparisons"></div>
   <h3>Selection</h3>
@@ -144,7 +164,8 @@ footer code { font-size: 11.5px; }
 <script type="text/javascript">
 const PAYLOAD = __PAYLOAD__;
 
-const state = { overlay: "__none__", reducer: null, disagreement: false, selected: new Set() };
+const state = { overlay: "__none__", reducer: null, disagreement: false,
+                selected: new Set(), sheet: "maps" };
 
 const el = (id) => document.getElementById(id);
 const spaces = PAYLOAD.spaces;
@@ -410,6 +431,126 @@ function draw() {
   spaces.forEach((space) => panelFor(space).render(space));
 }
 
+// --- sheets ---------------------------------------------------------------
+// The source organises its argument into eight sheets and the panel catalogue
+// carries each panel's sheet. Only the `maps` sheet has the live grid; the rest
+// render from PAYLOAD.panels, which already says whether each panel has data.
+// That decision is made once, in Python, so a panel cannot be judged drawable
+// in one language and blank in the other.
+
+function panelCard(panel) {
+  const card = document.createElement("div");
+  card.className = "panel";
+  const title = document.createElement("h2");
+  title.textContent = panel.title;
+  const tag = document.createElement("span");
+  tag.className = `tag tag-${panel.provenance}`;
+  tag.textContent = panel.provenance;
+  tag.title = `section ${panel.section} of the source analysis`;
+  title.append(tag);
+  card.append(title);
+  if (panel.question) {
+    const q = document.createElement("div");
+    q.className = "question";
+    q.textContent = panel.question;
+    card.append(q);
+  }
+  return card;
+}
+
+// A panel with an unmet requirement prints the requirement. Naming the missing
+// input is what makes it a question someone can answer; "no data" is not.
+function awaitingBlock(panel) {
+  const box = document.createElement("div");
+  box.className = "awaiting";
+  const inner = document.createElement("div");
+  const head = document.createElement("b");
+  head.textContent = "awaiting " + (panel.missing.join(", ") || "an input");
+  inner.append(head);
+  if (panel.requires) {
+    const why = document.createElement("span");
+    why.className = "why";
+    why.textContent = panel.requires;
+    inner.append(why);
+  }
+  if (panel.fills_in) {
+    const fills = document.createElement("span");
+    fills.className = "fills";
+    fills.textContent = "filled in by: " + panel.fills_in;
+    inner.append(fills);
+  }
+  box.append(inner);
+  return box;
+}
+
+function renderSheet(sheetId) {
+  state.sheet = sheetId;
+  Array.from(el("sheets").children).forEach((b) => {
+    b.classList.toggle("on", b.dataset.sheet === sheetId);
+  });
+  // The live grid and its two companions belong to `maps` only.
+  const isMaps = sheetId === "maps";
+  el("grid").style.display = isMaps ? "" : "none";
+  el("maps-extra").style.display = isMaps ? "" : "none";
+  document.querySelector(".legend").style.display = isMaps ? "" : "none";
+
+  const body = el("sheet-body");
+  body.textContent = "";
+  const wanted = (PAYLOAD.panels || []).filter(
+    (p) => p.sheet === sheetId && p.panel_type !== "space_grid"
+  );
+  if (!wanted.length) {
+    body.style.display = "none";
+    return;
+  }
+  body.style.display = "";
+  const holder = document.createElement("div");
+  holder.style.display = "grid";
+  holder.style.gridTemplateColumns = "repeat(auto-fit, minmax(360px, 1fr))";
+  holder.style.gap = "14px";
+  wanted.forEach((panel) => {
+    const card = panelCard(panel);
+    card.append(panel.drawable ? drawablePlaceholder(panel) : awaitingBlock(panel));
+    holder.append(card);
+  });
+  body.append(holder);
+}
+
+// A panel whose inputs ARE present but whose renderer is not built yet. Said
+// plainly and separately from `awaiting`, because the two are different states
+// and collapsing them would hide which panels are one step from working.
+function drawablePlaceholder(panel) {
+  const box = document.createElement("div");
+  box.className = "awaiting";
+  const inner = document.createElement("div");
+  const head = document.createElement("b");
+  head.textContent = "inputs present, renderer not built";
+  const why = document.createElement("span");
+  why.className = "why";
+  why.textContent = panel.question || panel.title;
+  inner.append(head, why);
+  box.append(inner);
+  return box;
+}
+
+function renderSheets() {
+  const bar = el("sheets");
+  bar.textContent = "";
+  (PAYLOAD.sheets || []).forEach((sheet) => {
+    const count = (PAYLOAD.panels || []).filter((p) => p.sheet === sheet.sheet).length;
+    if (!count) return;
+    const button = document.createElement("button");
+    button.dataset.sheet = sheet.sheet;
+    const waiting = (PAYLOAD.panels || []).filter(
+      (p) => p.sheet === sheet.sheet && !p.drawable
+    ).length;
+    button.textContent = waiting ? `${sheet.title} (${waiting} awaiting)` : sheet.title;
+    button.addEventListener("click", () => renderSheet(sheet.sheet));
+    bar.append(button);
+  });
+  renderSheet("maps");
+}
+
 function escapeHtml(text) {
   return String(text).replace(/[&<>"']/g, (c) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -491,6 +632,7 @@ draw();
 renderComparisons();
 renderInspector();
 renderProvenance();
+renderSheets();
 </script>
 </body>
 </html>
