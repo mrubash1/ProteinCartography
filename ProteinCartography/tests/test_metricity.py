@@ -184,9 +184,18 @@ def test_an_asymmetric_matrix_is_refused():
         metricity_report(values)
 
 
-def test_a_cohort_too_small_for_a_spectrum_is_refused():
-    with pytest.raises(ValueError, match="at least 3"):
-        metricity_report(np.zeros((2, 2)))
+def test_a_cohort_too_small_for_a_spectrum_reports_rather_than_raises():
+    """Two proteins have no spectrum, and that is a fact to record, not a crash.
+
+    This is called unconditionally from the tmscore block and nothing gates on
+    the value, so raising failed a whole block build over a provenance number
+    no consumer reads. The refusal survives as a stated `verdict_note`.
+    """
+    report = metricity_report(np.zeros((2, 2)))
+    assert report["negative_mass_fraction"] is None
+    assert report["n"] == 2
+    assert "at least 3" in report["verdict_note"]
+    assert report["top_positive_eigenvalues"] == []
 
 
 # --------------------------------------------------------------------------

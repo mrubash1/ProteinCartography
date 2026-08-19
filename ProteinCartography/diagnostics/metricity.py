@@ -128,9 +128,32 @@ def metricity_report(
             "A condensed vector must be expanded first."
         )
     if values.shape[0] < 3:
-        raise ValueError(
-            f"metricity needs at least 3 proteins to have a spectrum, got {values.shape[0]}."
-        )
+        # Report the refusal, do not raise it. This is called unconditionally
+        # from the tmscore block, nothing gates on the value, and the report
+        # already ships `verdict: None` saying so -- so raising failed a whole
+        # block build over a provenance number that no consumer reads. The
+        # shape and symmetry checks above stay hard: those are malformed input.
+        return {
+            "negative_mass_fraction": None,
+            "convention": {
+                "double_centered": "squared_distances" if square_first else "raw_distances",
+                "denominator": denominator,
+                "formula": "not computed",
+            },
+            "positive_mass": None,
+            "negative_mass": None,
+            "n": int(values.shape[0]),
+            "top_positive_eigenvalues": [],
+            "cohort": {
+                "n_proteins": int(n_proteins) if n_proteins is not None else int(values.shape[0]),
+                "censoring_rate": float(censoring_rate) if censoring_rate is not None else None,
+            },
+            "verdict": None,
+            "verdict_note": (
+                f"not computed: {values.shape[0]} proteins cannot support a spectrum, "
+                "which needs at least 3."
+            ),
+        }
     if not np.allclose(values, values.T, atol=1e-8):
         raise ValueError(
             "metricity needs a symmetric distance matrix. TM-score is normalized per "

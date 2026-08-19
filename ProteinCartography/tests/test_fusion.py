@@ -197,9 +197,18 @@ def test_standardize_leaves_a_constant_column_at_zero_and_counts_it(cohort):
     np.testing.assert_allclose(standardized[:, 0].std(), 1.0, rtol=1e-12)
 
 
-def test_standardizing_an_entirely_constant_block_is_an_error():
-    with pytest.raises(FusionError, match="every column is constant"):
-        standardize(np.ones((6, 3)), "flat")
+def test_standardizing_an_entirely_constant_block_gives_zeros_not_an_error():
+    """A block with no variance contributes nothing, and nothing is a number.
+
+    This used to raise, which cost the whole space for a block whose true
+    contribution -- zero -- the report states plainly. `constant_counts` and
+    `_dominance_warning` already carry it, so refusing hid a readable answer
+    behind a failed run.
+    """
+    standardized, n_columns = standardize(np.ones((6, 3)), "flat")
+    assert n_columns == 3
+    assert standardized.shape == (6, 3)
+    assert not standardized.any(), "a constant block must standardize to all zeros"
 
 
 def test_standardize_matches_scipy():
@@ -504,11 +513,23 @@ def test_graph_needs_two_blocks(wide):
         fuse_graph([wide])
 
 
-def test_graph_rejects_an_out_of_range_k(wide, narrow):
-    with pytest.raises(FusionError, match="k must be between 1 and N"):
-        fuse_graph([wide, narrow], k=0)
-    with pytest.raises(FusionError, match="k must be between 1 and N"):
-        fuse_graph([wide, narrow], k=wide.n_proteins + 1)
+def test_graph_refuses_a_k_that_fuses_nothing(wide, narrow):
+    """k < 2 keeps only the diagonal, so there is no neighborhood to fuse."""
+    for bad in (0, 1):
+        with pytest.raises(FusionError, match="at least 2"):
+            fuse_graph([wide, narrow], k=bad)
+
+
+def test_graph_clamps_a_k_larger_than_the_cohort(wide, narrow):
+    """k > N is not an error: it is bit-identical to k = N, because both
+    consumers already clamp. Refusing it meant every `strategy: graph` space
+    under the default k of 20 failed on default config -- the N=240 parameter
+    meeting the 11-protein demo, again.
+    """
+    n = wide.n_proteins
+    at_n = fuse_graph([wide, narrow], k=n)
+    beyond = fuse_graph([wide, narrow], k=n + 5)
+    np.testing.assert_allclose(beyond.values, at_n.values)
 
 
 def test_graph_rejects_nonsense_hyperparameters(wide, narrow):

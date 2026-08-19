@@ -588,3 +588,32 @@ def test_two_real_partitions_record_their_cluster_counts():
     )
     assert comparison.cluster_ari is not None
     assert comparison.diagnostics["cluster_ari_note"] == "4 against 3 clusters"
+
+
+def test_k_is_clamped_to_the_cohort_and_the_clamp_is_recorded():
+    """A small shared index must not fail the rule, and must not deflate the score.
+
+    The shared index is an intersection, so it is routinely smaller than either
+    space: the default k of 10 against a 6-protein overlap used to raise. It now
+    clamps -- but the denominator divides by k, so a clamp that reached the
+    slice and not the denominator would report two *identical* spaces as
+    disagreeing. Hence both assertions.
+    """
+    rng = np.random.RandomState(0)
+    points = rng.normal(size=(6, 4))
+    distances = np.sqrt(((points[:, None, :] - points[None, :, :]) ** 2).sum(-1))
+
+    scores, diagnostics = neighborhood_jaccard(distances, distances, k=10)
+    assert diagnostics["k"] == 5, "k must clamp to N-1"
+    assert diagnostics["k_requested"] == 10
+    assert diagnostics["k_was_clamped"] is True
+    np.testing.assert_allclose(scores, 1.0), "a space compared with itself must score 1.0"
+
+
+def test_an_unclamped_k_is_left_alone_and_marked_as_such():
+    rng = np.random.RandomState(1)
+    points = rng.normal(size=(20, 4))
+    distances = np.sqrt(((points[:, None, :] - points[None, :, :]) ** 2).sum(-1))
+    _, diagnostics = neighborhood_jaccard(distances, distances, k=5)
+    assert diagnostics["k"] == 5
+    assert diagnostics["k_was_clamped"] is False

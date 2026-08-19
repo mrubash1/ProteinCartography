@@ -382,11 +382,15 @@ def standardize(values: np.ndarray, block_id: str = "?") -> tuple:
     means = values.mean(axis=0)
     deviations = values.std(axis=0)
     constant = deviations == 0
+    # An all-constant block standardizes to zeros and contributes a realized
+    # share of 0.0, which is a readable answer and the true one. Refusing here
+    # cost the whole space for a block whose contribution the report would have
+    # stated plainly; `constant_counts` already collects it and
+    # `_dominance_warning` already reports it. The genuinely dangerous constant
+    # case -- a share computed from cancellation noise -- is the noise-floor
+    # check on the `late`/`graph` path, which is untouched.
     if constant.all():
-        raise FusionError(
-            f"block {block_id!r}: every column is constant, so standardizing it "
-            "leaves nothing. The block carries no geometry."
-        )
+        return np.zeros_like(values), values.shape[1]
     safe = np.where(constant, 1.0, deviations)
     standardized = (values - means) / safe
     standardized[:, constant] = 0.0
@@ -768,11 +772,22 @@ def fuse_graph(
     """
     inputs = _check_inputs(inputs, "graph", minimum=2)
     n = inputs[0].n_proteins
-    if not 1 <= k <= n:
+    # Refuse k < 2 and CLAMP k > n, rather than refusing both ends. The old
+    # check had it backwards at both: k=1 keeps only the diagonal and fuses
+    # nothing, which it permitted; k > n is bit-identical to k = n, because both
+    # consumers already clamp (`_affinity` and `_sparsify` below), which it
+    # refused. The refused case is the one every small cohort hits -- the
+    # default k is 20, so any `strategy: graph` space under 20 proteins failed
+    # on default config. That is the N=240-parameter-meets-N=11-demo regression
+    # again (REVIEW_LOG G8b.5), which was previously worked around with a
+    # comment in the demo config instead of fixed here.
+    if k < 2:
         raise FusionError(
-            f"graph fusion: k must be between 1 and N ({n}), got {k}. k counts the "
-            "protein itself, so k=1 keeps only the diagonal and fuses nothing."
+            f"graph fusion: k must be at least 2, got {k}. k counts the protein "
+            "itself, so k=1 keeps only the diagonal and fuses nothing."
         )
+    if k > n:
+        k = n
     if not 0 < mu:
         raise FusionError(f"graph fusion: mu must be positive, got {mu}.")
     if iterations < 1:

@@ -291,7 +291,14 @@ def main() -> int:
         try:
             report["redundancy"] = redundancy(aligned).to_dict()
         except RedundancyError as error:
-            raise SystemExit(f"space {args.space_id!r}: {error}") from error
+            # Skip the section rather than killing the rule. Every other section
+            # in this file skips with a logged reason when it cannot be
+            # computed, and this one is not special: a two-protein space has an
+            # undefined correlation, which is a missing paragraph, not a failed
+            # run. The explorer depends on diagnostics, so raising here took the
+            # whole run for one absent number.
+            report["redundancy"] = {"skipped": str(error)}
+            _skip(f"{args.space_id}: redundancy not computed ({error})")
 
     # 4. did the map survive two dimensions
     embeddings = parse_named(args.embedding, "--embedding")

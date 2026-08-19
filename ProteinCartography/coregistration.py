@@ -344,6 +344,19 @@ def neighborhood_jaccard(distances_a: np.ndarray, distances_b: np.ndarray, k: in
             f"the two spaces have different numbers of proteins: {distances_a.shape[0]} "
             f"and {distances_b.shape[0]}. They must be aligned to the shared index first."
         )
+    # Clamp k to what the cohort can supply, and record that it happened. The
+    # shared index is an *intersection*, so it is routinely smaller than either
+    # space, and a 10-protein overlap made the default k=10 fail the whole
+    # `coregister` rule. `DiagnosticsConfig.k` already documents
+    # clamp-and-record; this was the one neighborhood parameter that did not.
+    #
+    # The clamp has to reach the denominator below, not just the slice: that
+    # divides by the *requested* k, so a k the cohort cannot supply would
+    # deflate every Jaccard toward zero and report two identical spaces as
+    # disagreeing. That silent half is why k is clamped here rather than the
+    # check in `k_nearest` simply removed.
+    requested_k = k
+    k = max(1, min(k, distances_a.shape[0] - 1))
     neighbors_a = k_nearest(distances_a, k)
     neighbors_b = k_nearest(distances_b, k)
 
@@ -354,6 +367,8 @@ def neighborhood_jaccard(distances_a: np.ndarray, distances_b: np.ndarray, k: in
         scores[row] = shared / (2 * k - shared)
     diagnostics = {
         "k": k,
+        "k_requested": requested_k,
+        "k_was_clamped": bool(k != requested_k),
         "boundary_ties_a": _boundary_ties(distances_a, k),
         "boundary_ties_b": _boundary_ties(distances_b, k),
     }
