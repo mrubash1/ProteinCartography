@@ -56,6 +56,7 @@ def set_env_variables(pytestconfig):
     os.environ.pop(should_use_mocks, None)
 
 
+@pytest.mark.slow
 @pytest.mark.usefixtures("stage_inputs")
 @pytest.mark.usefixtures("set_env_variables")
 def test_pipeline_in_cluster_mode(repo_dirpath, config_filepath):

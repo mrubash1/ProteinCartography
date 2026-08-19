@@ -85,6 +85,7 @@ def set_env_variables(pytestconfig):
         os.environ[should_log_api_requests] = should_log_api_requests_value
 
 
+@pytest.mark.slow
 @pytest.mark.usefixtures("stage_inputs")
 @pytest.mark.usefixtures("set_env_variables")
 def test_pipeline_in_search_mode_with_mocked_api_calls(repo_dirpath, config_filepath):
