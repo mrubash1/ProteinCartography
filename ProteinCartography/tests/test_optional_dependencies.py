@@ -53,6 +53,8 @@ CORE_MODULES = [
     # `build_explorer.main` after `is_available()` has been consulted.
     "explorer.payload",
     "explorer.template",
+    "explorer.panels",
+    "explorer.descriptions",
     # The entry points the Snakefile invokes. Omitting these while listing
     # `coregister` and `enrich_clusters` was inconsistent with the list's own
     # convention, and they are the modules whose import graph is most likely to

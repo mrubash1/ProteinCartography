@@ -128,6 +128,22 @@ footer { border-top: 1px solid var(--line); background: var(--panel);
 footer code { font-size: 11.5px; }
 .legend { font-size: 12px; color: var(--muted); padding: 0 22px 4px; }
 .legend b { color: var(--ink); font-weight: 600; }
+/* The fold-out. Collapsed by default, because a verdict a reader has to open
+   is read only by people who already suspected it -- which is exactly why the
+   verdict banner above is NOT in here. This holds the slower material: what is
+   on the axes, what the numbers are, and which file computed them. */
+.explain { border-bottom: 1px solid var(--line); background: #fcfdfd; }
+.explain > summary { cursor: pointer; padding: 6px 12px; font-size: 11.5px;
+  color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.explain > summary:hover { color: var(--ink); }
+.explain .body { padding: 2px 12px 10px; font-size: 12.5px; }
+.explain p { margin: 0 0 7px; }
+.explain code { background: #eef1f4; padding: 0 3px; border-radius: 3px; font-size: 11.5px; }
+/* A hazard set in body text is a hazard the reader skims. */
+.explain .hazard { border-left: 3px solid var(--caution); padding-left: 8px;
+  background: #fdf9ef; padding-top: 4px; padding-bottom: 4px; }
+.explain .hazard b { color: var(--caution); }
+.explain .src { color: var(--muted); font-size: 11px; margin-top: 8px; }
 </style>
 </head>
 <body>
@@ -486,6 +502,51 @@ const PANELS = {};
 //: body must not also draw them as cards.
 const BUILT_ELSEWHERE = new Set(["space_grid", "comparisons", "contributions"]);
 
+// --- the fold-out --------------------------------------------------------
+// What a panel is plotting, in words, from `explorer/descriptions.py`. The
+// SAME renderer for a space panel and for a catalogue card, so the two cannot
+// grow different ideas of how a hazard is displayed.
+//
+// Collapsed on purpose, and the verdict banner is deliberately NOT in here: a
+// caveat you have to open is read by the people who already suspected it (ADR
+// 0014). What belongs behind a disclosure is the slower material -- units,
+// provenance, the file that computed the number.
+
+// Backticks become <code> and **…** becomes bold, applied AFTER escaping, so a
+// description can be written as plain text and no string in it can inject
+// markup.
+function inlineMarkup(text) {
+  return escapeHtml(text)
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
+}
+
+function explainBlock(description) {
+  const d = description || {};
+  const paragraphs = d.paragraphs || [];
+  const hazards = d.hazards || [];
+  const sources = d.sources || [];
+  // Nothing written for this panel yet. Render nothing rather than an empty
+  // disclosure triangle, which promises content and then has none.
+  if (!paragraphs.length && !hazards.length) return null;
+  const box = document.createElement("details");
+  box.className = "explain";
+  const summary = document.createElement("summary");
+  summary.textContent = hazards.length
+    ? `What this shows, and ${hazards.length} thing(s) it cannot be read for`
+    : "What this shows";
+  const body = document.createElement("div");
+  body.className = "body";
+  body.innerHTML =
+    paragraphs.map((p) => `<p>${inlineMarkup(p)}</p>`).join("") +
+    hazards.map((h) => `<p class="hazard"><b>Hazard.</b> ${inlineMarkup(h)}</p>`).join("") +
+    (sources.length
+      ? `<p class="src">Computed by: ${sources.map(escapeHtml).join(" · ")}</p>`
+      : "");
+  box.append(summary, body);
+  return box;
+}
+
 // The chrome every panel kind shares, whatever it draws: level class, title and
 // the verdict banner. A panel that skipped this could render a map with no
 // verdict beside it, which is the single thing the diagnostics exist to prevent.
@@ -522,6 +583,8 @@ function panelShell(space) {
         .join(" · ");
     panel.append(shares);
   }
+  const explain = explainBlock(space.description);
+  if (explain) panel.append(explain);
   return panel;
 }
 
@@ -610,6 +673,8 @@ function panelCard(panel) {
     q.textContent = panel.question;
     card.append(q);
   }
+  const explain = explainBlock(panel.description);
+  if (explain) card.append(explain);
   return card;
 }
 

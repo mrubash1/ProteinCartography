@@ -22,6 +22,8 @@ is a description of panels, and payload.py decides which are satisfiable.
 from __future__ import annotations
 from dataclasses import dataclass, field
 
+from explorer import descriptions
+
 #: The eight sheets, in the source document's own order. maps is this
 #: pipeline's existing grid, which the document calls the primary architecture.
 SHEETS = (
@@ -423,5 +425,9 @@ def catalogue_for(available: set) -> list:
         entry = spec.to_dict()
         entry["drawable"] = not missing
         entry["missing"] = missing
+        # The fold-out. Attached here rather than stored on the PanelSpec so
+        # that the catalogue stays a description of panels and the prose stays
+        # in one file where it can be checked against the code it describes.
+        entry["description"] = descriptions.describe_panel(spec.panel_id)
         out.append(entry)
     return out

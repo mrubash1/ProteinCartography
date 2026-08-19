@@ -47,6 +47,12 @@ CLUSTERS_FILENAME = "clusters.tsv"
 #: The pseudo-reducer under which ``diagnose_space`` writes its manifest.
 DIAGNOSTICS_MANIFEST_KEY = "diagnostics"
 
+#: Directory under the run's output root holding the computed blocks.
+BLOCKS_DIRNAME = "blocks"
+
+#: A block's manifest. Bare, unlike a space's -- see ``manifest_filename``.
+BLOCK_MANIFEST_FILENAME = "manifest.json"
+
 
 def pair_filename(space_a: str, space_b: str) -> str:
     """The per-protein comparison file for one pair of spaces.
@@ -97,3 +103,14 @@ def coregistration_dir(output_dir: str) -> str:
 def summary_path(output_dir: str) -> str:
     """The co-registration summary table for a run."""
     return os.path.join(coregistration_dir(output_dir), SUMMARY_FILENAME)
+
+
+def block_manifest_path(output_dir: str, block_id: str) -> str:
+    """One computed block's manifest, which is where its cohort facts live.
+
+    ``BlockStore`` owns this layout, but importing it costs numpy, and a reader
+    that only wants the manifest's ``extra`` -- the 3Di vocabulary size, the
+    Pfam family count, the number of proteins with no annotation -- should not
+    have to pay for the array stack to find out where the file is.
+    """
+    return os.path.join(output_dir, BLOCKS_DIRNAME, block_id, BLOCK_MANIFEST_FILENAME)

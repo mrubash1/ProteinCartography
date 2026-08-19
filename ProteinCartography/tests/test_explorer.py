@@ -879,3 +879,204 @@ def test_the_title_follows_the_cohort_selector():
     assert (
         'querySelector("h1").textContent = active.cohort_name' in html
     ), "applyCohort does not update the title"
+
+
+# ==========================================================================
+# The fold-outs. These strings ship to biologists, so the tests here are
+# about honesty rather than shape: a description that states a cohort's
+# number as a constant is wrong on the other cohort and looks like a
+# measurement while it does it.
+# ==========================================================================
+
+
+def test_a_provider_with_no_description_says_so_rather_than_inventing_one():
+    """The rule the whole module exists for.
+
+    A confident sentence about a provider nobody described is worse than no
+    sentence: a reader can act on "the code does not say" and cannot act on
+    someone's inference dressed as documentation.
+    """
+    from explorer.descriptions import NOT_DETERMINABLE, describe_block
+
+    text = " ".join(describe_block("some_future_provider")["paragraphs"])
+    assert NOT_DETERMINABLE in text
+    assert "some_future_provider" in text
+
+
+def test_the_biophys_hazard_names_the_unapplied_normalization():
+    """FOLLOWUPS #32, on the page rather than in a follow-up file.
+
+    The block asks for `zscore_within`, nothing reads `spec.normalization`, and
+    the consequence is that the euclidean distance is mostly isoelectric point.
+    A physicochemistry map read as "chemistry" rather than "pI" is the
+    misreading this sentence exists to stop.
+    """
+    from explorer.descriptions import describe_block
+
+    hazards = " ".join(describe_block("biophys")["hazards"])
+    assert "zscore_within" in hazards
+    assert "isoelectric point" in hazards
+
+
+def test_the_domains_hazards_name_both_the_blank_row_and_the_ties():
+    from explorer.descriptions import describe_block
+
+    hazards = " ".join(describe_block("domains")["hazards"])
+    assert "nobody has annotated one" in hazards
+    assert "PF00022" in hazards, "the tie degeneracy is why this space is unreadable"
+
+
+def test_the_tmscore_description_says_the_row_is_the_feature_vector():
+    """2.02's point, and the one most often skipped: distance in this space is
+    between similarity PROFILES, not between two proteins' scores."""
+    from explorer.descriptions import describe_block
+
+    described = describe_block("tmscore", params={"representation": "profile"})
+    text = " ".join(described["paragraphs"])
+    assert "whole row" in text
+    assert "second-order" in text
+    assert "#60" in " ".join(described["hazards"]), "the 3Di+AA provenance is not stated"
+
+
+def test_a_cohort_dependent_number_is_read_from_the_cohort_not_typed_in():
+    """The load-bearing test of this module.
+
+    The 3Di vocabulary is 4982 columns wide for one cohort on the shipped page
+    and 4594 for the other. A constant here would be a measurement-shaped
+    sentence that is wrong on one of the two panels it renders into, so the
+    number has to come from that cohort's own block manifest.
+    """
+    from explorer.descriptions import describe_block
+
+    wide = " ".join(describe_block("threedi", facts={"n_kmers": 4982})["paragraphs"])
+    narrow = " ".join(describe_block("threedi", facts={"n_kmers": 4594})["paragraphs"])
+    assert "4982 columns for this cohort" in wide
+    assert "4594 columns for this cohort" in narrow
+
+
+def test_the_fused_description_quotes_this_cohort_s_own_realized_shares():
+    """Same rule, for the number this page is most likely to be quoted on.
+
+    An equal request realizes 0.4405/0.5595 on the chymotrypsin cohort and
+    0.4208/0.5792 on the actin one, from the same config. Either typed in would
+    be wrong on the other panel.
+    """
+    from explorer.descriptions import describe_late
+
+    text = " ".join(
+        describe_late(
+            [
+                {"block_id": "tmscore", "share": 0.5, "realized_share": 0.4404504},
+                {"block_id": "biophys", "share": 0.5, "realized_share": 0.5595495},
+            ]
+        )["paragraphs"]
+    )
+    assert "tmscore 44.0 %" in text and "biophys 56.0 %" in text
+    assert "requested 50 %" in text
+
+
+def test_a_fused_space_with_no_measured_shares_states_none():
+    """Absent is absent. Falling back to the nominal weights would print a
+    request as if it were a measurement, which is the thing #29/#32 are about."""
+    from explorer.descriptions import describe_late
+
+    text = " ".join(describe_late([])["paragraphs"])
+    assert "realized shares are" not in text
+
+
+def test_every_space_description_ends_with_what_the_axes_are_not():
+    """The single most common misreading of a UMAP costs one sentence to
+    forestall, so it is appended to every space rather than left to the reader
+    to remember from another panel."""
+    from explorer.descriptions import describe_space
+
+    text = " ".join(describe_space("structure", blocks=[{"provider": "tmscore"}])["paragraphs"])
+    assert "no units" in text
+    assert "not interpretable" in text
+
+
+def test_the_payload_carries_a_description_for_every_space(built):
+    """A description computed and not shipped is a comment (#29/#32)."""
+    for space in built.spaces:
+        assert space.to_dict()["description"]["paragraphs"], space.space_id
+
+
+def test_a_space_payload_written_without_a_description_still_renders():
+    """Additive, asserted rather than assumed: the field defaults to empty and
+    the template draws nothing for an empty one."""
+    from explorer.payload import SpacePayload
+
+    space = SpacePayload(
+        space_id="structure",
+        protids=["a"],
+        embeddings={"pca_umap": [[0.0, 0.0]]},
+        clusters={},
+        readable=[True],
+        verdict={"level": "ok", "reasons": [], "headline": "fine"},
+    )
+    assert space.to_dict()["description"] == {}
+
+
+def test_the_description_is_built_from_the_block_manifest_on_disk(tmp_path):
+    """The fold-out has to read the cohort, not the config.
+
+    `n_kmers` exists only in the block manifest -- the config says `k: 3` and
+    nothing about how wide that made the matrix. If the payload stopped reading
+    the manifest the sentence would quietly become generic, which no shape
+    assertion would notice.
+    """
+    from config_schema import from_legacy
+    from explorer.payload import _space_blocks
+
+    blocks_dir = tmp_path / "blocks" / "td"
+    blocks_dir.mkdir(parents=True)
+    (blocks_dir / "manifest.json").write_text(json.dumps({"extra": {"n_kmers": 77}}))
+    config = from_legacy(
+        {
+            "blocks": {"td": {"provider": "threedi", "k": 3}},
+            "spaces": {"s": {"blocks": ["td"], "strategy": "none", "reducers": ["pca"]}},
+        }
+    )
+    found = _space_blocks(str(tmp_path), config, config.spaces["s"])
+    assert found == [
+        {
+            "block_id": "td",
+            "provider": "threedi",
+            "params": {"k": 3, "metric": "euclidean"},
+            "facts": {"n_kmers": 77},
+        }
+    ]
+
+
+def test_the_template_renders_the_fold_out_in_both_places():
+    """One renderer for a space panel and for a catalogue card.
+
+    Two renderers is how a hazard ends up styled as body text in one of them,
+    and the hazards are the half of this that matters.
+    """
+    from explorer.panels import catalogue_for, sheet_titles
+    from explorer.template import render
+
+    html = render(
+        {"spaces": [], "panels": catalogue_for(set()), "sheets": sheet_titles()},
+        plotly_js="",
+        title="t",
+    )
+    assert "function explainBlock" in html
+    assert "explainBlock(space.description)" in html, "the maps grid has no fold-out"
+    assert "explainBlock(panel.description)" in html, "the panel cards have no fold-out"
+    payload = _embedded_payload(html)
+    described = [p for p in payload["panels"] if p["description"]["paragraphs"]]
+    assert len(described) > 15, "most catalogue panels carry no description"
+
+
+def test_the_fold_out_escapes_before_it_marks_up():
+    """The description is plain text with backticks, and it is inserted as
+    innerHTML. Escaping after the markup pass would let a `<` in a description
+    become live markup."""
+    from explorer.template import render
+
+    html = render({"spaces": []}, plotly_js="", title="t")
+    marker = html.index("function inlineMarkup")
+    body = html[marker : marker + 400]
+    assert body.index("escapeHtml(text)") < body.index("replace(/`([^`]+)`/g")

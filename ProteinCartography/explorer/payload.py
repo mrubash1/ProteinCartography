@@ -31,7 +31,7 @@ import json
 import os
 from dataclasses import dataclass, field
 
-from explorer import panels
+from explorer import descriptions, panels
 from spaces import layout
 
 __all__ = [
@@ -100,6 +100,10 @@ class SpacePayload:
     #: reported on the page rather than silently dropped, because a missing
     #: panel and a broken panel look identical to a reader.
     panel_type: str = "scatter"
+    #: What this map is plotting, in words: ``{paragraphs, hazards, sources}``
+    #: from `explorer.descriptions`. Empty for a payload built before the
+    #: fold-outs existed, and the template renders nothing for an empty one.
+    description: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -112,6 +116,7 @@ class SpacePayload:
             "diagnostics": self.diagnostics,
             "contributions": self.contributions,
             "panel_type": self.panel_type,
+            "description": self.description,
         }
 
 
@@ -223,6 +228,42 @@ def _readable_mask(directory: str, diagnostics, protids: list) -> list:
         # strength of a file that is missing.
         return [False] * len(protids)
     return [bool(readable.get(p, True)) for p in protids]
+
+
+def _space_blocks(output_dir: str, config, space) -> list:
+    """Per block of one space: provider, resolved params, and its cohort facts.
+
+    The facts are the block manifest's ``extra``, and reading them is what keeps
+    the fold-outs honest across cohorts. The 3Di vocabulary is 4982 columns wide
+    for one cohort on the shipped page and 4594 for the other; a description
+    that stated either number as a constant would be a measurement-looking
+    sentence that is wrong on one of the two panels it appears in.
+
+    Nothing from here reaches the payload. `explorer.descriptions` turns it into
+    strings and only the strings travel, so a manifest key that happens to hold
+    a 5000-element vocabulary list cannot land in the page.
+    """
+    out = []
+    for block_id in getattr(space, "blocks", ()) or ():
+        block = (getattr(config, "blocks", None) or {}).get(block_id)
+        params = dict(getattr(block, "params", {}) or {})
+        # `representation`, `metric` and `normalization` are fields of
+        # `BlockConfig` rather than entries in `params`, so a describer reading
+        # only `params` would report every tmscore block as the default.
+        for name in ("representation", "metric", "normalization"):
+            value = getattr(block, name, None)
+            if value is not None:
+                params.setdefault(name, value)
+        manifest = _read_json(layout.block_manifest_path(output_dir, block_id)) or {}
+        out.append(
+            {
+                "block_id": block_id,
+                "provider": getattr(block, "provider", "") or "",
+                "params": params,
+                "facts": dict(manifest.get("extra") or {}),
+            }
+        )
+    return out
 
 
 def _hover_fields(output_dir: str, protids: set) -> dict:
@@ -359,6 +400,7 @@ def build_payload(config, output_dir: str, analysis_name: str = "analysis") -> E
             }
             for entry in diagnostics.get("faithfulness") or []
         ]
+        contributions = _contributions(directory, embeddings)
         spaces.append(
             SpacePayload(
                 space_id=space_id,
@@ -368,7 +410,13 @@ def build_payload(config, output_dir: str, analysis_name: str = "analysis") -> E
                 readable=_readable_mask(directory, diagnostics, protids),
                 verdict=space_verdict(diagnostics, len(protids)),
                 diagnostics=summary,
-                contributions=_contributions(directory, embeddings),
+                contributions=contributions,
+                description=descriptions.describe_space(
+                    space_id,
+                    strategy=getattr(space, "strategy", "none"),
+                    blocks=_space_blocks(output_dir, config, space),
+                    contributions=contributions,
+                ),
             )
         )
         index_order = index_order or protids
