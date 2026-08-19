@@ -151,13 +151,20 @@ def test_an_unknown_denominator_is_refused(non_euclidean):
 def test_it_reports_and_does_not_gate(non_euclidean):
     """A verdict field that quietly acquired a value would be a threshold
     derived from one cohort, which is the mistake this diagnostic exists to
-    avoid repeating. The note has to say *why* it refuses, because the first
-    reason given -- "no second family yet" -- turned out to be the wrong one:
-    the archive had a second family all along, and the statistic still moves
-    more between two runs of one query than it does between families."""
+    avoid repeating.
+
+    The note has to say *why* it refuses, and the reason has now been wrong
+    twice. "No second family yet" was wrong because the archive had one all
+    along. Its replacement -- "it moves more between two runs of one query than
+    between families" -- was wrong because repeated runs of one query are
+    bit-identical, so that variance is exactly zero; what moved was which subset
+    an analyst selected. The refusal now rests on the transform instead, which
+    is a property of the code and cannot be invalidated by another cohort.
+    """
     report = metricity_report(non_euclidean)
     assert report["verdict"] is None
-    assert "property of the cohort" in report["verdict_note"]
+    assert "do not compare" in report["verdict_note"].lower()
+    assert "#59" in report["verdict_note"]
     assert "#49" in report["verdict_note"]
 
 
@@ -319,3 +326,54 @@ def test_the_profile_block_does_not_claim_a_metricity(tmp_path):
 
     result = TMScoreProvider().compute(PipelineContext(output_dir=str(tmp_path)), {})
     assert "metricity" not in result.manifest.get("derived", {})
+
+
+def test_one_minus_similarity_manufactures_negative_mass_on_euclidean_data():
+    """The pipeline's own transform is not the Euclidean one, and this pins it.
+
+    `blocks/tmscore.py` forms distances as `1 - TM`. Schoenberg's criterion says
+    that for a positive semi-definite `S` with a unit diagonal it is
+    `sqrt(2(1 - S))` that is Euclidean, not `1 - S`. So the fraction reported on
+    any `1 - TM` matrix carries a large offset that is a property of the
+    transform rather than of the data.
+
+    This is a characterization test: it asserts the artifact is present and
+    large, so that anyone who changes the transform sees this fail and reads
+    FOLLOWUPS #59 before deciding whether the change is wanted. The existing
+    Euclidean test above passes an already-metric distance matrix, which is a
+    shape the pipeline never constructs, so it cannot catch this.
+    """
+    rng = np.random.RandomState(0)
+    points = rng.normal(size=(120, 8))
+    points /= np.linalg.norm(points, axis=1, keepdims=True)
+    similarity = points @ points.T
+    np.fill_diagonal(similarity, 1.0)
+    # Cosine similarity of real vectors is a Gram matrix, so it is PSD by
+    # construction. Assert it rather than trusting it.
+    assert np.linalg.eigvalsh((similarity + similarity.T) / 2).min() > -1e-10
+
+    affine = 1.0 - similarity
+    np.fill_diagonal(affine, 0.0)
+    affine = (affine + affine.T) / 2
+
+    schoenberg = np.sqrt(np.maximum(2.0 * (1.0 - similarity), 0.0))
+    np.fill_diagonal(schoenberg, 0.0)
+    schoenberg = (schoenberg + schoenberg.T) / 2
+
+    manufactured = metricity_report(affine)["negative_mass_fraction"]
+    genuine = metricity_report(schoenberg)["negative_mass_fraction"]
+
+    assert genuine < 1e-9, (
+        "sqrt(2(1-S)) of a PSD similarity is Euclidean, so this must be rounding "
+        f"error; got {genuine}. If this fails the computation is wrong."
+    )
+    assert manufactured > 0.30, (
+        "the point of this test is that `1 - S` does NOT return zero on Euclidean "
+        f"data; got {manufactured}, which would mean the artifact has gone away "
+        "and the docstring's warning is now wrong"
+    )
+    assert manufactured > 1e6 * genuine, (
+        f"the transform contributes {manufactured} where the data contributes "
+        f"{genuine}: the reported fraction is mostly the convention, which is why "
+        "docs/FOLLOWUPS.md #59 says not to read it as a property of the data"
+    )

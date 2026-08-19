@@ -28,10 +28,21 @@ of their 4.7 million cells. Emitting the number without a verdict is deliberate,
 and matches how ``docs/INTERPRETING.md`` handles the other statistics whose
 thresholds are not yet earned.
 
-What *is* robust is the comparison to zero: a genuinely Euclidean distance
-matrix double-centres to a positive semi-definite Gram matrix and returns under
-1e-9 here. Every real cohort measured is many orders of magnitude away from
-that, so "``1 - TM`` is not Euclidean" is safe to say and "it is 44.6%" is not.
+**READ THIS BEFORE QUOTING ANY NUMBER FROM HERE.** A matrix of true Euclidean
+distances double-centres to a positive semi-definite Gram matrix and returns
+under 1e-9. But that is NOT the input this pipeline supplies. `blocks/tmscore.py`
+forms distances as ``1 - TM``, and that affine transform is not the Euclidean
+one: by Schoenberg's criterion, if ``S`` is positive semi-definite with a unit
+diagonal then ``sqrt(2(1 - S))`` is Euclidean and ``1 - S`` in general is not.
+Measured here on cosine similarities of random unit vectors -- data that is
+Euclidean by construction -- ``1 - S`` returns **41.8% to 43.4%** at n=100 to
+600, while ``sqrt(2(1 - S))`` returns ~1e-15. So roughly forty points of the
+fraction reported on any ``1 - TM`` matrix are manufactured by the transform,
+not measured in the data, and a cohort scoring 31.8% is scoring BELOW what
+exactly-Euclidean data scores in this convention. The comparison to zero is
+therefore only meaningful at ``square_first=False`` or after the Schoenberg
+transform. `docs/FOLLOWUPS.md` #59 records this; it is not fixed here because
+changing the transform changes every manifest that carries the number.
 
 **Every number here is meaningless without its convention, so the convention
 travels with it.** "Negative eigenvalue mass" has appeared in this project's
@@ -195,9 +206,12 @@ def metricity_report(
         },
         "verdict": None,
         "verdict_note": (
-            "reported, not gated: across the cohorts measured this spans 36-65%, with "
-            "the widest gap between two runs of one query, so the value is a property "
-            "of the cohort rather than of the metric. Compare it to zero, not to "
-            "another cohort's figure. See docs/FOLLOWUPS.md #49 and #51."
+            "reported, not gated. Do not compare this to another cohort's figure, and "
+            "do not read it as the fraction of structure that is non-Euclidean: on a "
+            "`1 - TM` matrix roughly 40 points of it are manufactured by that transform "
+            "rather than measured, since `1 - S` is not the Euclidean transform of a "
+            "similarity (`sqrt(2(1-S))` is). It is also sample-size dependent and varies "
+            "more with which subset is analysed than with protein family. See "
+            "docs/FOLLOWUPS.md #59, #49 and #51."
         ),
     }
