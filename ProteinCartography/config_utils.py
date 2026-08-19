@@ -1,5 +1,6 @@
 import enum
 import pathlib
+import sys
 
 
 class ProteinCartographyInputError(Exception):
@@ -57,14 +58,30 @@ def _get_protids(config):
             filepath for filepath in input_dir.glob("*") if filepath.suffix[1:].lower() == "pdb"
         ]
 
-        # check that there is at least a reasonable number of PDB files provided
-        # (enough that it makes sense to do the clustering)
-        # TODO (KC): decide on a less arbitrary minimum number of PDBs
-        min_num_pdb_files = 10
-        if len(input_pdb_filepaths) < min_num_pdb_files:
+        # The pipeline clusters proteins by their pairwise structural similarity, so the
+        # only hard requirement is that there is at least one pair to compare; with zero or
+        # one structure there is no all-by-all matrix to build and no map to make.
+        # Below that, nothing downstream needs a larger cohort: `leiden_clustering` collapses
+        # to a single cluster for N < 3 and `dim_reduction` falls back to a small-N layout,
+        # both of which degrade on their own terms rather than failing. A larger cohort is
+        # therefore advice, not a requirement, and is reported as a warning so that small
+        # (but valid) inputs -- including the shipped 11-structure demo -- can still run.
+        min_num_pdb_files = 2
+        advisory_num_pdb_files = 10
+
+        num_pdb_files = len(input_pdb_filepaths)
+        if num_pdb_files < min_num_pdb_files:
             raise ProteinCartographyInputError(
-                f"In 'cluster' mode, at least {min_num_pdb_files} PDB files must be provided "
-                "in the input directory."
+                "In 'cluster' mode, the pipeline clusters proteins by their pairwise "
+                f"structural similarity, so at least {min_num_pdb_files} PDB files must be "
+                f"provided in the input directory (found {num_pdb_files})."
+            )
+        if num_pdb_files < advisory_num_pdb_files:
+            print(
+                f"Warning: only {num_pdb_files} PDB files were found in the input directory. "
+                "The pipeline will run, but clustering and dimensionality reduction are "
+                f"unlikely to be informative for fewer than {advisory_num_pdb_files} proteins.",
+                file=sys.stderr,
             )
 
         # in cluster mode, the 'key' protids are user-defined
