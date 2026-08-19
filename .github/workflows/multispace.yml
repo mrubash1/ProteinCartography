@@ -113,10 +113,20 @@ jobs:
         shell: micromamba-shell {0}
 
       - name: The default DAGs are unchanged
-        # The whole PR rests on the default pipeline being untouched. 16 and 25
-        # are the counts at the commit this branch forked from.
+        # The whole PR rests on the default pipeline being untouched. 17 and 26
+        # are the counts at the commit this branch forked from, measured there
+        # rather than assumed.
+        #
+        # They were 16 and 25 until upstream #110 added `domain_query_gate`,
+        # a checkpoint that enters BOTH default DAGs: `rule all` always
+        # includes `domain_final_outputs`, whose gate function calls
+        # `checkpoints.domain_query_gate.get()` whenever `domain_map` is not
+        # "off". The domain rules downstream of it are correctly skipped for a
+        # single-domain query; the gate itself is not. So the +1 is upstream's
+        # and not this work's, and the claim these numbers defend is unchanged:
+        # nothing here adds a rule to a config that does not ask for one.
         run: |
-          for cfg_and_count in "demo/cluster-mode/config.yml:16" "demo/search-mode/config_actin_small.yml:25"; do
+          for cfg_and_count in "demo/cluster-mode/config.yml:17" "demo/search-mode/config_actin_small.yml:26"; do
             cfg="${cfg_and_count%:*}"; want="${cfg_and_count##*:}"
             got=$(snakemake --configfile "$cfg" -n --quiet --rerun-incomplete 2>/dev/null \
                   | awk '/^total/ {print $2}')
