@@ -508,3 +508,74 @@ def test_the_template_reads_the_key_the_payload_writes():
     html = render({"comparisons": [{"per_protein": {"P1": 0.5}}], "spaces": []}, "", "t")
     assert "row.per_protein" in html, "the template no longer reads per_protein"
     assert '"per_protein": {"P1": 0.5}' in html, "the payload no longer writes per_protein"
+
+
+# ==========================================================================
+# The panel registry. A payload naming a panel kind must reach a renderer,
+# and a payload naming one the template lacks must SAY SO on the page.
+# ==========================================================================
+
+
+def test_panel_type_defaults_to_scatter_so_an_old_payload_is_unchanged():
+    """The registry may not alter a page that never asked for it.
+
+    Every space built before `panel_type` existed rendered as a scatter. The
+    default keeps that true without the caller restating it, which is what
+    makes the field additive rather than a migration.
+    """
+    from explorer.payload import SpacePayload
+
+    space = SpacePayload(
+        space_id="structure",
+        protids=["a"],
+        embeddings={"pca_umap": [[0.0, 0.0]]},
+        clusters={"a": "0"},
+        readable=[True],
+        verdict={"level": "ok", "reasons": [], "headline": "fine"},
+    )
+    assert space.panel_type == "scatter"
+    assert space.to_dict()["panel_type"] == "scatter", (
+        "the field must travel to the page; a default the template cannot see "
+        "is not a default, it is a comment"
+    )
+
+
+def test_the_template_dispatches_on_panel_type_rather_than_assuming_scatter():
+    """The registry has to be reachable, not merely present.
+
+    Asserted on the source the page carries, because there is no browser here.
+    `draw()` must look the kind up; a `draw()` that still hardcodes the scatter
+    body would pass every payload test above and render one kind forever.
+    """
+    from explorer.template import render
+
+    html = render({"spaces": []}, plotly_js="", title="t")
+    assert "PANELS.scatter" in html, "the scatter kind is not registered"
+    assert re.search(
+        r"space\.panel_type", html
+    ), "`draw()` never reads `panel_type`, so the registry cannot be reached"
+    assert re.search(r"panelFor\(space\)\.build", html) and re.search(
+        r"panelFor\(space\)\.render", html
+    ), "draw() must dispatch both halves through the registry, not just one"
+
+
+def test_an_unknown_panel_type_is_drawn_as_a_mismatch_not_dropped():
+    """A missing panel and a broken panel look identical to a reader.
+
+    This is the same rule the source document states for refusals (7.03 E2):
+    show them, never blank them. A template older than its payload is exactly
+    when a space would vanish silently, so the fallback has to be visible.
+    """
+    from explorer.template import render
+
+    html = render(
+        {"spaces": [{"space_id": "s", "panel_type": "tanglegram"}]},
+        plotly_js="",
+        title="t",
+    )
+    payload = _embedded_payload(html)
+    assert payload["spaces"][0]["panel_type"] == "tanglegram"
+    assert "PANELS.__unknown__" in html, "there is no fallback renderer"
+    assert re.search(
+        r"no renderer for panel_type", html
+    ), "the fallback must put the mismatch on the page, not only in a console"

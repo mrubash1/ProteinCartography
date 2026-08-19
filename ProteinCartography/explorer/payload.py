@@ -93,6 +93,12 @@ class SpacePayload:
     #: Per-block nominal and realized contribution, for fused spaces only.
     #: Empty for an unfused space, which has nothing to apportion.
     contributions: list = field(default_factory=list)
+    #: Which renderer draws this panel. The template dispatches on it. Defaults
+    #: to the only kind that existed before the registry, so a payload written
+    #: without it renders exactly as it always did -- and an unknown value is
+    #: reported on the page rather than silently dropped, because a missing
+    #: panel and a broken panel look identical to a reader.
+    panel_type: str = "scatter"
 
     def to_dict(self) -> dict:
         return {
@@ -104,6 +110,7 @@ class SpacePayload:
             "verdict": self.verdict,
             "diagnostics": self.diagnostics,
             "contributions": self.contributions,
+            "panel_type": self.panel_type,
         }
 
 

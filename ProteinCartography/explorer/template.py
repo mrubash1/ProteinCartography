@@ -77,6 +77,12 @@ button.on { background: var(--ink); color: #fff; border-color: var(--ink); }
   border-bottom: 1px solid var(--line); background: #fbfbfc; }
 .shares .drift { color: var(--caution); }
 .plot { height: 330px; }
+/* A panel with nothing to draw says so, in the panel's own footprint. The
+   source document's rule (7.03 E2) is that refusals are shown as refusals and
+   never as blanks; the same reasoning applies to a panel awaiting an input. */
+.awaiting { height: 330px; display: flex; align-items: center; justify-content: center;
+  text-align: center; padding: 0 22px; color: var(--muted); font-size: 12.5px;
+  background: repeating-linear-gradient(45deg, #fcfcfd, #fcfcfd 9px, #f6f7f9 9px, #f6f7f9 18px); }
 table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
 th, td { text-align: left; padding: 5px 9px; border-bottom: 1px solid var(--line); }
 th { color: var(--muted); font-weight: 600; font-size: 11px;
@@ -298,51 +304,61 @@ function traceFor(space) {
   });
 }
 
-function draw() {
-  const grid = el("grid");
-  if (!grid.dataset.built) {
-    spaces.forEach((space) => {
-      const panel = document.createElement("div");
-      panel.className = `panel level-${space.verdict.level}`;
-      const title = document.createElement("h2");
-      title.textContent = space.space_id;
-      const verdict = document.createElement("div");
-      verdict.className = `verdict level-${space.verdict.level}`;
-      verdict.innerHTML =
-        space.verdict.headline +
-        (space.verdict.reasons.length
-          ? "<ul>" + space.verdict.reasons
-              .map((r) => `<li>${escapeHtml(r)}</li>`).join("") + "</ul>"
-          : "");
-      const plot = document.createElement("div");
-      plot.className = "plot";
-      plot.id = `plot-${space.space_id}`;
-      panel.append(title, verdict);
-      // ADR 0002: a fused map does not render without its contribution shares
-      // visible. Both numbers, because they differ -- `early` concatenates
-      // features, so an even request over blocks of unequal width realizes
-      // unevenly, and showing only the request would misreport the map.
-      if (space.contributions && space.contributions.length) {
-        const shares = document.createElement("div");
-        shares.className = "shares";
-        shares.innerHTML =
-          "contribution: " +
-          space.contributions
-            .map((c) => {
-              const asked = c.share == null ? "?" : (100 * c.share).toFixed(0);
-              const got = c.realized_share == null ? "?" : (100 * c.realized_share).toFixed(0);
-              const drift = asked !== got ? ` <span class="drift">(asked ${asked}%)</span>` : "";
-              return `<b>${escapeHtml(String(c.block_id))}</b> ${got}%${drift}`;
-            })
-            .join(" · ");
-        panel.append(shares);
-      }
-      panel.append(plot);
-      grid.append(panel);
-    });
-    grid.dataset.built = "1";
+// --- panel registry -----------------------------------------------------------
+// A panel kind is {build(space, panel), render(space)}. `draw()` dispatches on
+// `space.panel_type`, which the payload defaults to "scatter", so a page built
+// before this registry existed renders identically. Splitting build from render
+// keeps the original build-once / react-every-time split that `grid.dataset.built`
+// encodes; putting them in one object is what makes a second kind possible.
+const PANELS = {};
+
+// The chrome every panel kind shares, whatever it draws: level class, title and
+// the verdict banner. A panel that skipped this could render a map with no
+// verdict beside it, which is the single thing the diagnostics exist to prevent.
+function panelShell(space) {
+  const panel = document.createElement("div");
+  panel.className = `panel level-${space.verdict.level}`;
+  const title = document.createElement("h2");
+  title.textContent = space.space_id;
+  const verdict = document.createElement("div");
+  verdict.className = `verdict level-${space.verdict.level}`;
+  verdict.innerHTML =
+    space.verdict.headline +
+    (space.verdict.reasons.length
+      ? "<ul>" + space.verdict.reasons
+          .map((r) => `<li>${escapeHtml(r)}</li>`).join("") + "</ul>"
+      : "");
+  panel.append(title, verdict);
+  // ADR 0002: a fused map does not render without its contribution shares
+  // visible. Both numbers, because they differ -- `early` concatenates
+  // features, so an even request over blocks of unequal width realizes
+  // unevenly, and showing only the request would misreport the map.
+  if (space.contributions && space.contributions.length) {
+    const shares = document.createElement("div");
+    shares.className = "shares";
+    shares.innerHTML =
+      "contribution: " +
+      space.contributions
+        .map((c) => {
+          const asked = c.share == null ? "?" : (100 * c.share).toFixed(0);
+          const got = c.realized_share == null ? "?" : (100 * c.realized_share).toFixed(0);
+          const drift = asked !== got ? ` <span class="drift">(asked ${asked}%)</span>` : "";
+          return `<b>${escapeHtml(String(c.block_id))}</b> ${got}%${drift}`;
+        })
+        .join(" · ");
+    panel.append(shares);
   }
-  spaces.forEach((space) => {
+  return panel;
+}
+
+PANELS.scatter = {
+  build(space, panel) {
+    const plot = document.createElement("div");
+    plot.className = "plot";
+    plot.id = `plot-${space.space_id}`;
+    panel.append(plot);
+  },
+  render(space) {
     const node = el(`plot-${space.space_id}`);
     Plotly.react(node, traceFor(space), {
       margin: { l: 26, r: 12, t: 8, b: 26 },
@@ -358,7 +374,40 @@ function draw() {
       draw();
       renderInspector();
     });
-  });
+  },
+};
+
+// A payload naming a kind this template does not have is a version mismatch
+// between the two halves. Draw the mismatch rather than nothing: a panel that
+// silently fails to appear cannot be told apart from one that was never asked
+// for, and the reader has no way to know a space is missing.
+PANELS.__unknown__ = {
+  build(space, panel) {
+    const note = document.createElement("div");
+    note.className = "awaiting";
+    note.textContent =
+      `no renderer for panel_type "${space.panel_type}" — this page's template ` +
+      `is older than the payload that produced it`;
+    panel.append(note);
+  },
+  render() {},
+};
+
+function panelFor(space) {
+  return PANELS[space.panel_type || "scatter"] || PANELS.__unknown__;
+}
+
+function draw() {
+  const grid = el("grid");
+  if (!grid.dataset.built) {
+    spaces.forEach((space) => {
+      const panel = panelShell(space);
+      panelFor(space).build(space, panel);
+      grid.append(panel);
+    });
+    grid.dataset.built = "1";
+  }
+  spaces.forEach((space) => panelFor(space).render(space));
 }
 
 function escapeHtml(text) {
