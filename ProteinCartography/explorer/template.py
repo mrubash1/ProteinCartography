@@ -216,6 +216,11 @@ function applyCohort(index) {
   state.selected = new Set();
   state.overlay = "__none__";
 
+  // The title is the cohort's, not the page's. It was a static substitution, so
+  // switching cohorts left the previous cohort's name above the new cohort's
+  // numbers -- a header and a subtitle disagreeing about which data is shown.
+  document.title = `${active.cohort_name} — multi-space explorer`;
+  document.querySelector("h1").textContent = active.cohort_name;
   el("subtitle").textContent =
     `${spaces.length} space(s) over ${active.provenance.n_proteins} proteins` +
     ` · k=${active.provenance.diagnostics_k}` +

@@ -864,3 +864,18 @@ def test_numbers_in_the_cursor_are_formatted_by_magnitude():
         "fmtValue(colour.values[i])" in html
     ), "the tooltip does not route its overlay value through fmtValue"
     assert "fmtValue(colourDomain.min)" in html, "the colour key does not format its bounds"
+
+
+def test_the_title_follows_the_cohort_selector():
+    """A header naming one cohort above another cohort's numbers is a lie.
+
+    `__TITLE__` is a static substitution, so before this the h1 kept the first
+    cohort's name after a switch while the subtitle updated -- header and
+    subtitle disagreeing about which data was on screen.
+    """
+    from explorer.template import render
+
+    html = render({"spaces": [], "analysis_name": "one"}, plotly_js="", title="t")
+    assert (
+        'querySelector("h1").textContent = active.cohort_name' in html
+    ), "applyCohort does not update the title"
