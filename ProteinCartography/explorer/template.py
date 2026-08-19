@@ -333,6 +333,10 @@ function traceFor(space) {
 // encodes; putting them in one object is what makes a second kind possible.
 const PANELS = {};
 
+//: Panel kinds drawn by a renderer that predates the catalogue, so the sheet
+//: body must not also draw them as cards.
+const BUILT_ELSEWHERE = new Set(["space_grid", "comparisons"]);
+
 // The chrome every panel kind shares, whatever it draws: level class, title and
 // the verdict banner. A panel that skipped this could render a map with no
 // verdict beside it, which is the single thing the diagnostics exist to prevent.
@@ -496,8 +500,11 @@ function renderSheet(sheetId) {
 
   const body = el("sheet-body");
   body.textContent = "";
+  // Two kinds already have dedicated renderers older than this catalogue --
+  // the live grid and the comparisons table. Listing them again as cards would
+  // put "renderer not built" directly above the thing that is built.
   const wanted = (PAYLOAD.panels || []).filter(
-    (p) => p.sheet === sheetId && p.panel_type !== "space_grid"
+    (p) => p.sheet === sheetId && !BUILT_ELSEWHERE.has(p.panel_type)
   );
   if (!wanted.length) {
     body.style.display = "none";
