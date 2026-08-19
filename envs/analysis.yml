@@ -10,6 +10,14 @@ dependencies:
   - pandas=2.0.1
   - numpy=1.23.5
   - nltk=3.8.1
+  # scipy is an indirect dependency (via scanpy and scikit-learn) and must be pinned.
+  # `leiden_clustering.py` calls `sc.tl.pca(svd_solver="arpack")`, which goes through
+  # scipy's sparse eigensolver, so the principal components -- and therefore the Leiden
+  # partition written to `leiden_features.tsv` -- depend on the scipy version that
+  # happens to be resolved. Measured on a real 2530-protein run, two environments built
+  # from this file produced 6 clusters and 18 clusters from the same input matrix.
+  # `envs/plotting.yml` and `envs/cartography_dev.yml` already pin this version.
+  - scipy=1.11.4
   # matplotlib is an indirect dependency (via scanpy) and must be pinned. Recent versions are
   # built against numpy 2 and raise `ImportError: Matplotlib requires numpy>=1.25` when they
   # are imported alongside the numpy pinned above.
