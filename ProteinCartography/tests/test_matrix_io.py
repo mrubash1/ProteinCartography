@@ -127,8 +127,11 @@ def test_permuted_columns_quantify_the_damage(permuted_file):
     """The error distinguishes 'slightly out of order' from 'essentially random'."""
     with pytest.raises(MatrixAlignmentError) as excinfo:
         load_labeled_matrix(permuted_file)
-    # In this fixture no column happens to land in its row position.
-    assert "Only 0 of 4 columns (0.00%)" in str(excinfo.value)
+    # In this fixture no column happens to land in its row position. The counts
+    # are the quantification; the `%.2f` rendering of the percentage is not, and
+    # pinning `(0.00%)` made a formatting change fail this test for a reason
+    # unrelated to what it defends.
+    assert "0 of 4 columns" in str(excinfo.value)
 
 
 def test_repair_reorders_and_warns(permuted_file, labels):
@@ -138,9 +141,14 @@ def test_repair_reorders_and_warns(permuted_file, labels):
 
     assert matrix.is_aligned
     assert matrix.columns == labels
-    assert len(caught) == 1
-    assert issubclass(caught[0].category, RuntimeWarning)
-    assert "PR #106" in str(caught[0].message)
+    # Exactly one *repair* warning. `len(caught) == 1` said the same thing only
+    # as long as nothing else in the call warned -- any DeprecationWarning
+    # raised inside pandas' `read_csv` would have failed this for a reason that
+    # has nothing to do with the repair. Select first, then count.
+    repairs = [
+        w for w in caught if issubclass(w.category, RuntimeWarning) and "PR #106" in str(w.message)
+    ]
+    assert len(repairs) == 1, [str(w.message) for w in caught]
     # The repair must be exact: the label diagonal is 1.0 everywhere.
     np.testing.assert_allclose(np.diag(matrix.values), 1.0, rtol=0, atol=1e-6)
 

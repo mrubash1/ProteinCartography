@@ -30,6 +30,27 @@ jobs:
         shell: bash -leo pipefail {0}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history: "The default DAGs are unchanged" resolves the commit
+          # this branch forked from and checks it out as a second worktree, and
+          # a shallow clone has neither the merge-base nor the commit.
+          fetch-depth: 0
+
+      - name: Check out the upstream commit this branch forked from
+        # The same step, for the same reason, as in the `parity` job below: the
+        # rule-count check compares HEAD against the fork point, so the fork
+        # point has to be on disk. `test -f` rather than a trusting `cd`,
+        # because a missing baseline would otherwise make the comparison
+        # compare nothing.
+        run: |
+          git remote get-url upstream 2>/dev/null \
+            || git remote add upstream https://github.com/Arcadia-Science/ProteinCartography.git
+          git fetch --quiet upstream main
+          base=$(git merge-base HEAD upstream/main)
+          echo "baseline is $base"
+          git worktree add --detach ../pc-baseline "$base"
+          test -f ../pc-baseline/Snakefile
+        shell: bash -leo pipefail {0}
 
       - uses: mamba-org/setup-micromamba@v2
         with:
@@ -113,29 +134,57 @@ jobs:
         shell: micromamba-shell {0}
 
       - name: The default DAGs are unchanged
-        # The whole PR rests on the default pipeline being untouched. 17 and 26
-        # are the counts at the commit this branch forked from, measured there
-        # rather than assumed.
+        # The whole PR rests on the default pipeline being untouched: nothing
+        # here may add a rule to a config that does not ask for one. That claim
+        # is a *comparison*, so this measures it as one -- the same dry run is
+        # resolved on the commit this branch forked from and on HEAD, and the
+        # two counts must agree.
         #
-        # They were 16 and 25 until upstream #110 added `domain_query_gate`,
-        # a checkpoint that enters BOTH default DAGs: `rule all` always
-        # includes `domain_final_outputs`, whose gate function calls
+        # The expected counts used to be written here as 17 and 26, and before
+        # upstream #110 as 16 and 25. #110 added `domain_query_gate`, a
+        # checkpoint that enters BOTH default DAGs: `rule all` always includes
+        # `domain_final_outputs`, whose gate function calls
         # `checkpoints.domain_query_gate.get()` whenever `domain_map` is not
         # "off". The domain rules downstream of it are correctly skipped for a
-        # single-domain query; the gate itself is not. So the +1 is upstream's
-        # and not this work's, and the claim these numbers defend is unchanged:
-        # nothing here adds a rule to a config that does not ask for one.
+        # single-domain query; the gate itself is not. That +1 was upstream's
+        # and not this work's -- and with the numbers hardcoded it failed this
+        # job for a reason the check does not exist to catch. Deriving the
+        # expectation from the fork point keeps the claim and drops the
+        # snapshot.
+        #
+        # Each side uses its own copy of the config, so a config change that
+        # adds a rule still fails here, which is intended: that would be this
+        # branch changing the default DAG.
+        #
+        # On a push to `main` the fork point is HEAD, so the comparison is
+        # trivially satisfied. There is no branch to compare on `main`; the
+        # check earns its keep on pull requests.
         run: |
-          for cfg_and_count in "demo/cluster-mode/config.yml:17" "demo/search-mode/config_actin_small.yml:26"; do
-            cfg="${cfg_and_count%:*}"; want="${cfg_and_count##*:}"
-            got=$(snakemake --configfile "$cfg" -n --quiet --rerun-incomplete 2>/dev/null \
-                  | awk '/^total/ {print $2}')
-            if [ "$got" != "$want" ]; then
-              echo "::error::$cfg resolves to $got rules, expected $want"
-              exit 1
+          base=$(git -C ../pc-baseline rev-parse HEAD)
+          echo "fork point: $base"
+
+          # <repo dir> <config path, relative to that repo dir>
+          count_rules() {
+            ( cd "$1" \
+              && snakemake --configfile "$2" -n --quiet --rerun-incomplete 2>/dev/null \
+                 | awk '/^total/ {print $2}' )
+          }
+
+          status=0
+          for cfg in demo/cluster-mode/config.yml demo/search-mode/config_actin_small.yml; do
+            want=$(count_rules ../pc-baseline "$cfg")
+            got=$(count_rules . "$cfg")
+            if [ -z "$want" ] || [ -z "$got" ]; then
+              echo "::error::$cfg produced no rule count (fork point: '$want', HEAD: '$got')"
+              status=1
+            elif [ "$got" != "$want" ]; then
+              echo "::error::$cfg resolves to $got rules on this branch but $want at $base"
+              status=1
+            else
+              echo "$cfg: $got rules, unchanged from the fork point"
             fi
-            echo "$cfg: $got rules"
           done
+          exit $status
         shell: micromamba-shell {0}
 
   determinism:

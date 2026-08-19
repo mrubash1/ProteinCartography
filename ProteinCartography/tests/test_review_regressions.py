@@ -56,9 +56,12 @@ def test_b2_duplicate_source_labels_are_refused():
     with pytest.raises(IndexAlignmentError) as excinfo:
         idx.align(["A", "B", "A"], values)
     message = str(excinfo.value)
+    # The two discriminating facts: it refused, and it said which protid. The
+    # remedy sentence ("...would silently keep one copy and discard the rest")
+    # was asserted here too, which coupled the test to prose that carries no
+    # information the exception type and the named protid do not already carry.
     assert "duplicate protid" in message
     assert "'A'" in message
-    assert "discard the rest" in message
 
 
 def test_b2_align_frame_inherits_the_guard():
@@ -80,8 +83,16 @@ def test_b2_a_duplicate_that_also_hides_an_absence_reports_both():
     with pytest.raises(IndexAlignmentError) as excinfo:
         idx.align(["A", "B", "B"], values)
     message = str(excinfo.value)
+    # Both problems named: the repeated 'B', and the 'C' it displaced.
+    #
+    # This used to read `"3 proteins are missing" in message or "missing from
+    # the source" in message`, which was wrong twice over. The phrase only ever
+    # matched by accident -- the 3 is the *index* size, and exactly one protein
+    # is missing -- and the `or` was added to absorb a rewording, so a further
+    # rewording of either clause would have been absorbed the same way. The
+    # protids are the fact; the sentence around them is not.
     assert "duplicate protid" in message
-    assert "3 proteins are missing" in message or "missing from the source" in message
+    assert "'B'" in message
     assert "'C'" in message
 
 

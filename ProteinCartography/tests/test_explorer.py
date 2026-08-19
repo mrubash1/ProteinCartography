@@ -15,11 +15,24 @@ and nothing in a shape assertion would notice.
 
 from __future__ import annotations
 import json
+import re
 
 import pytest
 from explorer.payload import space_verdict
 
 pytest.importorskip("pandas")
+
+
+def _embedded_payload(html: str) -> dict:
+    """The JSON object the rendered page carries, parsed rather than grepped.
+
+    `render` substitutes the payload into a `const PAYLOAD = ...;` line, so the
+    value is recoverable exactly. Recovering it lets a test assert on the number
+    the page received rather than on how `json.dumps` chose to space it.
+    """
+    match = re.search(r"^const PAYLOAD = (.*);$", html, re.MULTILINE)
+    assert match, "the rendered page carries no `const PAYLOAD = ...;` line"
+    return json.loads(match.group(1))
 
 
 # --- the space-level verdict --------------------------------------------------
@@ -402,12 +415,22 @@ def test_the_rendered_page_both_carries_and_draws_the_share():
         plotly_js="",
         title="t",
     )
-    assert '"realized_share": 0.733' in html, "the share did not reach the page"
+    # Parse the payload the page embeds rather than grepping the serialization.
+    # `'"realized_share": 0.733' in html` pinned `json.dumps`' separator
+    # defaults: `separators=(",", ":")`, or a float repr change, would fail it
+    # while the number reaching the page was still exactly right.
+    payload = _embedded_payload(html)
+    shares = [c["realized_share"] for c in payload["spaces"][0]["contributions"]]
+    assert shares == [0.733, 0.267], "the share did not reach the page"
     assert "space.contributions" in html, (
         "the panel must read `space.contributions`; ADR 0002 requires the share "
         "to be visible on a fused map, and recording it was already true."
     )
-    assert 'className = "shares"' in html
+    # The panel must build a DOM node for the shares, not merely receive them.
+    # Matched whitespace-insensitively: the exact spacing of `className =
+    # "shares"` is the JS formatter's business, not this test's.
+    draws_shares = re.search(r'className\s*=\s*"shares"', html)
+    assert draws_shares, "the panel does not create an element for the shares"
 
 
 # ==========================================================================

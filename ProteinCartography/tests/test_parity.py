@@ -81,6 +81,61 @@ def _run_to_run_expected(relpath: str) -> bool:
     return any(token in normalized for token in _EXPECTED_RUN_TO_RUN)
 
 
+#: A phrase that identifies `cohort.py`'s non-reproducibility warning.
+#:
+#: Two tests below look for this in a report's ``warnings`` list -- one requires
+#: it, one requires its absence. The requiring one fails loudly if the wording
+#: changes. **The absence one does not**: reword the warning and
+#: ``not any(marker in w ...)`` stops matching anything, so it passes for the
+#: rest of the branch's life while checking nothing. That is a check that turns
+#: itself off, which is worse than no check.
+#:
+#: :func:`assert_the_nonreproducibility_marker_is_current` closes that by asking
+#: ``cohort.py`` for the warning it actually emits and failing if this phrase is
+#: no longer in it. It is called from both tests and, so that it does not depend
+#: on the slow suite ever running, from a plain test of its own.
+NONREPRODUCIBLE_WARNING_MARKER = "not controlled by this pipeline"
+
+
+def assert_the_nonreproducibility_marker_is_current() -> str:
+    """Fail unless `cohort.py` still emits a warning containing the marker.
+
+    A truncating `as_filtered` selection is the one case the warning exists for,
+    so the probe is the smallest selection that produces it. Anything else --
+    no warning at all, or a reworded one -- means the negative assertions in
+    this file can no longer match, and this says so instead of letting them
+    quietly pass.
+    """
+    from cohort import CohortReport, Selection
+
+    probe = CohortReport(
+        Selection(retained=("A",), discarded=("B",), rule="as_filtered", max_structures=1)
+    )
+    matching = [w for w in probe.warnings() if NONREPRODUCIBLE_WARNING_MARKER in w]
+    assert len(matching) == 1, (
+        f"cohort.py no longer emits exactly one warning containing "
+        f"{NONREPRODUCIBLE_WARNING_MARKER!r}; it emitted {probe.warnings()!r}. Until this "
+        "marker is updated, the assertions in this file that require the warning to be "
+        "ABSENT match nothing and pass whatever the pipeline does."
+    )
+    return NONREPRODUCIBLE_WARNING_MARKER
+
+
+def n_query_structures(output_dir) -> int:
+    """How many query PDBs `run_pipeline` staged for this run, counted not assumed.
+
+    The demo's cohort size was written out by hand in three places -- ``11`` and
+    ``12`` in `test_pipeline_in_search_mode.py`, and a bare ``+ 1`` here -- so
+    adding a second query structure to the fixture would have meant finding all
+    three. `run_pipeline` copies the fixture's input directory to ``input``
+    beside its output directory, which makes the number available from the run.
+    """
+    input_dir = Path(output_dir).parent / "input"
+    n = len(list(input_dir.glob("*.pdb")))
+    assert n, f"no query structures were staged in {input_dir}"
+    return n
+
+
 @pytest.fixture(scope="module")
 def baseline_repo(repo_dirpath):
     """The unmodified upstream checkout used as the parity reference.
@@ -334,7 +389,8 @@ def test_the_cohort_report_records_the_truncation_the_baseline_hid(runs, cohort_
     assert payload["n_discarded"] > 0
     assert payload["n_candidates"] == payload["n_retained"] + payload["n_discarded"]
     assert payload["n_candidates_before_filtering"] >= payload["n_candidates"]
-    assert any("not controlled by this pipeline" in w for w in payload["warnings"])
+    marker = assert_the_nonreproducibility_marker_is_current()
+    assert any(marker in w for w in payload["warnings"])
 
 
 @pytest.mark.slow
@@ -352,8 +408,10 @@ def test_the_cohort_the_report_describes_is_the_cohort_that_was_built(cohort_rep
     n_in_map = sum(1 for _ in matrix.read_text().splitlines()) - 1
 
     # The map also carries the search-mode input proteins, which arrive through
-    # `copy_pdb` and were never cohort candidates.
-    assert n_in_map == payload["n_retained"] + 1
+    # `copy_pdb` and were never cohort candidates. Counted from the staged input
+    # directory rather than written as `+ 1`, so a second query structure in the
+    # fixture changes the expectation instead of breaking this test.
+    assert n_in_map == payload["n_retained"] + n_query_structures(head)
 
 
 @pytest.mark.slow
@@ -383,7 +441,12 @@ def test_significance_selection_produces_a_reproducible_cohort(
     )
 
     scores = (output / "protein_features" / "hit_significance.tsv").read_text().splitlines()
-    assert scores[0] == "protid\tevalue\tbits\tn_queries\tsources"
+    # Required columns, not an exact header. Equality here would fail on an
+    # *added* column, which is the change shape this branch prefers, while
+    # saying nothing more than the subset does about what the file carries.
+    columns = scores[0].split("\t")
+    assert columns[0] == "protid", f"the index column moved: {columns}"
+    assert {"evalue", "bits", "n_queries", "sources"} <= set(columns), columns
     assert len(scores) > 100, "the Foldseek results should score many accessions"
 
     payload = json.loads((output / "protein_features" / "cohort_report.json").read_text())
@@ -392,7 +455,10 @@ def test_significance_selection_produces_a_reproducible_cohort(
     assert payload["truncation_fired"] is True
     # The point of the rule: truncation fired and the result is still reproducible.
     assert payload["reproducible"] is True
-    assert not any("not controlled by this pipeline" in w for w in payload["warnings"])
+    # ...and the report says so. Guarded, because an absence check over a phrase
+    # is one rewording away from matching nothing and passing forever.
+    marker = assert_the_nonreproducibility_marker_is_current()
+    assert not any(marker in w for w in payload["warnings"])
 
 
 @pytest.mark.slow
@@ -429,6 +495,32 @@ def test_the_baseline_commit_resolves_or_says_it_cannot(repo_dirpath):
 def test_an_unresolvable_baseline_still_produces_a_usable_suggestion(tmp_path):
     """A directory that is not a git repository must not raise out of a fixture."""
     assert baseline_commit(tmp_path) is None
+
+
+def test_the_nonreproducibility_marker_still_matches_what_cohort_emits():
+    """The guard behind the absence check, run where it cannot be skipped.
+
+    Both users of :data:`NONREPRODUCIBLE_WARNING_MARKER` are ``slow``, so on a
+    normal `make test` the guard would never execute and the phrase could drift
+    out of date unnoticed -- which is the failure it exists to prevent, one
+    level up. This test is not marked slow and needs no pipeline run.
+    """
+    assert assert_the_nonreproducibility_marker_is_current() == NONREPRODUCIBLE_WARNING_MARKER
+
+
+def test_the_marker_guard_fails_when_the_warning_is_reworded(monkeypatch):
+    """A guard that cannot fail is decoration.
+
+    Simulates the rewording by making `cohort.py` emit something else, and
+    requires the guard to notice rather than return happily.
+    """
+    import cohort
+
+    monkeypatch.setattr(
+        cohort.CohortReport, "warnings", lambda self: ["the cohort may not be reproducible"]
+    )
+    with pytest.raises(AssertionError, match="no longer emits"):
+        assert_the_nonreproducibility_marker_is_current()
 
 
 def test_plotly_uuid_normalization_is_narrow():
@@ -654,8 +746,17 @@ def test_reduction_at_n750_matches_the_baseline(
 
     report = compare_trees(head, base, baseline="b")
     assert report.ok, f"{mode} output changed at N=750:\n{report.describe()}"
-    # The input matrix, the intermediate PCA, and the final embedding.
-    assert report.n_compared == 3, report.describe()
+
+    # The input matrix, the intermediate PCA, and the final embedding. The count
+    # used to be pinned at exactly 3, which any additive output would break
+    # while the reduction stayed byte-identical -- so the three that carry the
+    # claim are named, and the count is only a floor.
+    compared = set(report.identical) | set(report.normalized_identical) | set(report.differing)
+    assert "all_by_all_tmscore_pivoted.tsv" in compared, report.describe()
+    assert f"all_by_all_tmscore_pivoted_{mode}.tsv" in compared, report.describe()
+    # The intermediate carries a mode-specific temp infix, so match on the step.
+    assert any(rel.endswith("_pca.tsv") for rel in compared), report.describe()
+    assert report.n_compared >= 3, report.describe()
 
 
 @pytest.mark.slow

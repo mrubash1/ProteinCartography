@@ -138,6 +138,7 @@ def test_pipeline_in_search_mode_with_mocked_api_calls(repo_dirpath, config_file
     )
 
     config = _load_config(config_filepath)
+    input_dirpath = pathlib.Path(config["input_dir"])
     output_dirpath = pathlib.Path(config["output_dir"])
 
     # Check (some of) the expected output files.
@@ -155,15 +156,22 @@ def test_pipeline_in_search_mode_with_mocked_api_calls(repo_dirpath, config_file
         # (not sure we can do a literal comparison because of timestamps, umap stochasticity, etc.)
         assert filepath.exists()
 
-    # Check that the shape of the all-by-all similarity matrix is correct;
-    # there should be 11 structures clustered by foldseek
-    # (the 10 determined by the `max_structures` config param, plus the input structure),
-    # so the dataframe should have 11 rows and 12 columns (since the first column is the index).
+    # Check that the shape of the all-by-all similarity matrix is correct: the
+    # structures foldseek clustered are the `max_structures` the cohort admits
+    # plus the query structures staged as input.
+    #
+    # Both terms are derived, not written out. They were `11` and `12` here and
+    # a bare `+ 1` in `test_parity.py`, so adding a second query structure to
+    # the fixture, or changing `max_structures` in the config above, would have
+    # failed this test in a way that says nothing about the pipeline.
+    # `test_pipeline_in_cluster_mode.py` already counts its inputs this way.
+    num_structures = config["max_structures"] + len(list(input_dirpath.glob("*.pdb")))
     similarity_matrix_filepath = (
         output_dirpath / "foldseek_clustering_results" / "all_by_all_tmscore_pivoted.tsv"
     )
     similarity_matrix = pd.read_csv(similarity_matrix_filepath, sep="\t")
-    assert similarity_matrix.shape == (11, 12)
+    # One row and one column per structure, plus one column for the index.
+    assert similarity_matrix.shape == (num_structures, num_structures + 1)
 
     domain_html_name = f"{config['analysis_name']}_leiden_similarity_domain.html"
     domain_html = output_dirpath / "final_results" / domain_html_name
