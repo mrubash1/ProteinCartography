@@ -884,6 +884,109 @@ SHEET_PANELS.records = {
   },
 };
 
+// What the per-query cap removed. The RATE is the least interesting number
+// here: what tells a cap from ordinary sparsity is that the rows pile up at one
+// partner count while the columns stay free, so both are reported and the
+// verdict is the payload's rather than the reader's arithmetic.
+SHEET_PANELS.censoring = {
+  isEmpty() {
+    return !((active.censoring || {}).summary);
+  },
+  render() {
+    const censoring = active.censoring || {};
+    const summary = censoring.summary || {};
+    const wrap = document.createElement("div");
+    const note = document.createElement("div");
+    note.className = "table-note";
+    // Three states, and the middle one is the one a rate alone would hide.
+    if (summary.cap_detected) {
+      note.innerHTML =
+        `<b>A per-query cap is detected.</b> ${fmtValue(summary.rows_at_max)} of ` +
+        `${fmtValue(summary.n_rows)} rows report exactly ${fmtValue(summary.inferred_cap)} ` +
+        "partners while the columns do not pile up, which is what a cap on the " +
+        "query side looks like and what ordinary sparsity does not.";
+    } else if (summary.n_censored > 0) {
+      note.innerHTML =
+        "<b>Cells are missing, but not in a per-query cap's pattern.</b> The rows " +
+        "do not pile up at one partner count, or the columns pile up too — either " +
+        "way the missingness is a property of the whole matrix rather than of " +
+        "each query, and calling it a cap would be the wrong explanation.";
+    } else {
+      note.innerHTML =
+        "<b>Nothing was censored: this cohort's matrix is exhaustive.</b> Every " +
+        "pair was measured. Worth stating plainly, because the default pipeline " +
+        "caps each query and a reader who assumed that would misread the " +
+        "coverage of every other panel here.";
+    }
+    wrap.append(note);
+    const rows = [
+      ["cells", `${fmtValue(summary.n_censored)} censored of ${fmtValue(summary.n_cells)}`,
+        "matrix_io.summarize_censoring"],
+      ["censoring rate", fmtValue(summary.censoring_rate), "of all cells"],
+      ["partners measured per row",
+        `min ${fmtValue((summary.measured_per_row || {}).min)} · ` +
+        `median ${fmtValue((summary.measured_per_row || {}).median)} · ` +
+        `max ${fmtValue((summary.measured_per_row || {}).max)}`,
+        "the query side, which a cap bounds"],
+      ["partners measured per column",
+        `min ${fmtValue((summary.measured_per_col || {}).min)} · ` +
+        `median ${fmtValue((summary.measured_per_col || {}).median)} · ` +
+        `max ${fmtValue((summary.measured_per_col || {}).max)}`,
+        "the target side, which it does not"],
+      ["rows at the maximum",
+        summary.rows_at_max_fraction === undefined
+          ? reportMissing("no row summary in this payload")
+          : `${(100 * summary.rows_at_max_fraction).toFixed(1)}%`,
+        "a cap's fingerprint"],
+      ["columns at the maximum",
+        summary.cols_at_max_fraction === undefined
+          ? reportMissing("no column summary in this payload")
+          : `${(100 * summary.cols_at_max_fraction).toFixed(1)}%`,
+        "must NOT match the rows, or it is not a cap"],
+      ["measured zeros",
+        fmtValue(summary.measured_zero_count),
+        "a real 0.000 rather than a fill token; nonzero here breaks the mask"],
+    ];
+    if (summary.censoring_predicted_by_cap !== undefined) {
+      rows.push([
+        "rate the cap alone predicts",
+        fmtValue(summary.censoring_predicted_by_cap),
+        "compare against the observed rate above",
+      ]);
+    }
+    wrap.append(reportRows(rows));
+    // The per-protein distribution, sorted worst first. A single rate hides
+    // that censoring is uneven across proteins, and it is the unevenness that
+    // makes it a per-protein diagnostic rather than a property of the run.
+    const rates = censoring.rates || [];
+    if (rates.length) {
+      const plot = document.createElement("div");
+      plot.className = "plot";
+      wrap.append(plot);
+      PENDING_DRAWS.push(() => {
+        Plotly.react(
+          plot,
+          [{
+            type: "bar",
+            y: rates.map((r) => r.rate),
+            text: rates.map((r) => r.protid),
+            hovertemplate: "%{text}<br>%{y:.3f} of its row censored<extra></extra>",
+            marker: { color: "#3b528b" },
+          }],
+          {
+            margin: { l: 40, r: 12, t: 8, b: 24 },
+            xaxis: { title: "proteins, most censored first", showticklabels: false },
+            yaxis: { title: "row censored", range: [0, 1] },
+            bargap: 0,
+          },
+          { displayModeBar: false, responsive: true }
+        );
+      });
+    }
+    return wrap;
+  },
+};
+
 // The similarity matrix itself, cluster-sorted. 2.02's point is that protein i
 // has no feature vector of its own: its feature vector IS its row here, so this
 // is the tensor the structure map is a reduction of, not an illustration of one.

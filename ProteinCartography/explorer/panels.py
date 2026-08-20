@@ -710,15 +710,12 @@ CATALOGUE = (
         provenance="real",
         section="2.02",
         question=(
-            "Open rings are the uncensored position; the line is how far a "
-            "protein moves once the cap decides who measured whom."
+            "How much of the all-vs-all was never measured, and does the "
+            "pattern say a per-query cap did it?"
         ),
         needs=("censoring",),
-        requires=(
-            "both matrices for one cohort — the shipped capped one and an "
-            "exhaustive one. N7 produced the second for actin_B and chymo_A1"
-        ),
-        fills_in="POST-PLAN, N7: the exhaustive matrices are on disk",
+        requires="the cohort's matrix, which carries its own censoring mask",
+        fills_in="read from matrix_io.summarize_censoring per run",
     ),
     PanelSpec(
         panel_id="contributions",

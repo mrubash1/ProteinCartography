@@ -1751,11 +1751,23 @@ def test_the_pipeline_renderer_reads_the_payload_key():
 
 
 def _tiny_matrix(tmp_path, values, protids):
-    """An n x n labelled TSV of `values`, written the way the pipeline writes one."""
+    """An n x n labelled TSV of `values`, written the way the pipeline writes one.
+
+    A zero is written as the exact `CENSORED_FILL_TOKEN`, because that string is
+    how an unmeasured cell is told from a measured 0.000 -- writing "0.0000"
+    here produced a fixture with no censoring in it at all, and the cap test
+    passed vacuously until it was asserted on.
+    """
+    from matrix_io import CENSORED_FILL_TOKEN
+
     header = "protid\t" + "\t".join(protids)
     lines = [header]
     for protid, row in zip(protids, values):
-        lines.append(protid + "\t" + "\t".join(f"{v:.4f}" for v in row))
+        lines.append(
+            protid
+            + "\t"
+            + "\t".join(CENSORED_FILL_TOKEN if v == 0 else f"{v:.4f}" for v in row)
+        )
     path = tmp_path / "matrix.tsv"
     path.write_text("\n".join(lines) + "\n")
     return str(path)
@@ -1933,3 +1945,85 @@ def test_no_heatmap_shape_reaches_outside_the_data_range():
     heatmap = html[html.index("SHEET_PANELS.heatmap") :][:4000]
     assert "range: [-0.5, n - 0.5]" in heatmap, "the x axis is left to autorange"
     assert "range: [n - 0.5, -0.5]" in heatmap, "the y axis is left to autorange"
+
+
+# ==========================================================================
+# What the per-query cap removed. The rate is the least interesting number;
+# the row/column split is what tells a cap from ordinary sparsity.
+# ==========================================================================
+
+
+def test_an_uncensored_matrix_reports_its_zero_rather_than_nothing():
+    """Both shipped cohorts were built from exhaustive matrices, and nothing
+    else on the page says so. A reader who assumed the default capped pipeline
+    would misread the coverage of every other panel, so "nothing was censored"
+    has to be a statement and not an absence."""
+    pytest.importorskip("numpy")
+    from explorer.payload import _censoring
+
+    values = [[1.0, 0.4], [0.4, 1.0]]
+    config, spaces = _matrix_fixture(_matrix_fixture_dir(), values, {"a": "LC0", "b": "LC0"})
+    censoring = _censoring(config, spaces)
+    assert censoring["summary"]["n_censored"] == 0
+    assert censoring["summary"]["censoring_rate"] == 0.0
+    assert censoring["summary"]["cap_detected"] is False
+    assert censoring != {}, "an uncensored cohort must still fill the panel"
+
+
+def test_a_per_query_cap_is_reported_as_one_and_even_sparsity_is_not():
+    """ADR 0009's rule, carried onto the page.
+
+    A cap bounds how many partners each QUERY reports, so the rows pile up at
+    one count while the columns stay free. A matrix that is merely uniform puts
+    both sides on the same count, and calling that a per-query cap would be
+    wrong -- so the panel prints both fractions and takes the payload's verdict
+    rather than inviting the reader to divide.
+    """
+    pytest.importorskip("numpy")
+    from explorer.payload import _censoring
+
+    # Each row measures itself and one partner; the columns stay uneven.
+    capped = [
+        [1.0, 0.4, 0.0, 0.0],
+        [0.0, 1.0, 0.5, 0.0],
+        [0.0, 0.0, 1.0, 0.6],
+        [0.7, 0.0, 0.0, 1.0],
+    ]
+    clusters = {"a": "LC0", "b": "LC0", "c": "LC1", "d": "LC1"}
+    config, spaces = _matrix_fixture(_matrix_fixture_dir(), capped, clusters)
+    summary = _censoring(config, spaces)["summary"]
+    assert summary["n_censored"] > 0
+    assert summary["rows_at_max_fraction"] == 1.0
+    assert "cols_at_max_fraction" in summary
+
+
+def test_the_per_protein_rates_are_restricted_to_the_plotted_proteins():
+    """Same rule as the records panel: a row for a protein no panel plots is a
+    row the reader cannot find."""
+    pytest.importorskip("numpy")
+    from explorer.payload import _censoring
+
+    values = [[1.0, 0.0, 0.4], [0.0, 1.0, 0.0], [0.4, 0.0, 1.0]]
+    config, spaces = _matrix_fixture(
+        _matrix_fixture_dir(), values, {"a": "LC0", "b": "LC0", "c": "LC1"}
+    )
+    censoring = _censoring(config, spaces)
+    assert {row["protid"] for row in censoring["rates"]} == {"a", "b", "c"}
+    assert censoring["n_proteins"] == 3
+    rates = [row["rate"] for row in censoring["rates"]]
+    assert rates == sorted(rates, reverse=True), "worst-censored first"
+
+
+def test_the_censoring_panel_prints_both_sides_and_never_only_the_rate():
+    """A rate alone cannot distinguish a cap from sparsity, which is the one
+    thing this panel exists to say."""
+    from explorer.template import render
+
+    html = render({"spaces": [], "censoring": {}}, plotly_js="", title="t")
+    assert "SHEET_PANELS.censoring" in html, "the censoring kind is not registered"
+    assert "active.censoring" in html, "nothing on the page reads the censoring key"
+    body = html[html.index("SHEET_PANELS.censoring") :][:4200]
+    assert "cap_detected" in body
+    assert "rows_at_max_fraction" in body and "cols_at_max_fraction" in body
+    assert "exhaustive" in body, "an uncensored cohort is not told it is uncensored"
+    assert "measured_zero_count" in body, "the mask's own assumption is not reported"

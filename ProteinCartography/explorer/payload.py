@@ -376,6 +376,9 @@ class ExplorerPayload:
     #: display, with the asymmetry it carries measured beside it. Empty when the
     #: config points at no matrix.
     tm_matrix: dict = field(default_factory=dict)
+    #: What the per-query cap removed, from `matrix_io.summarize_censoring`.
+    #: Carries its zero for an uncensored matrix rather than being empty.
+    censoring: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -390,6 +393,7 @@ class ExplorerPayload:
             "records": self.records,
             "pipeline": self.pipeline,
             "tm_matrix": self.tm_matrix,
+            "censoring": self.censoring,
         }
 
 
@@ -487,6 +491,7 @@ def build_payload(config, output_dir: str, analysis_name: str = "analysis") -> E
     records = _records(output_dir, index_order or [])
     pipeline = _pipeline(config, spaces)
     tm_matrix = _tm_matrix(config, spaces)
+    censoring = _censoring(config, spaces)
     # What the page HAS, named the way the catalogue names it. A panel is
     # drawable when everything it needs is in here; anything absent becomes the
     # panel's printed "awaiting ..." line rather than a blank.
@@ -511,6 +516,8 @@ def build_payload(config, output_dir: str, analysis_name: str = "analysis") -> E
         available.add("pipeline")
     if tm_matrix:
         available.add("matrix")
+    if censoring:
+        available.add("censoring")
     return ExplorerPayload(
         analysis_name=analysis_name,
         spaces=spaces,
@@ -523,6 +530,7 @@ def build_payload(config, output_dir: str, analysis_name: str = "analysis") -> E
         records=records,
         pipeline=pipeline,
         tm_matrix=tm_matrix,
+        censoring=censoring,
     )
 
 
@@ -822,6 +830,63 @@ def _tm_matrix(config, spaces: list, sort_space: str = "structure") -> dict:
         # Named here, once, so no renderer has to remember it. FOLLOWUPS #60:
         # the score is a foldseek 3Di+AA alignment score and not TM-align's.
         "value_label": "3Di+AA-derived TM (FOLLOWUPS #60), not TM-align output",
+    }
+
+
+def _censoring(config, spaces: list, sort_space: str = "structure") -> dict:
+    """What the per-query cap removed from this cohort's own matrix.
+
+    `matrix_io.summarize_censoring` already computes all of this and is what the
+    tmscore block's manifest records, so this reads the guard rather than
+    recomputing it -- the same reasoning as the signal inventory.
+
+    THE ROW/COLUMN ASYMMETRY IS THE PART WORTH DRAWING. Foldseek's `--max-seqs`
+    bounds how many partners each *query* reports, so a per-query cap piles the
+    rows up at one number while the columns stay free. A matrix with the same
+    censoring rate spread evenly is a different thing entirely, and
+    `cap_detected` refuses to call it a cap unless both halves hold.
+
+    A cohort whose matrix has no censored cells returns its zero rather than
+    nothing. That is a real and otherwise invisible property -- both shipped
+    cohorts were built from exhaustive matrices, and a reader who assumed the
+    default capped pipeline would misread every panel on the page.
+    """
+    import numpy as np
+
+    space = next((s for s in spaces if s.space_id == sort_space), None)
+    if space is None:
+        return {}
+    path = ""
+    for block in (getattr(config, "blocks", {}) or {}).values():
+        if getattr(block, "provider", "") == "tmscore":
+            path = (getattr(block, "params", {}) or {}).get("matrix_path") or ""
+            break
+    if not path or not os.path.exists(path):
+        return {}
+
+    from matrix_io import load_labeled_matrix, summarize_censoring
+
+    matrix = load_labeled_matrix(path, repair=True)
+    summary = summarize_censoring(matrix)
+    per_protid = matrix.censoring_rate_per_protid()
+    rates = [
+        {"protid": str(protid), "rate": float(rate)}
+        for protid, rate in per_protid.items()
+        if str(protid) in set(space.protids)
+    ]
+    rates.sort(key=lambda row: (-row["rate"], row["protid"]))
+    values = np.array([row["rate"] for row in rates], dtype=float)
+    return {
+        "summary": summary,
+        # The whole per-protein list, so the panel can draw a distribution
+        # rather than three summary numbers. At n=367 this is small.
+        "rates": rates,
+        "quantiles": {
+            "min": float(values.min()) if values.size else 0.0,
+            "median": float(np.median(values)) if values.size else 0.0,
+            "max": float(values.max()) if values.size else 0.0,
+        },
+        "n_proteins": len(rates),
     }
 
 

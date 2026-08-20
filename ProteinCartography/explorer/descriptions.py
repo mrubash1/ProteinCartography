@@ -429,12 +429,29 @@ PANEL_DESCRIPTIONS = {
     ),
     "censoring": _description(
         paragraphs=[
-            "Every protein twice: where the shipped, per-query-capped matrix "
-            "puts it, and where an exhaustive all-vs-all matrix puts it. The "
-            "line between the two is how much of the position is the cap's "
-            "doing rather than the protein's.",
+            "How much of this cohort's all-vs-all comparison was never "
+            "measured. A censored cell is one the search never reported, not a "
+            "pair that scored zero -- the mask is recovered from the fill "
+            "token, because a genuinely measured zero and an unmeasured cell "
+            "look identical once both are numbers.",
+            "The row/column split is the evidence, not the rate. Foldseek's "
+            "`--max-seqs` bounds how many partners each *query* reports, so a "
+            "per-query cap piles the rows up at one number while the columns "
+            "stay free. A matrix whose rows AND columns both pile up is "
+            "uniform for some other reason, and this panel refuses to call "
+            "that a cap.",
         ],
-        sources=["diagnostics/censoring.py"],
+        hazards=[
+            "Censoring rate is a property of how well a protein was measured, "
+            "not of the protein. It correlates with length, which is why it is "
+            "overlay-only and may never enter a geometry (ADR 0003).",
+            "This panel reports the matrix this cohort was actually built "
+            "from. It does not compare a capped run against an exhaustive one "
+            "-- that needs two reductions and a co-registration, and drawing "
+            "two independent UMAP layouts side by side without one would "
+            "invite exactly the misreading 6.04 warns about.",
+        ],
+        sources=["matrix_io.py:530", "docs/adr/0009", "docs/adr/0003"],
     ),
     "contributions": _description(
         paragraphs=[
