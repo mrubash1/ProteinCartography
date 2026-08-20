@@ -205,6 +205,22 @@ td.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; fo
 .plate-hazard { margin-top: 7px; border-left: 3px solid var(--caution);
   background: #fdf9ef; padding: 5px 8px; font-size: 11.5px; }
 .plate-hazard b { color: var(--caution); }
+/* The perturbation grid. Chips rather than numbers: no scan has been run, and a
+   cell carrying a number here would be read as a measurement of this cohort. */
+.gridtable td.cell { font-size: 10.5px; text-transform: uppercase;
+  letter-spacing: .03em; white-space: nowrap; }
+.gridtable th .cost { display: block; font-size: 10px; font-weight: 400;
+  text-transform: none; letter-spacing: 0; color: var(--muted); }
+/* Four states and they must stay four: a cell that works, a cell flat by
+   construction, a control that is not a measurement, and one the source simply
+   does not annotate -- which is NOT the source calling it useless. */
+.kind-informative { color: var(--ok); }
+.kind-empty { color: var(--bad); }
+.kind-control { color: #5a4f8a; }
+.kind-unannotated { color: var(--muted); }
+.gridnotes { padding: 4px 12px 11px; font-size: 12px; }
+.gridnotes p { margin: 0 0 7px; }
+.gridnotes .kind { font-size: 9.5px; text-transform: uppercase; letter-spacing: .04em; }
 /* The verdict word inside a report row, where the banner's full-width tint
    would fight the table. Colour only. */
 .v-ok { color: var(--ok); }
@@ -831,6 +847,74 @@ SHEET_PANELS.records = {
     filter.addEventListener("input", paint);
     wrap.append(bar, table);
     paint();
+    return wrap;
+  },
+};
+
+// The 5x5 perturbation grid, whose EMPTY CELLS are the content: the
+// combination people reach for first -- one alanine against TM-score -- is the
+// flattest cell in it, and a grid that did not say so would be a menu.
+//
+// The chips are the grid and the notes are listed under it. Twenty-five cells
+// of prose in a table makes a wall nobody compares across; twenty-five chips
+// can be read in one look, and the nine annotated cells keep their words.
+SHEET_PANELS.grid = {
+  isEmpty(panel) {
+    return !(((panel.content || {}).cells) || null);
+  },
+  render(panel) {
+    const content = panel.content || {};
+    const perturbations = content.perturbations || [];
+    const observables = content.observables || [];
+    const cells = content.cells || {};
+    const wrap = document.createElement("div");
+    if (content.note) {
+      const note = document.createElement("div");
+      note.className = "table-note";
+      note.innerHTML = inlineMarkup(content.note);
+      wrap.append(note);
+    }
+    const head =
+      "<th></th>" +
+      observables
+        .map((obs) => `<th title="${escapeHtml(obs.sub || "")}">${escapeHtml(obs.name)}</th>`)
+        .join("");
+    const body = perturbations
+      .map((pert) => {
+        const row = observables
+          .map((obs) => {
+            const cell = cells[`${pert.key}|${obs.key}`] || {};
+            const kind = cell.kind || "unannotated";
+            return `<td class="cell kind-${escapeHtml(kind.split(" ")[0])}" ` +
+              `title="${escapeHtml(cell.note || "")}">${escapeHtml(kind)}</td>`;
+          })
+          .join("");
+        return `<tr><th title="${escapeHtml(pert.sub || "")}">${escapeHtml(pert.name)}` +
+          `<span class="cost">${escapeHtml(pert.cost || "")}</span></th>${row}</tr>`;
+      })
+      .join("");
+    const table = document.createElement("div");
+    table.className = "scroll-x";
+    table.innerHTML =
+      `<table class="gridtable"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+    wrap.append(table);
+    // The annotated cells, in the grid's own order, with the source's words.
+    // A tooltip is not a place to put an argument.
+    const notes = document.createElement("div");
+    notes.className = "gridnotes";
+    perturbations.forEach((pert) => {
+      observables.forEach((obs) => {
+        const cell = cells[`${pert.key}|${obs.key}`] || {};
+        if (!cell.kind || cell.kind === "unannotated") return;
+        const item = document.createElement("p");
+        item.innerHTML =
+          `<b>${escapeHtml(pert.name)} × ${escapeHtml(obs.name)}</b> ` +
+          `<span class="kind kind-${escapeHtml(cell.kind.split(" ")[0])}">` +
+          `${escapeHtml(cell.kind)}</span><br>${inlineMarkup(cell.note || "")}`;
+        notes.append(item);
+      });
+    });
+    wrap.append(notes);
     return wrap;
   },
 };

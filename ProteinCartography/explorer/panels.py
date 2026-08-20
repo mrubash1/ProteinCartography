@@ -342,6 +342,134 @@ def _signal_inventory() -> dict:
     }
 
 
+#: The five perturbations and five observables of the source's 7.02 grid, and
+#: the nine cells it annotates.
+#:
+#: THE EMPTY CELLS ARE THE CONTENT. The source's argument is that the
+#: combination people reach for first -- one alanine against TM-score -- is the
+#: emptiest cell in the grid, because a structure predictor leans on the MSA and
+#: one substitution barely moves it. A grid drawn without that is a menu; a grid
+#: drawn with it is the reason not to spend 126 folding runs.
+#:
+#: `kind` is a READING of the source's note and the note is printed beside it,
+#: so a reader can check the classification rather than take it. Three kinds
+#: that must not be collapsed: a cell that works, a cell that is flat by
+#: construction, and a control that is not a measurement at all.
+#:
+#: The sixteen unannotated cells are marked as unannotated and NOT as empty. The
+#: source not commenting on a combination is not the source calling it useless,
+#: and inventing the difference would be the exact failure this panel is about.
+PERTURBATIONS = (
+    ("ala1", "Single alanine", "one residue -> Ala, refold each", "126 folds"),
+    ("polyA", "Poly-Ala window", "11 residues -> Ala, length preserved", "116 folds"),
+    ("segdel", "Segment deletion", "21-residue sliding deletion", "106 folds"),
+    ("domdel", "Domain deletion", "remove one domain entirely", "2 folds"),
+    ("shuffle", "Shuffled control", "composition matched, order scrambled", "10 folds"),
+)
+
+OBSERVABLES = (
+    ("tm", "TM-score to WT", "refold, structurally align"),
+    ("plddt", "delta mean pLDDT", "predictor confidence shift"),
+    ("esm", "PLM log-odds", "masked-marginal against WT"),
+    ("disp", "Map displacement", "re-embed, measure movement"),
+    ("flip", "Annotation change", "EC / GO / localization flips"),
+)
+
+#: cell key -> (kind, the source's own note). Nine of twenty-five.
+GRID_CELLS = {
+    "ala1|tm": (
+        "empty by construction",
+        "This is the combination people reach for first and it is the emptiest "
+        "cell in the grid. Structure predictors lean on the MSA, and one "
+        "substitution barely moves it, so nearly every mutant returns a TM-score "
+        "above 0.99. You paid for 126 folding runs and bought a flat line.",
+    ),
+    "ala1|esm": (
+        "informative",
+        "The only cell with real single-residue resolution, and it needs no "
+        "folding at all. One forward pass gives the whole L x 20 matrix. The "
+        "catch: it scores conservation, so a catalytic residue and a buried "
+        "structural residue look identical.",
+    ),
+    "ala1|disp": (
+        "empty by construction",
+        "Zero by construction. If the structure did not move, the TM-score "
+        "profile did not move, so the point does not move. Map displacement can "
+        "only respond to perturbations that change the fold.",
+    ),
+    "polyA|tm": (
+        "informative",
+        "Eleven alanines is enough to unfold a helix or collapse a loop, so the "
+        "structural readout finally lifts off the floor, but only where "
+        "secondary structure depended on side chains. Interpret plateaus, not "
+        "peaks.",
+    ),
+    "segdel|tm": (
+        "informative",
+        "Works, and works well. Deleting 21 residues genuinely changes the fold, "
+        "and the profile picks up exactly the regions the protein cannot do "
+        "without. This is the honest structural ablation.",
+    ),
+    "segdel|disp": (
+        "informative",
+        "The version that answers the map question directly: delete this segment "
+        "and the protein leaves its cluster. That is a testable claim about what "
+        "the cluster membership was resting on.",
+    ),
+    "domdel|esm": (
+        "empty by construction",
+        "Length changed, so per-position likelihoods are not comparable to wild "
+        "type. The number will compute and it will mean nothing.",
+    ),
+    "shuffle|tm": (
+        "control",
+        "The negative control every ablation panel needs. If a shuffled sequence "
+        "still folds to something with a high TM-score to WT, the predictor is "
+        "echoing the MSA rather than reading the sequence.",
+    ),
+    "shuffle|esm": (
+        "control",
+        "A control, not a measurement. It tells you the floor of the score, "
+        "which is the number every real perturbation should be compared against.",
+    ),
+}
+
+#: The four cell states, which must stay four. Collapsing "the source does not
+#: annotate this" into "this is empty" would invent the source's opinion, and
+#: collapsing a control into a measurement is how a noise floor gets quoted as
+#: a result.
+CELL_KINDS = ("informative", "empty by construction", "control", "unannotated")
+
+
+def _perturbation_grid() -> dict:
+    cells = {}
+    for pert_key, _, _, _ in PERTURBATIONS:
+        for obs_key, _, _ in OBSERVABLES:
+            key = f"{pert_key}|{obs_key}"
+            kind, note = GRID_CELLS.get(
+                key, ("unannotated", "The source does not annotate this combination.")
+            )
+            cells[key] = {"kind": kind, "note": note}
+    return {
+        "perturbations": [
+            {"key": key, "name": name, "sub": sub, "cost": cost}
+            for key, name, sub, cost in PERTURBATIONS
+        ],
+        "observables": [
+            {"key": key, "name": name, "sub": sub} for key, name, sub in OBSERVABLES
+        ],
+        "cells": cells,
+        "kinds": list(CELL_KINDS),
+        "note": (
+            "No scan has been run: these are the twenty-five combinations, not "
+            "results. The point of the grid is which cells are flat before you "
+            "pay for them -- one alanine against TM-score is the emptiest cell "
+            "and the one most people run first. Each classification is a reading "
+            "of the source's note, which is printed with it."
+        ),
+    }
+
+
 #: The seven discordance patterns of the source's 6.06, verbatim.
 #:
 #: Discordance is not one phenomenon, and the source's point is that the TEST
@@ -660,6 +788,7 @@ CATALOGUE = (
             "Five perturbations against five observables. The source's point is "
             "that the EMPTY CELLS are the content — this grid is not a stub."
         ),
+        content=_perturbation_grid(),
     ),
     # --- time and innovation --------------------------------------------------
     PanelSpec(

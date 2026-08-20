@@ -1534,3 +1534,77 @@ def test_the_discordance_panel_reuses_the_shared_table_renderer():
     assert "gene tree" in entry.content["note"], (
         "the panel must say this pipeline cannot detect any of these"
     )
+
+
+# ==========================================================================
+# The perturbation grid, whose empty cells are its content.
+# ==========================================================================
+
+
+def test_the_grid_is_complete_and_every_cell_carries_one_of_four_kinds():
+    """Five perturbations against five observables is twenty-five cells, and a
+    grid with holes in it would be indistinguishable from a grid whose holes
+    are the finding."""
+    from explorer.panels import CELL_KINDS, OBSERVABLES, PERTURBATIONS, _perturbation_grid
+
+    content = _perturbation_grid()
+    assert len(content["perturbations"]) == len(PERTURBATIONS) == 5
+    assert len(content["observables"]) == len(OBSERVABLES) == 5
+    assert len(content["cells"]) == 25
+    for key, cell in content["cells"].items():
+        assert cell["kind"] in CELL_KINDS, key
+        assert cell["note"], key
+
+
+def test_the_cell_people_run_first_is_marked_flat_and_says_what_it_costs():
+    """The source's whole point about this grid. One alanine against TM-score
+    is the emptiest cell and the one most people pay for first, so the panel
+    has to carry both halves: that it is flat, and that it is 126 folds."""
+    from explorer.panels import _perturbation_grid
+
+    content = _perturbation_grid()
+    cell = content["cells"]["ala1|tm"]
+    assert cell["kind"] == "empty by construction"
+    assert "flat line" in cell["note"]
+    single = next(p for p in content["perturbations"] if p["key"] == "ala1")
+    assert single["cost"] == "126 folds"
+
+
+def test_an_unannotated_cell_is_not_reported_as_an_empty_one():
+    """The source not commenting on a combination is not the source calling it
+    useless. Sixteen of the twenty-five are unannotated, and inventing the
+    difference would be the exact failure this panel exists to point at."""
+    from explorer.panels import GRID_CELLS, _perturbation_grid
+
+    cells = _perturbation_grid()["cells"]
+    unannotated = [key for key, cell in cells.items() if cell["kind"] == "unannotated"]
+    assert len(unannotated) == 25 - len(GRID_CELLS) == 16
+    assert cells["polyA|flip"]["note"] == "The source does not annotate this combination."
+
+
+def test_a_control_cell_is_not_classified_as_a_measurement():
+    """A shuffled control tells you the floor of the score. Classified as
+    informative it would be quoted as a result, which is how a noise floor
+    ends up in a figure legend as a finding."""
+    from explorer.panels import _perturbation_grid
+
+    cells = _perturbation_grid()["cells"]
+    assert cells["shuffle|tm"]["kind"] == "control"
+    assert cells["shuffle|esm"]["kind"] == "control"
+    informative = [key for key, cell in cells.items() if cell["kind"] == "informative"]
+    assert not any(key.startswith("shuffle") for key in informative)
+
+
+def test_the_grid_renderer_draws_no_numbers():
+    """No scan has been run. A number in a cell here would be read as a
+    measurement of this cohort, which is the same misreading the synthetic
+    provenance tag exists to prevent -- so the cells carry kinds and the notes
+    carry the argument."""
+    from explorer.template import render
+
+    html = render({"spaces": []}, plotly_js="", title="t")
+    assert "SHEET_PANELS.grid" in html, "the grid kind is not registered"
+    body = html[html.index("SHEET_PANELS.grid") :][:3000]
+    assert "cell.kind" in body, "the cells do not render their kind"
+    assert "fmtValue" not in body, "the grid formats a number, and it has none to format"
+    assert "gridnotes" in body, "the source's notes are only in tooltips"
