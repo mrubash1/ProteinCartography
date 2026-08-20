@@ -76,6 +76,9 @@ button.on { background: var(--ink); color: #fff; border-color: var(--ink); }
 .shares { padding: 6px 12px; font-size: 12px; color: #333;
   border-bottom: 1px solid var(--line); background: #fbfbfc; }
 .shares .drift { color: var(--caution); }
+.column-warn { border-top: 0; background: #fdf9ef; color: #7a4e00;
+  border-left: 3px solid var(--caution); }
+.column-warn b { color: var(--caution); }
 .plot { height: 330px; }
 /* The similarity matrix needs to be square and readable; 330px makes a 367-row
    heatmap four cells tall per cluster. */
@@ -757,6 +760,44 @@ function panelShell(space) {
         })
         .join(" · ");
     panel.append(shares);
+  }
+  // The within-block twin of the line above. A fused space is apportioned
+  // between its blocks; a one-block feature space is apportioned between its
+  // own columns, and it is the same question one level down: what is this
+  // picture actually made of. Euclidean distance on raw columns is a sum of
+  // per-column squared differences, so a column's share of the variance IS its
+  // share of the squared distance -- this is the quantity, not a proxy for it.
+  if ((space.column_shares || []).length) {
+    const columns = space.column_shares.slice().sort((a, b) => b.share - a.share);
+    const top = columns[0];
+    const even = top.share_if_standardized;
+    const bar = document.createElement("div");
+    bar.className = "shares";
+    bar.innerHTML =
+      "made of: " +
+      columns
+        .map((c) => `<b>${escapeHtml(String(c.column))}</b> ${(100 * c.share).toFixed(1)}%`)
+        .join(" · ");
+    panel.append(bar);
+    // A single column carrying almost the whole distance is not a fact about
+    // the proteins, it is a fact about the units. Said here rather than in the
+    // fold-out, because a reader who does not open the fold-out will otherwise
+    // read this map as a map of physicochemistry.
+    if (even && top.share > 2 * even) {
+      const warn = document.createElement("div");
+      warn.className = "shares column-warn";
+      warn.innerHTML =
+        `<b>This map is mostly ${escapeHtml(String(top.column))}.</b> ` +
+        `Its ${(100 * top.share).toFixed(1)}% is a fact about the units, not about the ` +
+        "proteins: these columns enter the distance raw, on incomparable scales. " +
+        (top.declared_normalization
+          ? `The block declares <code>${escapeHtml(String(top.declared_normalization))}</code>, ` +
+            "which would give every column " + (100 * even).toFixed(0) + "% — but nothing " +
+            "reads that field (FOLLOWUPS #32). "
+          : "") +
+        "Colour by each descriptor in turn to see which structure is which.";
+      panel.append(warn);
+    }
   }
   const explain = explainBlock(space.description);
   if (explain) panel.append(explain);

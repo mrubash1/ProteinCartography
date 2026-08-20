@@ -107,6 +107,9 @@ class SpacePayload:
     #: ``{protid: neighborhood_stability}`` for this space. Per space rather
     #: than per reducer, because that is what the measurement is.
     stability: dict = field(default_factory=dict)
+    #: Per named column, its share of this space's squared distance. Empty
+    #: unless the space is one feature block whose columns are named.
+    column_shares: list = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -121,6 +124,7 @@ class SpacePayload:
             "panel_type": self.panel_type,
             "description": self.description,
             "stability": self.stability,
+            "column_shares": self.column_shares,
         }
 
 
@@ -464,6 +468,127 @@ def _overlays_from_features(path: str, protids: list) -> dict:
     return overlays
 
 
+#: A feature block may expose its columns as overlays only if it has few enough
+#: of them to name. The biophysical block has four; the 3Di block has 4,982
+#: 3-mer frequencies, and putting those in a dropdown would be absurd rather
+#: than merely long. 16 is chosen to be comfortably above the widest plausible
+#: descriptor set and far below any k-mer vocabulary -- there is no continuum
+#: between the two, so the exact value is not load-bearing.
+MAX_NAMED_BLOCK_COLUMNS = 16
+
+
+def _column_shares(output_dir: str, config, space) -> list:
+    """Each named column's share of a single-block space's squared distance.
+
+    The within-block twin of `_contributions`, which apportions a FUSED space
+    between its blocks. This apportions an unfused feature space between its
+    own columns, and it is the same question one level down: what is this
+    picture actually made of.
+
+    The arithmetic is exact rather than an analogy. Euclidean distance on raw
+    columns is a sum of per-column squared differences, so a column's share of
+    the total variance IS its share of the squared distance, averaged over
+    pairs. Nothing here is a proxy for the thing; it is the thing.
+
+    Returns ``[]`` unless the space has exactly one block and that block names
+    its columns -- with several blocks the apportionment is the fused
+    contribution, which the run already computes, and with 4,982 unnamed 3-mer
+    columns there is nothing a reader could do with the answer.
+    """
+    import numpy as np
+
+    blocks = list(getattr(space, "blocks", ()) or ())
+    if len(blocks) != 1:
+        return []
+    block_id = blocks[0]
+    directory = os.path.join(output_dir, layout.BLOCKS_DIRNAME, block_id)
+    manifest = _read_json(os.path.join(directory, layout.BLOCK_MANIFEST_FILENAME)) or {}
+    names = list((manifest.get("extra") or {}).get("descriptors") or [])
+    features_path = os.path.join(directory, "features.npy")
+    if not names or len(names) > MAX_NAMED_BLOCK_COLUMNS or not os.path.exists(features_path):
+        return []
+    values = np.load(features_path)
+    if values.ndim != 2 or values.shape[1] != len(names):
+        return []
+    variance = values.var(axis=0)
+    total = float(variance.sum())
+    if total <= 0:
+        return []
+    # What the block's own declared normalization would have produced. Every
+    # column standardized has equal variance by construction, so this is 1/n --
+    # stated as a number rather than left for the reader to work out, because
+    # the gap between the two columns is the whole point of showing either.
+    declared = getattr(config.blocks.get(block_id), "normalization", None)
+    return [
+        {
+            "column": name,
+            "variance": float(variance[index]),
+            "share": float(variance[index] / total),
+            "share_if_standardized": 1.0 / len(names),
+            "declared_normalization": declared,
+        }
+        for index, name in enumerate(names)
+    ]
+
+
+def _block_column_overlays(output_dir: str, config, protids: list) -> dict:
+    """Per-descriptor overlays, read from the blocks that a geometry is built ON.
+
+    THIS IS THE ONLY OVERLAY SOURCE THAT COLOURS A MAP BY ITS OWN INPUT. Every
+    other overlay comes from the aggregated features table and is, by
+    construction, something the geometry never saw. These are the columns the
+    `physicochemistry` space is a reduction OF, so colouring that map by one of
+    them answers "which descriptor is this picture actually made of" -- a
+    question no feature-table overlay can answer.
+
+    That is worth having for a specific reason. The biophysical block declares
+    `normalization="zscore_within"` and nothing reads the field (FOLLOWUPS #32),
+    so its four columns enter the distance in their raw units: isoelectric point
+    runs about 4 to 12 and charge per residue about -0.1 to 0.1. The prediction
+    is that the map is mostly pI. Before this, that was an argument; now it is
+    something a reader can see by changing a dropdown.
+
+    Named ``<block_id>:<column>`` so the source travels with the number and a
+    descriptor cannot collide with a same-named column of the features table.
+
+    Only blocks whose manifest names its columns are read, and only when there
+    are few enough of them -- see `MAX_NAMED_BLOCK_COLUMNS`.
+    """
+    import numpy as np
+
+    overlays: dict = {}
+    order = {protid: i for i, protid in enumerate(protids)}
+    for block_id in sorted(getattr(config, "blocks", {}) or {}):
+        directory = os.path.join(output_dir, layout.BLOCKS_DIRNAME, block_id)
+        manifest = _read_json(os.path.join(directory, layout.BLOCK_MANIFEST_FILENAME)) or {}
+        names = list((manifest.get("extra") or {}).get("descriptors") or [])
+        if not names or len(names) > MAX_NAMED_BLOCK_COLUMNS:
+            continue
+        features_path = os.path.join(directory, "features.npy")
+        protids_path = os.path.join(directory, "protids.txt")
+        if not (os.path.exists(features_path) and os.path.exists(protids_path)):
+            continue
+        with open(protids_path) as handle:
+            block_protids = [line.strip() for line in handle if line.strip()]
+        values = np.load(features_path)
+        # The manifest names the columns and the array supplies them; if the two
+        # disagree the block was written by a different version of the provider
+        # and guessing which columns are which would mislabel every point.
+        if values.ndim != 2 or values.shape[1] != len(names):
+            continue
+        if values.shape[0] != len(block_protids):
+            continue
+        for index, name in enumerate(names):
+            column = [None] * len(protids)
+            for row, protid in enumerate(block_protids):
+                at = order.get(protid)
+                if at is not None:
+                    value = float(values[row, index])
+                    column[at] = None if not np.isfinite(value) else value
+            overlays[f"{block_id}:{name}"] = {"kind": "continuous", "values": column}
+    return overlays
+
+
 def build_payload(config, output_dir: str, analysis_name: str = "analysis") -> ExplorerPayload:
     """Read a finished run and assemble the explorer's data.
 
@@ -507,6 +632,7 @@ def build_payload(config, output_dir: str, analysis_name: str = "analysis") -> E
                 diagnostics=summary,
                 contributions=contributions,
                 stability=_stability_series(directory, protids),
+                column_shares=_column_shares(output_dir, config, space),
                 description=descriptions.describe_space(
                     space_id,
                     strategy=getattr(space, "strategy", "none"),
@@ -521,6 +647,10 @@ def build_payload(config, output_dir: str, analysis_name: str = "analysis") -> E
     overlays = _overlays_from_features(
         _features_table(output_dir, analysis_name), index_order or []
     )
+    # The blocks' own columns, added after the feature table so a descriptor
+    # never silently displaces a same-named column the table already had.
+    for name, overlay in _block_column_overlays(output_dir, config, index_order or []).items():
+        overlays.setdefault(name, overlay)
     provenance = _provenance(output_dir, config, spaces)
     records = _records(output_dir, index_order or [])
     pipeline = _pipeline(config, spaces)

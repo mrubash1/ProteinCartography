@@ -2294,3 +2294,141 @@ def test_the_stability_panel_says_it_judges_the_space_not_the_layout():
     body = html[html.index("SHEET_PANELS.stability") :][:3000]
     assert "space.stability" in body
     assert "not the drawing of it" in body or "not the layout" in body
+
+
+# ==========================================================================
+# Per-descriptor overlays, and each descriptor's share of the distance.
+# The only overlays on the page that colour a map by its own input.
+# ==========================================================================
+
+
+def _biophys_block(tmp_path, names, values):
+    """A feature block on disk: features.npy, protids.txt and a manifest."""
+    import numpy as np
+
+    directory = tmp_path / "blocks" / "biophys"
+    directory.mkdir(parents=True)
+    array = np.asarray(values, dtype=float)
+    np.save(directory / "features.npy", array)
+    protids = [f"p{i}" for i in range(array.shape[0])]
+    (directory / "protids.txt").write_text("\n".join(protids) + "\n")
+    (directory / "manifest.json").write_text(json.dumps({"extra": {"descriptors": list(names)}}))
+    return protids
+
+
+def test_a_named_feature_block_becomes_one_overlay_per_column(tmp_path):
+    """These are the only overlays that colour a map by the thing it was built
+    from. Every other overlay comes from the features table and is, by
+    construction, something the geometry never saw."""
+    pytest.importorskip("numpy")
+    from explorer.payload import _block_column_overlays
+
+    class Config:
+        blocks = {"biophys": object()}
+
+    protids = _biophys_block(tmp_path, ["gravy", "pi"], [[0.1, 7.0], [0.2, 5.0]])
+    overlays = _block_column_overlays(str(tmp_path), Config(), protids)
+    assert sorted(overlays) == ["biophys:gravy", "biophys:pi"]
+    assert overlays["biophys:pi"]["values"] == [7.0, 5.0]
+    assert overlays["biophys:gravy"]["kind"] == "continuous"
+
+
+def test_a_block_with_thousands_of_columns_is_not_offered_as_overlays(tmp_path):
+    """The 3Di block has 4,982 3-mer frequency columns. Putting those in a
+    dropdown would be absurd rather than merely long, so a block only exposes
+    its columns when it has few enough of them to name."""
+    pytest.importorskip("numpy")
+    import numpy as np
+    from explorer.payload import MAX_NAMED_BLOCK_COLUMNS, _block_column_overlays
+
+    class Config:
+        blocks = {"biophys": object()}
+
+    wide = MAX_NAMED_BLOCK_COLUMNS + 1
+    names = [f"kmer{i}" for i in range(wide)]
+    protids = _biophys_block(tmp_path, names, np.zeros((2, wide)))
+    assert _block_column_overlays(str(tmp_path), Config(), protids) == {}
+
+
+def test_a_manifest_disagreeing_with_its_array_yields_nothing(tmp_path):
+    """If the names and the columns disagree the block was written by a
+    different version of the provider, and guessing which column is which would
+    mislabel every point on the map."""
+    pytest.importorskip("numpy")
+    from explorer.payload import _block_column_overlays
+
+    class Config:
+        blocks = {"biophys": object()}
+
+    protids = _biophys_block(tmp_path, ["only_one_name"], [[0.1, 7.0], [0.2, 5.0]])
+    assert _block_column_overlays(str(tmp_path), Config(), protids) == {}
+
+
+def test_a_descriptor_never_displaces_a_feature_table_column_of_the_same_name():
+    """The block columns are added with `setdefault` after the table's, and they
+    carry a `block:` prefix so the source travels with the number."""
+    import inspect
+
+    from explorer import payload
+
+    source = inspect.getsource(payload.build_payload)
+    assert "overlays.setdefault(name, overlay)" in source
+    assert 'f"{block_id}:{name}"' in inspect.getsource(payload._block_column_overlays)
+
+
+def test_each_column_s_share_of_the_distance_is_reported(tmp_path):
+    """Euclidean distance on raw columns is a sum of per-column squared
+    differences, so a column's share of the variance IS its share of the
+    squared distance. This is the quantity, not a proxy for it."""
+    pytest.importorskip("numpy")
+    from explorer.payload import _column_shares
+
+    class Block:
+        normalization = "zscore_within"
+
+    class Space:
+        blocks = ("biophys",)
+
+    class Config:
+        blocks = {"biophys": Block()}
+
+    # One column with all the variance and one with none.
+    _biophys_block(tmp_path, ["flat", "wide"], [[1.0, 0.0], [1.0, 10.0]])
+    shares = _column_shares(str(tmp_path), Config(), Space())
+    by_name = {row["column"]: row for row in shares}
+    assert by_name["flat"]["share"] == pytest.approx(0.0)
+    assert by_name["wide"]["share"] == pytest.approx(1.0)
+    assert by_name["wide"]["share_if_standardized"] == pytest.approx(0.5)
+    assert by_name["wide"]["declared_normalization"] == "zscore_within"
+
+
+def test_a_fused_space_reports_block_contributions_and_not_column_shares(tmp_path):
+    """With several blocks the apportionment between them is the fused
+    contribution, which the run already computes. Reporting columns as well
+    would be two different answers to one question."""
+    pytest.importorskip("numpy")
+    from explorer.payload import _column_shares
+
+    class Space:
+        blocks = ("biophys", "tmscore")
+
+    class Config:
+        blocks: dict = {}
+
+    _biophys_block(tmp_path, ["a", "b"], [[1.0, 0.0], [1.0, 10.0]])
+    assert _column_shares(str(tmp_path), Config(), Space()) == []
+
+
+def test_the_map_says_when_one_column_carries_almost_all_of_it():
+    """FOLLOWUPS #32, made visible. The biophysical block declares
+    `zscore_within` and nothing reads the field, so its columns enter the
+    distance raw: on both shipped cohorts isoelectric point is over 97% of it.
+    A reader who does not open the fold-out would otherwise read that map as a
+    map of physicochemistry."""
+    from explorer.template import render
+
+    html = render({"spaces": []}, plotly_js="", title="t")
+    assert "space.column_shares" in html, "the shares never reach the panel"
+    assert "This map is mostly" in html
+    assert "a fact about the units, not about the" in html
+    assert "FOLLOWUPS #32" in html, "the unread field is not named"
