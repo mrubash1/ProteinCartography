@@ -230,6 +230,49 @@ def _readable_mask(directory: str, diagnostics, protids: list) -> list:
     return [bool(readable.get(p, True)) for p in protids]
 
 
+#: The columns the records panel shows, and what it calls them. Four, because
+#: the panel answers "which protein is that point" and nothing else; the feature
+#: table has 23 columns and shipping all of them would be a database export
+#: rather than a panel.
+RECORD_COLUMNS = (
+    ("protid", "accession"),
+    ("Protein names", "protein"),
+    ("Organism", "organism"),
+    ("Length", "length"),
+)
+
+
+def _records(output_dir: str, protids: list) -> list:
+    """Accession, protein, organism and length, in the panel's own order.
+
+    Read from `protein_features/uniprot_features.tsv`, which is what the
+    catalogue entry says it requires -- deliberately not from the aggregated
+    features table. Overlays come from the aggregated table and are filtered
+    down to what can be a colour, so `Protein names` and `Organism` are dropped
+    from it for having too many levels. Those two are most of the point here.
+
+    Restricted to the proteins that are actually on the maps. A record for a
+    protein no panel plots would be a row a reader cannot find, and it would
+    make the table disagree with the protein count in the footer.
+    """
+    path = os.path.join(output_dir, "protein_features", "uniprot_features.tsv")
+    if not os.path.exists(path):
+        return []
+    import pandas as pd
+
+    frame = pd.read_csv(path, sep="\t", dtype=str).fillna("")
+    if "protid" not in frame.columns:
+        return []
+    wanted = set(protids)
+    rows = []
+    for record in frame.to_dict("records"):
+        protid = str(record.get("protid", ""))
+        if protid not in wanted:
+            continue
+        rows.append({name: str(record.get(column, "")) for column, name in RECORD_COLUMNS})
+    return rows
+
+
 def _space_blocks(output_dir: str, config, space) -> list:
     """Per block of one space: provider, resolved params, and its cohort facts.
 
@@ -321,6 +364,10 @@ class ExplorerPayload:
     sheets: list = field(default_factory=list)
     #: protid -> {species, leiden}. What the cursor shows beyond the accession.
     hover: dict = field(default_factory=dict)
+    #: One row per protein on the maps: accession, protein, organism, length.
+    #: Empty for a run with no UniProt feature table, in which case the records
+    #: panel says which file it is waiting for.
+    records: list = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -332,6 +379,7 @@ class ExplorerPayload:
             "panels": self.panels,
             "sheets": self.sheets,
             "hover": self.hover,
+            "records": self.records,
         }
 
 
@@ -426,6 +474,7 @@ def build_payload(config, output_dir: str, analysis_name: str = "analysis") -> E
         _features_table(output_dir, analysis_name), index_order or []
     )
     provenance = _provenance(output_dir, config, spaces)
+    records = _records(output_dir, index_order or [])
     # What the page HAS, named the way the catalogue names it. A panel is
     # drawable when everything it needs is in here; anything absent becomes the
     # panel's printed "awaiting ..." line rather than a blank.
@@ -434,7 +483,11 @@ def build_payload(config, output_dir: str, analysis_name: str = "analysis") -> E
         available.add("comparisons")
     if any(space.contributions for space in spaces):
         available.add("fused_spaces")
-    if overlays:
+    # The presence of overlays used to stand in for this. It is a different
+    # file: overlays come from the aggregated features table and records from
+    # `uniprot_features.tsv`, so a run with one and not the other advertised a
+    # records panel it could not fill.
+    if records:
         available.add("records")
     return ExplorerPayload(
         analysis_name=analysis_name,
@@ -445,6 +498,7 @@ def build_payload(config, output_dir: str, analysis_name: str = "analysis") -> E
         panels=panels.catalogue_for(available),
         sheets=panels.sheet_titles(),
         hover=_hover_fields(output_dir, {p for space in spaces for p in space.protids}),
+        records=records,
     )
 
 

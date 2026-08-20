@@ -144,6 +144,17 @@ footer code { font-size: 11.5px; }
   background: #fdf9ef; padding-top: 4px; padding-bottom: 4px; }
 .explain .hazard b { color: var(--caution); }
 .explain .src { color: var(--muted); font-size: 11px; margin-top: 8px; }
+/* A catalogue panel's own body. Bounded and scrolled inside the card, so a
+   367-row table cannot set the height of the whole sheet. */
+.tablebox { max-height: 330px; overflow: auto; }
+.tablebox thead th { position: sticky; top: 0; background: #fff; z-index: 1;
+  box-shadow: inset 0 -1px 0 var(--line); }
+.panel-bar { display: flex; gap: 10px; align-items: center; padding: 7px 12px;
+  border-bottom: 1px solid var(--line); background: #fbfbfc;
+  font-size: 11.5px; color: var(--muted); }
+.panel-bar input { font: inherit; font-size: 12px; padding: 4px 7px; flex: 1;
+  border: 1px solid var(--line); border-radius: 4px; }
+td.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; }
 </style>
 </head>
 <body>
@@ -703,6 +714,72 @@ function awaitingBlock(panel) {
   return box;
 }
 
+// --- the catalogue panel renderers -------------------------------------------
+// A SECOND registry, deliberately, and not entries in `PANELS`.
+//
+// `PANELS` renders a SPACE: its entries take `(space, panel)` and reach for
+// `space.embeddings`. A catalogue card is a different object entirely, and two
+// catalogue panels (`identity_vs_tm`, `tree_space`) already declare
+// `panel_type: "scatter"` -- a kind `PANELS` also defines. One shared map would
+// hand a catalogue panel to the space scatter renderer the day either of them
+// becomes drawable, and the failure would be a thrown exception inside a
+// forEach that takes the rest of the sheet down with it.
+//
+// Each entry is `render(panel) -> Node`, reading whatever it needs off `active`.
+const SHEET_PANELS = {};
+
+function sheetTable(columns, rows) {
+  const box = document.createElement("div");
+  box.className = "tablebox";
+  const head = columns.map((c) => `<th>${escapeHtml(c.label)}</th>`).join("");
+  const body = rows
+    .map((row) => "<tr>" + columns.map((c) => c.cell(row)).join("") + "</tr>")
+    .join("");
+  box.innerHTML = `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+  return box;
+}
+
+// Every protein on the maps, by name. Every other panel is an aggregate, and a
+// map with no way to ask "which protein is that point" is a picture.
+SHEET_PANELS.records = {
+  render() {
+    const rows = active.records || [];
+    const wrap = document.createElement("div");
+    const bar = document.createElement("div");
+    bar.className = "panel-bar";
+    const filter = document.createElement("input");
+    filter.type = "search";
+    filter.placeholder = "filter by accession, protein or organism";
+    const count = document.createElement("span");
+    bar.append(filter, count);
+    const columns = [
+      { label: "accession", cell: (r) => `<td class="mono">${escapeHtml(r.accession)}</td>` },
+      { label: "protein", cell: (r) => `<td>${escapeHtml(r.protein)}</td>` },
+      { label: "organism", cell: (r) => `<td>${escapeHtml(r.organism)}</td>` },
+      { label: "length", cell: (r) => `<td>${escapeHtml(r.length)}</td>` },
+    ];
+    let table = sheetTable(columns, rows);
+    // The count is of the FILTERED rows against the total, so a filter that
+    // matches nothing says so rather than showing an empty table that looks
+    // like a cohort with no proteins in it.
+    const paint = () => {
+      const needle = filter.value.trim().toLowerCase();
+      const shown = needle
+        ? rows.filter((r) =>
+            `${r.accession} ${r.protein} ${r.organism}`.toLowerCase().includes(needle))
+        : rows;
+      count.textContent = `${shown.length} of ${rows.length} protein(s)`;
+      const next = sheetTable(columns, shown);
+      table.replaceWith(next);
+      table = next;
+    };
+    filter.addEventListener("input", paint);
+    wrap.append(bar, table);
+    paint();
+    return wrap;
+  },
+};
+
 function renderSheet(sheetId) {
   state.sheet = sheetId;
   Array.from(el("sheets").children).forEach((b) => {
@@ -746,7 +823,10 @@ function renderSheet(sheetId) {
   holder.style.gap = "14px";
   wanted.forEach((panel) => {
     const card = panelCard(panel);
-    card.append(panel.drawable ? drawablePlaceholder(panel) : awaitingBlock(panel));
+    const renderer = SHEET_PANELS[panel.panel_type];
+    if (!panel.drawable) card.append(awaitingBlock(panel));
+    else if (renderer) card.append(renderer.render(panel));
+    else card.append(drawablePlaceholder(panel));
     holder.append(card);
   });
   body.append(holder);
@@ -783,7 +863,7 @@ function renderSheets() {
     const sheetPanels = (active.panels || []).filter(
       (p) => p.sheet === sheet.sheet && !BUILT_ELSEWHERE.has(p.panel_type)
     );
-    const blank = sheetPanels.filter((p) => !p.drawable || !PANELS[p.panel_type]).length;
+    const blank = sheetPanels.filter((p) => !p.drawable || !SHEET_PANELS[p.panel_type]).length;
     button.textContent = blank ? `${sheet.title} (${blank} empty)` : sheet.title;
     button.addEventListener("click", () => renderSheet(sheet.sheet));
     bar.append(button);
