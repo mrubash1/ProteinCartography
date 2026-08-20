@@ -1148,3 +1148,128 @@ def test_the_template_reads_the_records_key_it_is_sent():
     assert re.search(
         r"of \$\{rows\.length\} protein\(s\)", html
     ), "the count must be of the filtered rows against the total"
+
+
+# ==========================================================================
+# The diagnostics report. Its section ORDER is the content -- 7.03 E2 puts
+# the map last on purpose -- so the order is asserted, not just the sections.
+# ==========================================================================
+
+
+def test_the_report_sections_are_in_the_source_s_fixed_order():
+    """Cohort, coverage, geometry, rate fit, and only THEN the map.
+
+    Written out rather than derived so that reordering the tuple has to
+    reorder this list too. The map being fifth is the argument the section
+    exists to make: a map with no diagnostics beside it is the artifact the
+    source document is against, and a report that opened with the map would
+    reproduce it while looking complete.
+    """
+    from explorer.panels import REPORT_SECTIONS
+
+    assert [s["section_id"] for s in REPORT_SECTIONS] == [
+        "cohort",
+        "coverage",
+        "geometry",
+        "rate",
+        "map",
+    ]
+    assert REPORT_SECTIONS[-1]["section_id"] == "map", "the map must be last"
+
+
+def test_the_report_panel_carries_its_sections_into_the_payload():
+    """`content` was an unused field until this panel. A section list that
+    does not travel is a section list the page cannot render, which is the
+    same failure as #29: a value written where nothing reads it."""
+    from explorer.panels import REPORT_SECTIONS, catalogue_for
+
+    entry = next(p for p in catalogue_for(set()) if p["panel_id"] == "report")
+    assert entry["drawable"] is True, "the report needs no input it does not have"
+    assert [s["section_id"] for s in entry["content"]["sections"]] == [
+        s["section_id"] for s in REPORT_SECTIONS
+    ]
+
+
+def test_every_refused_report_section_names_what_would_fill_it():
+    """A refusal a reader cannot act on is a blank with extra words.
+
+    Two of the five sections are refusals here: this pipeline reads no
+    retrieval stage and builds no phylogeny. Each has to name the input, and
+    naming it is what turns the refusal into a question someone can answer.
+    """
+    from explorer.panels import REPORT_SECTIONS
+
+    refused = [s for s in REPORT_SECTIONS if s.get("refused")]
+    assert {s["section_id"] for s in refused} == {"coverage", "rate"}
+    for section in refused:
+        assert section[
+            "fills_in"
+        ], f"{section['section_id']} refuses without saying what would fill it"
+        assert len(section["refused"]) > 80, "a one-line refusal names no input"
+
+
+def test_the_template_renders_the_report_in_payload_order_not_by_lookup():
+    """The order has to be data, not the template's opinion.
+
+    `forEach` over the payload's own list is what makes the Python-side order
+    the rendered order. A template that indexed `REPORT_FILLERS` and rendered
+    its keys would be free to put the map first, and no payload test would
+    notice.
+    """
+    from explorer.panels import catalogue_for, sheet_titles
+    from explorer.template import render
+
+    html = render(
+        {"spaces": [], "panels": catalogue_for(set()), "sheets": sheet_titles()},
+        plotly_js="",
+        title="t",
+    )
+    assert "SHEET_PANELS.report" in html, "the report kind is not registered"
+    assert re.search(
+        r"sections\.forEach", html
+    ), "the template does not walk the payload's section list"
+    body = html[html.index("SHEET_PANELS.report") :]
+    assert (
+        "Object.keys(REPORT_FILLERS)" not in body
+    ), "rendering the filler keys would make the template's order authoritative"
+
+
+def test_every_fillable_report_section_has_a_filler_and_every_filler_a_section():
+    """A section with no filler renders as a version mismatch, which is right
+    for an old page and wrong for this one. Both directions are checked: an
+    orphan filler is dead code that looks like coverage."""
+    from explorer.panels import REPORT_SECTIONS
+    from explorer.template import render
+
+    html = render({"spaces": []}, plotly_js="", title="t")
+    fillable = [s["section_id"] for s in REPORT_SECTIONS if not s.get("refused")]
+    for section_id in fillable:
+        assert f"REPORT_FILLERS.{section_id} =" in html, f"no filler for {section_id}"
+    declared = set(re.findall(r"REPORT_FILLERS\.(\w+) =", html))
+    assert declared == set(fillable), f"fillers and sections disagree: {declared}"
+
+
+def test_a_report_section_the_template_cannot_fill_says_so():
+    """Same rule as the unknown panel_type, and for the same reason: a
+    section that silently vanishes cannot be told apart from one nobody
+    wrote."""
+    from explorer.template import render
+
+    html = render({"spaces": []}, plotly_js="", title="t")
+    assert "reportUnknownSection" in html
+    assert "no filler for report section" in html
+
+
+def test_the_report_never_prints_a_bare_blank_for_a_number_it_lacks():
+    """A blank cell reads as a measurement of nothing and a zero reads as a
+    measurement of zero. The comparisons table already learned this; the
+    report has more places to forget it -- a space with no negative control,
+    a one-block space with no redundancy pair, an uninformative stability."""
+    from explorer.template import render
+
+    html = render({"spaces": []}, plotly_js="", title="t")
+    assert "function reportMissing" in html
+    assert "not in this payload" in html
+    body = html[html.index("const GEOMETRY_COLUMNS") : html.index("REPORT_FILLERS.cohort")]
+    for absent in ("negative control", "one block", "not informative"):
+        assert absent in body, f"the geometry row does not say why {absent!r} is empty"

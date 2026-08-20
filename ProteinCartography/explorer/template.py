@@ -155,6 +155,24 @@ footer code { font-size: 11.5px; }
 .panel-bar input { font: inherit; font-size: 12px; padding: 4px 7px; flex: 1;
   border: 1px solid var(--line); border-radius: 4px; }
 td.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; }
+/* The diagnostics report. A column of sections, each of which either carries
+   its numbers or refuses in place -- so `.refused` is styled like a panel's
+   `awaiting` block but WITHOUT its fixed height: a 330px hole between two
+   filled sections reads as a rendering failure rather than as a refusal. */
+.report-section { border-top: 1px solid var(--line); }
+.report-section:first-child { border-top: 0; }
+.report-section h4 { margin: 0; padding: 9px 12px 1px; font-size: 11px;
+  text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+.report-section .lead { padding: 0 12px 7px; font-size: 12px; color: var(--muted); }
+.refused { margin: 0 12px 11px; padding: 7px 10px; font-size: 12px; color: #4a535c;
+  border-left: 3px solid var(--caution); background: #fdf9ef; }
+.refused b { color: var(--caution); }
+.refused .fills { display: block; margin-top: 4px; font-size: 11px; }
+/* The verdict word inside a report row, where the banner's full-width tint
+   would fight the table. Colour only. */
+.v-ok { color: var(--ok); }
+.v-caution { color: var(--caution); }
+.v-unreadable { color: var(--bad); font-weight: 600; }
 </style>
 </head>
 <body>
@@ -776,6 +794,273 @@ SHEET_PANELS.records = {
     filter.addEventListener("input", paint);
     wrap.append(bar, table);
     paint();
+    return wrap;
+  },
+};
+
+// --- the diagnostics report ---------------------------------------------------
+// 7.03 E2 fixes the order -- cohort and provenance, retrieval coverage,
+// geometry health, rate fit, and only THEN the map -- and the order is the
+// argument, not a layout preference.
+//
+// So the ORDER LIVES IN THE PAYLOAD. This renderer walks `panel.content.sections`
+// in the order Python put them in and never looks a section up by name. A
+// template free to look them up is a template free to draw the map first, which
+// is the single thing the source says a report must not do.
+//
+// Each filler takes the section and returns a Node, or null when the payload
+// does not carry what that section needs -- in which case the section's own
+// `refused` text is drawn instead of nothing.
+const REPORT_FILLERS = {};
+
+// label / value / note, where `value` is trusted markup the filler built and
+// `label` and `note` are escaped here. Two columns of numbers with a third for
+// where the number came from -- a diagnostic whose provenance is not beside it
+// gets quoted without it.
+function reportRows(rows) {
+  const box = document.createElement("div");
+  box.className = "scroll-x";
+  box.innerHTML =
+    "<table><tbody>" +
+    rows
+      .map(([label, value, note]) =>
+        `<tr><th>${escapeHtml(label)}</th><td>${value}</td>` +
+        `<td class="mono">${note ? escapeHtml(note) : ""}</td></tr>`)
+      .join("") +
+    "</tbody></table>";
+  return box;
+}
+
+// A number the payload does not carry. Never a blank and never a zero: this is
+// the same rule as the withheld cell in the comparisons table, for the same
+// reason -- a blank reads as a measurement of nothing and a zero reads as a
+// measurement of zero.
+function reportMissing(why) {
+  return `<span class="withheld" title="${escapeHtml(why)}">not in this payload</span>`;
+}
+
+// One column per thing a reader has to check before believing a map, and each
+// cell answers with a number or with WHY it has none. A space missing a whole
+// diagnostics section is the common case here -- redundancy exists only for a
+// fused space, and a negative control only where one was configured.
+const GEOMETRY_COLUMNS = [
+  { label: "space", cell: (s) => escapeHtml(s.space_id) },
+  {
+    label: "verdict",
+    cell: (s) => `<span class="v-${escapeHtml(s.verdict.level)}">` +
+      `${escapeHtml(s.verdict.level)}</span>`,
+  },
+  {
+    label: "stability (mean)",
+    cell: (s) => {
+      const stability = firstOf(s, "stability");
+      if (!stability) return reportMissing("this space's diagnostics carry no stability section");
+      // A perfect score that could not have been anything else is not a score.
+      if (stability.informative === false) {
+        return withheldWord(
+          "not informative",
+          "k is most of the cohort, so every protein's neighbours are all the " +
+            "others and the score is 1.0 by construction"
+        );
+      }
+      return fmtValue(stability.stability_mean);
+    },
+  },
+  {
+    label: "coin flips",
+    cell: (s) => {
+      const stability = firstOf(s, "stability");
+      if (!stability) return reportMissing("this space's diagnostics carry no stability section");
+      return `${fmtValue(stability.n_coin_flips)} of ${fmtValue(stability.n_measured)}`;
+    },
+  },
+  { label: "trustworthiness", cell: (s) => faithCell(s, "trustworthiness_mean") },
+  { label: "continuity", cell: (s) => faithCell(s, "continuity_mean") },
+  {
+    label: "positions not readable",
+    cell: (s) => {
+      const readable = s.readable || [];
+      const bad = readable.filter((r) => r === false).length;
+      return `${fmtValue(bad)} of ${fmtValue(readable.length)}`;
+    },
+  },
+  {
+    label: "clusters",
+    cell: (s) => {
+      const partition = (s.diagnostics || {}).partition || {};
+      if (partition.n_clusters === undefined) {
+        return reportMissing("this space's diagnostics carry no partition section");
+      }
+      return `${fmtValue(partition.n_clusters)} at resolution ` +
+        `${fmtValue(partition.resolution)}`;
+    },
+  },
+  {
+    label: "control margin",
+    cell: (s) => {
+      const controls = (s.diagnostics || {}).negative_controls || {};
+      const margins = Object.values(controls.margins || {});
+      // The WORST margin, not the mean of them: one control the clusters fail
+      // to beat is the finding, and averaging it against a control they beat
+      // would hide exactly that.
+      if (!margins.length) return reportMissing("no negative control was run for this space");
+      return fmtValue(Math.min.apply(null, margins));
+    },
+  },
+  {
+    label: "block redundancy",
+    cell: (s) => {
+      const redundancy = (s.diagnostics || {}).redundancy;
+      if (!redundancy) {
+        return withheldWord(
+          "one block",
+          "redundancy compares a space's blocks against each other, so a " +
+            "one-block space has no pair to compare"
+        );
+      }
+      return (redundancy.pairs || [])
+        .map((pair) => `${escapeHtml(pair.block_a)}/${escapeHtml(pair.block_b)} ` +
+          `${fmtValue(pair.spearman)}`)
+        .join("<br>");
+    },
+  },
+];
+
+// The diagnostics arrive as one-element lists keyed by reducer, so reaching for
+// [0] is right for stability and WRONG for faithfulness -- a space with two
+// layouts has two faithfulness rows and reporting the first would hide the
+// worse one. Hence two helpers rather than one.
+function firstOf(space, key) {
+  return ((space.diagnostics || {})[key] || [])[0] || null;
+}
+
+function faithCell(space, field) {
+  const entries = (space.diagnostics || {}).faithfulness || [];
+  if (!entries.length) {
+    return reportMissing("this space's diagnostics carry no faithfulness section");
+  }
+  return entries
+    .map((entry) => `${escapeHtml(entry.reducer)} ${fmtValue(entry[field])}`)
+    .join("<br>");
+}
+
+// A word standing in for a number that CANNOT exist here, as against one the
+// payload merely does not carry. Both are said out loud; they are different
+// facts and a reader who cannot tell them apart cannot act on either.
+function withheldWord(word, why) {
+  return `<span class="withheld" title="${escapeHtml(why)}">${escapeHtml(word)}</span>`;
+}
+
+REPORT_FILLERS.cohort = () => {
+  const p = active.provenance || {};
+  const rows = [
+    ["proteins on the maps", fmtValue(p.n_proteins), "provenance.n_proteins"],
+    ["spaces drawn", fmtValue(p.n_spaces), "one panel each"],
+    ["cohort selection rule", escapeHtml(p.cohort_rule || "n/a"), "config.cohort.selection"],
+    ["diagnostics neighbourhood k", fmtValue(p.diagnostics_k), "config.diagnostics.k"],
+    [
+      "named records",
+      (active.records || []).length
+        ? `${(active.records || []).length} of ${fmtValue(p.n_proteins)}`
+        : reportMissing("no uniprot_features.tsv was read for this run"),
+      "protein_features/uniprot_features.tsv",
+    ],
+  ];
+  Object.entries(p.manifests || {}).forEach(([space, m]) => {
+    rows.push([
+      space + " cache key",
+      `<code>${escapeHtml(m.cache_key || "none")}</code>`,
+      (m.versions && m.versions["umap-learn"]) ? "umap-learn " + m.versions["umap-learn"] : "",
+    ]);
+  });
+  return reportRows(rows);
+};
+
+REPORT_FILLERS.geometry = () => {
+  const box = document.createElement("div");
+  box.className = "scroll-x";
+  const head = GEOMETRY_COLUMNS.map((c) => `<th>${escapeHtml(c.label)}</th>`).join("");
+  const body = spaces
+    .map((space) => {
+      const cells = GEOMETRY_COLUMNS.map((c) => `<td>${c.cell(space)}</td>`);
+      return "<tr>" + cells.join("") + "</tr>";
+    })
+    .join("");
+  box.innerHTML = `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+  return box;
+};
+
+REPORT_FILLERS.map = () => {
+  const box = document.createElement("div");
+  box.className = "scroll-x";
+  const rows = spaces.map((space) => {
+    const reasons = (space.verdict.reasons || []).length
+      ? "<ul>" + space.verdict.reasons.map((r) => `<li>${escapeHtml(r)}</li>`).join("") + "</ul>"
+      : "";
+    const level = escapeHtml(space.verdict.level);
+    return `<tr><th>${escapeHtml(space.space_id)}</th><td class="v-${level}">` +
+      `${escapeHtml(space.verdict.headline)}${reasons}</td></tr>`;
+  });
+  box.innerHTML = `<table><tbody>${rows.join("")}</tbody></table>`;
+  return box;
+};
+
+// A section the payload declares and this template cannot fill. Same reasoning
+// as `PANELS.__unknown__`: a page older than its payload must say so, because a
+// section that silently vanishes cannot be told from one nobody wrote.
+function reportUnknownSection(section) {
+  const box = document.createElement("div");
+  box.className = "refused";
+  box.innerHTML =
+    `<b>no filler for report section "${escapeHtml(section.section_id)}"</b> — ` +
+    "this page's template is older than the payload that produced it";
+  return box;
+}
+
+function refusedBlock(section) {
+  const box = document.createElement("div");
+  box.className = "refused";
+  box.innerHTML = `<b>refused:</b> ${inlineMarkup(section.refused)}`;
+  if (section.fills_in) {
+    const fills = document.createElement("span");
+    fills.className = "fills";
+    fills.textContent = "filled in by: " + section.fills_in;
+    box.append(fills);
+  }
+  return box;
+}
+
+SHEET_PANELS.report = {
+  render(panel) {
+    const wrap = document.createElement("div");
+    const sections = ((panel.content || {}).sections) || [];
+    if (!sections.length) {
+      wrap.append(reportUnknownSection({ section_id: "none declared" }));
+      return wrap;
+    }
+    sections.forEach((section) => {
+      const box = document.createElement("div");
+      box.className = "report-section";
+      const head = document.createElement("h4");
+      head.textContent = section.title;
+      box.append(head);
+      if (section.lead) {
+        const lead = document.createElement("div");
+        lead.className = "lead";
+        lead.textContent = section.lead;
+        box.append(lead);
+      }
+      // A section that declares a refusal prints it and does not try to fill
+      // itself. The refusal is the content: 7.03 E2's rule is that a report
+      // shows what it cannot say, and a half-filled section would be worse
+      // than either half.
+      if (section.refused) box.append(refusedBlock(section));
+      else {
+        const filler = REPORT_FILLERS[section.section_id];
+        box.append(filler ? filler(section) : reportUnknownSection(section));
+      }
+      wrap.append(box);
+    });
     return wrap;
   },
 };

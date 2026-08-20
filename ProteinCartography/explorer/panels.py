@@ -102,6 +102,73 @@ _NO_SCAN = (
     "experiment runs, so this is a decision and not only compute"
 )
 
+#: The report's sections, in the order 7.03 E2 fixes: cohort and provenance,
+#: retrieval coverage, geometry health, rate fit, and only THEN the map.
+#:
+#: A tuple and not a mapping, deliberately. The template renders these in list
+#: order rather than looking each one up by name, so the order is data that
+#: travels to the page and can be asserted on here. A template free to look
+#: sections up is a template free to put the map first, which is the one thing
+#: the source says a report must not do.
+#:
+#: `refused` is what a section prints when the payload does not carry its
+#: input. It names the input and where the input lives, because a refusal a
+#: reader can act on is the whole difference between this and a blank.
+REPORT_SECTIONS = (
+    {
+        "section_id": "cohort",
+        "title": "1. Cohort and provenance",
+        "lead": "Which proteins, chosen by which rule, and from which cache keys.",
+    },
+    {
+        "section_id": "coverage",
+        "title": "2. Retrieval coverage",
+        "lead": "How much of the all-vs-all comparison was actually measured.",
+        "refused": (
+            "the explorer does not read the retrieval stage. The per-query cap's "
+            "censored fraction is computed and written to the tmscore block's "
+            "manifest, and no payload key carries it -- so this section refuses "
+            "rather than report a coverage of 100%"
+        ),
+        "fills_in": (
+            "the censoring panel's input: both matrices for one cohort, plumbed " "into the payload"
+        ),
+    },
+    {
+        "section_id": "geometry",
+        "title": "3. Geometry health",
+        "lead": (
+            "Per space: neighbourhood stability, layout faithfulness, the "
+            "partition, and whether the clusters beat their negative control."
+        ),
+    },
+    {
+        "section_id": "rate",
+        "title": "4. Rate fit",
+        "lead": "How much structural change a unit of evolutionary distance buys.",
+        "refused": (
+            "there is no evolutionary distance to fit against. Every cohort this "
+            "pipeline builds is one query's homolog set with no phylogeny "
+            "attached, and the rate ratio is refused outright when the x-axis is "
+            "identity-derived rather than tree-derived, which is the case for "
+            "every cohort this pipeline can currently build"
+        ),
+        "fills_in": (
+            "a phylogeny: patristic distance per protein, tip labels matching "
+            "the cohort's protids"
+        ),
+    },
+    {
+        "section_id": "map",
+        "title": "5. The map, last",
+        "lead": (
+            "What each panel may be read for. Fifth and not first, which is the "
+            "whole argument of the section this order comes from."
+        ),
+    },
+)
+
+
 CATALOGUE = (
     # --- the maps, which this pipeline already draws --------------------------
     PanelSpec(
@@ -402,6 +469,7 @@ CATALOGUE = (
             "the point: a map with no diagnostics beside it is the artifact the "
             "whole document argues against."
         ),
+        content={"sections": list(REPORT_SECTIONS)},
     ),
 )
 
