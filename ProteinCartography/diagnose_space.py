@@ -328,9 +328,7 @@ def main() -> int:
         # and the coin-flip LIST, which answers "is this space stable" and
         # discards the ramp that answers "is THIS protein stable" -- and the
         # source calls the per-protein overlay not optional (3.01).
-        stability.to_frame().to_csv(
-            os.path.join(space_dir, layout.stability_filename()), sep="\t"
-        )
+        stability.to_frame().to_csv(os.path.join(space_dir, layout.stability_filename()), sep="\t")
         report["stability"] = [stability.to_dict()]
     else:
         _skip(f"{args.space_id}: bootstrap_replicates is 0, so stability was not measured")
