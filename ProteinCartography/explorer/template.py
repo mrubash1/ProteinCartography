@@ -77,6 +77,9 @@ button.on { background: var(--ink); color: #fff; border-color: var(--ink); }
   border-bottom: 1px solid var(--line); background: #fbfbfc; }
 .shares .drift { color: var(--caution); }
 .plot { height: 330px; }
+/* The similarity matrix needs to be square and readable; 330px makes a 367-row
+   heatmap four cells tall per cluster. */
+.plot-tall { height: 460px; }
 .sheets { display: flex; flex-wrap: wrap; gap: 2px; padding: 8px 22px 0; }
 .sheets button { border-radius: 4px 4px 0 0; border-bottom-color: transparent; }
 .sheets button.on { background: var(--ink); color: #fff; border-color: var(--ink); }
@@ -813,6 +816,22 @@ function awaitingBlock(panel) {
 // Each entry is `render(panel) -> Node`, reading whatever it needs off `active`.
 const SHEET_PANELS = {};
 
+// Draws that can only happen once the node is IN the document. A renderer
+// returns its node before `renderSheet` appends it, so anything that measures
+// layout -- Plotly does -- would size itself against a detached element and
+// draw into a zero-width box. Queue it here and flush after the append.
+//
+// Deliberately a queue and NOT requestAnimationFrame. rAF works in a browser
+// and is invisible to any check that reads the DOM at a fixed moment, so the
+// panel's correctness would depend on when someone happened to look.
+const PENDING_DRAWS = [];
+
+function flushPendingDraws() {
+  while (PENDING_DRAWS.length) {
+    PENDING_DRAWS.shift()();
+  }
+}
+
 function sheetTable(columns, rows) {
   const box = document.createElement("div");
   box.className = "tablebox";
@@ -864,6 +883,148 @@ SHEET_PANELS.records = {
     return wrap;
   },
 };
+
+// The similarity matrix itself, cluster-sorted. 2.02's point is that protein i
+// has no feature vector of its own: its feature vector IS its row here, so this
+// is the tensor the structure map is a reduction of, not an illustration of one.
+//
+// The WHOLE matrix is drawn, not a triangle, because these matrices are not
+// symmetric -- the payload carries the measured asymmetry and the panel prints
+// it. A triangle would silently pick one of two real values for a fifth of the
+// pairs.
+//
+// Decoded from base64 into a Uint8Array and handed to Plotly, which is already
+// inlined. No new dependency, no build step (7.03 E4).
+function decodeMatrix(encoded, n) {
+  const binary = atob(encoded);
+  if (binary.length !== n * n) return null;
+  const flat = new Uint8Array(n * n);
+  for (let i = 0; i < binary.length; i++) flat[i] = binary.charCodeAt(i);
+  const rows = new Array(n);
+  for (let r = 0; r < n; r++) rows[r] = Array.from(flat.subarray(r * n, r * n + n));
+  return rows;
+}
+
+SHEET_PANELS.heatmap = {
+  isEmpty() {
+    const matrix = active.tm_matrix || {};
+    return !matrix.values || !matrix.n;
+  },
+  render() {
+    const matrix = active.tm_matrix || {};
+    const wrap = document.createElement("div");
+    const n = matrix.n;
+    const rows = decodeMatrix(matrix.values, n);
+    if (!rows) {
+      const box = document.createElement("div");
+      box.className = "refused";
+      box.innerHTML =
+        "<b>the encoded matrix is not n × n</b> — the payload's byte count and " +
+        "its stated size disagree, so nothing is drawn rather than something wrong";
+      wrap.append(box);
+      return wrap;
+    }
+    const span = matrix.high - matrix.low;
+    // The colour axis carries the REAL values, so the reader never sees a 0-255
+    // code. The cells stay quantised; only the labels are restored.
+    const note = document.createElement("div");
+    note.className = "table-note";
+    const asymmetry = matrix.asymmetry || {};
+    const share = asymmetry.n_pairs
+      ? (100 * asymmetry.n_asymmetric) / asymmetry.n_pairs
+      : 0;
+    note.innerHTML =
+      `Value: <b>${escapeHtml(matrix.value_label || "")}</b>. Sorted by the ` +
+      `<code>${escapeHtml(matrix.sorted_by || "")}</code> space's clusters, then by ` +
+      "accession. " +
+      `<b>Not symmetric:</b> ${fmtValue(asymmetry.n_asymmetric)} of ` +
+      `${fmtValue(asymmetry.n_pairs)} pairs (${share.toFixed(1)}%) disagree with their ` +
+      `transpose, ${fmtValue(asymmetry.n_above_0_05)} of them by more than 0.05 and the ` +
+      `largest by ${fmtValue(asymmetry.max_gap)} — which is why the whole square is ` +
+      "drawn and not one triangle. " +
+      `Colours are quantised to ${fmtValue(matrix.levels)} levels, so a cell is worth ` +
+      `±${fmtValue(matrix.max_error)}: read it as a colour, never as a measurement.`;
+    wrap.append(note);
+    const plot = document.createElement("div");
+    plot.className = "plot plot-tall";
+    wrap.append(plot);
+    // Queued rather than drawn here: the node is not in the document yet.
+    PENDING_DRAWS.push(() => {
+      Plotly.react(
+        plot,
+        [
+          {
+            type: "heatmap",
+            z: rows,
+            zmin: 0,
+            zmax: matrix.levels,
+            colorscale: "Viridis",
+            showscale: true,
+            colorbar: {
+              thickness: 9,
+              tickvals: [0, matrix.levels / 2, matrix.levels],
+              ticktext: [
+                fmtValue(matrix.low),
+                fmtValue(matrix.low + span / 2),
+                fmtValue(matrix.high),
+              ],
+            },
+            hoverinfo: "text",
+            text: rows.map((row, r) =>
+              row.map((code, c) =>
+                `${matrix.protids[r]} → ${matrix.protids[c]}\n` +
+                `≈ ${(matrix.low + (code / matrix.levels) * span).toFixed(3)}`)),
+          },
+        ],
+        {
+          margin: { l: 8, r: 8, t: 6, b: 8 },
+          // Ranges pinned to the data rather than left to autorange. An
+          // autoranged axis is what let a stray shape coordinate rescale the
+          // whole panel; a fixed range cannot be moved by anything but the data.
+          xaxis: {
+            showticklabels: false, ticks: "", range: [-0.5, n - 0.5],
+            scaleanchor: "y", constrain: "domain",
+          },
+          yaxis: { showticklabels: false, ticks: "", range: [n - 0.5, -0.5] },
+          shapes: clusterBandShapes(matrix.bands || [], n),
+        },
+        { displayModeBar: false, responsive: true }
+      );
+    });
+    return wrap;
+  },
+};
+
+// One line at each cluster boundary, so the blocks on the diagonal can be told
+// from the sort that produced them. Drawn from the run-length bands the payload
+// carries rather than from a label per row.
+//
+// EVERY COORDINATE IS INSIDE THE DATA RANGE, and that is the whole lesson of
+// this function. The first version ran each line to `+1e6` to mean "the far
+// edge", which is not what a shape on a data axis means: it stretched the axis
+// to a million, and 367 cells of heat map became a speck in the corner while
+// the colour bar and the grid lines drew perfectly. The DOM said 367x367 and
+// the panel was blank. Only the picture showed it.
+function clusterBandShapes(bands, n) {
+  const shapes = [];
+  const lo = -0.5;
+  const hi = n - 0.5;
+  let at = 0;
+  bands.forEach((band, index) => {
+    at += band.count;
+    if (index === bands.length - 1) return;
+    const edge = at - 0.5;
+    shapes.push({
+      type: "line", x0: edge, x1: edge, y0: lo, y1: hi,
+      line: { color: "rgba(255,255,255,0.55)", width: 1 },
+    });
+    shapes.push({
+      type: "line", x0: lo, x1: hi, y0: edge, y1: edge,
+      line: { color: "rgba(255,255,255,0.55)", width: 1 },
+    });
+  });
+  return shapes;
+}
 
 // The resolved pipeline, as the source's 2.01 asks for it: each box a tensor,
 // each arrow an operation. Derived per run in `payload.py`, so this is THIS
@@ -1440,6 +1601,7 @@ function renderSheet(sheetId) {
     holder.append(card);
   });
   body.append(holder);
+  flushPendingDraws();
 }
 
 // A panel whose inputs ARE present but whose renderer is not built yet. Said

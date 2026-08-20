@@ -372,6 +372,10 @@ class ExplorerPayload:
     #: reduction and the SEPARATE graph Leiden clusters on. Empty for a config
     #: that resolved to neither, in which case the panel says so.
     pipeline: dict = field(default_factory=dict)
+    #: The cohort's similarity matrix, cluster-sorted and quantised to uint8 for
+    #: display, with the asymmetry it carries measured beside it. Empty when the
+    #: config points at no matrix.
+    tm_matrix: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -385,6 +389,7 @@ class ExplorerPayload:
             "hover": self.hover,
             "records": self.records,
             "pipeline": self.pipeline,
+            "tm_matrix": self.tm_matrix,
         }
 
 
@@ -481,6 +486,7 @@ def build_payload(config, output_dir: str, analysis_name: str = "analysis") -> E
     provenance = _provenance(output_dir, config, spaces)
     records = _records(output_dir, index_order or [])
     pipeline = _pipeline(config, spaces)
+    tm_matrix = _tm_matrix(config, spaces)
     # What the page HAS, named the way the catalogue names it. A panel is
     # drawable when everything it needs is in here; anything absent becomes the
     # panel's printed "awaiting ..." line rather than a blank.
@@ -503,6 +509,8 @@ def build_payload(config, output_dir: str, analysis_name: str = "analysis") -> E
         available.add("overlays")
     if pipeline:
         available.add("pipeline")
+    if tm_matrix:
+        available.add("matrix")
     return ExplorerPayload(
         analysis_name=analysis_name,
         spaces=spaces,
@@ -514,6 +522,7 @@ def build_payload(config, output_dir: str, analysis_name: str = "analysis") -> E
         hover=_hover_fields(output_dir, {p for space in spaces for p in space.protids}),
         records=records,
         pipeline=pipeline,
+        tm_matrix=tm_matrix,
     )
 
 
@@ -701,6 +710,119 @@ def _pipeline(config, spaces: list) -> dict:
     if not blocks and not rows:
         return {}
     return {"blocks": blocks, "rows": rows}
+
+
+#: How many quantisation levels the heatmap ships. uint8 over the observed
+#: range: at n=367 the full matrix is 135 KB raw and about 180 KB in base64,
+#: against 1.1 MB for float64. See `_tm_matrix` for why the FULL matrix and not
+#: a triangle.
+_HEATMAP_LEVELS = 255
+
+
+def _tm_matrix(config, spaces: list, sort_space: str = "structure") -> dict:
+    """The cohort's similarity matrix, cluster-sorted and quantised for display.
+
+    THE WHOLE MATRIX, NOT A TRIANGLE, and that is a measurement rather than a
+    preference. These matrices are **not symmetric**: on the two shipped cohorts
+    19-20 % of pairs have ``a_ij != a_ji``, about 1 % differ by more than 0.05,
+    and the largest disagreement is 0.66. Shipping one triangle would silently
+    choose one of two real values for one pair in five, and the pairs where the
+    choice matters most are exactly the interesting ones. The extra bytes buy
+    the reader the ability to see the asymmetry, so the measured asymmetry
+    travels with it.
+
+    QUANTISED TO 255 LEVELS, WHICH IS A LOSS AND IS DECLARED. The largest
+    resulting error is about 0.0018, which is coarser than the four significant
+    figures foldseek emits. That is invisible in a heat map and fatal in a
+    number, so `max_error` rides in the payload and the panel prints it: a cell
+    here is a colour, not a measurement.
+
+    Sorted by the clusters of ``sort_space`` and, within a cluster, by protid,
+    so the order is deterministic and two runs of the same inputs produce the
+    same bytes -- the same property the provenance footer refuses a timestamp
+    for.
+
+    Returns ``{}`` when there is no matrix to read or nothing to sort by, so the
+    panel keeps naming the input it wants instead of drawing an empty square.
+    """
+    import base64
+
+    import numpy as np
+
+    space = next((s for s in spaces if s.space_id == sort_space), None)
+    if space is None:
+        return {}
+    path = ""
+    for block in (getattr(config, "blocks", {}) or {}).values():
+        if getattr(block, "provider", "") == "tmscore":
+            path = (getattr(block, "params", {}) or {}).get("matrix_path") or ""
+            break
+    if not path or not os.path.exists(path):
+        return {}
+
+    from matrix_io import load_labeled_matrix
+
+    matrix = load_labeled_matrix(path, repair=True)
+    # Every reorder below goes through the labelled frame. ADR 0007: this data
+    # is never indexed positionally, and a cluster sort is precisely the
+    # operation that would silently scramble it.
+    frame = matrix.to_frame()
+    frame.index = [str(label) for label in frame.index]
+    frame.columns = [str(label) for label in frame.columns]
+    known = set(frame.index) & set(frame.columns)
+    order = [p for p in space.protids if p in known]
+    if not order:
+        return {}
+    order.sort(key=lambda protid: (space.clusters.get(protid, "~"), protid))
+    values = frame.loc[order, order].to_numpy(dtype=float)
+
+    finite = values[np.isfinite(values)]
+    if not finite.size:
+        return {}
+    low, high = float(finite.min()), float(finite.max())
+    span = high - low
+    if span <= 0:
+        return {}
+    scaled = np.rint((values - low) / span * _HEATMAP_LEVELS)
+    quantised = np.clip(scaled, 0, _HEATMAP_LEVELS).astype(np.uint8)
+    restored = quantised.astype(float) / _HEATMAP_LEVELS * span + low
+    max_error = float(np.nanmax(np.abs(restored - values)))
+
+    upper = np.triu_indices(len(order), 1)
+    gaps = np.abs(values - values.T)[upper]
+    asymmetry = {
+        "n_pairs": int(gaps.size),
+        "n_asymmetric": int((gaps > 1e-9).sum()),
+        "max_gap": float(gaps.max()) if gaps.size else 0.0,
+        "n_above_0_05": int((gaps > 0.05).sum()),
+    }
+
+    # Run-length bands rather than a label per row: at n=367 a per-row list is
+    # 367 strings for seven bands, and the panel draws bands.
+    bands: list = []
+    for protid in order:
+        cluster = space.clusters.get(protid, "")
+        if bands and bands[-1]["cluster"] == cluster:
+            bands[-1]["count"] += 1
+        else:
+            bands.append({"cluster": cluster, "count": 1})
+
+    return {
+        "protids": order,
+        "n": len(order),
+        "values": base64.b64encode(quantised.tobytes()).decode("ascii"),
+        "low": low,
+        "high": high,
+        "levels": _HEATMAP_LEVELS,
+        "max_error": max_error,
+        "bands": bands,
+        "sorted_by": sort_space,
+        "censoring_rate": float(matrix.censoring_rate),
+        "asymmetry": asymmetry,
+        # Named here, once, so no renderer has to remember it. FOLLOWUPS #60:
+        # the score is a foldseek 3Di+AA alignment score and not TM-align's.
+        "value_label": "3Di+AA-derived TM (FOLLOWUPS #60), not TM-align output",
+    }
 
 
 def _provenance(output_dir: str, config, spaces: list) -> dict:

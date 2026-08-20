@@ -24,6 +24,18 @@ from explorer.payload import space_verdict
 pytest.importorskip("pandas")
 
 
+def _matrix_fixture_dir():
+    """A scratch directory for the matrix fixtures below.
+
+    A plain `tmp_path` fixture cannot be reached from the helper that builds the
+    config, and threading it through four tests obscured what each one is about.
+    """
+    import pathlib
+    import tempfile
+
+    return pathlib.Path(tempfile.mkdtemp(prefix="pc-matrix-"))
+
+
 def _embedded_payload(html: str) -> dict:
     """The JSON object the rendered page carries, parsed rather than grepped.
 
@@ -1730,3 +1742,194 @@ def test_the_pipeline_renderer_reads_the_payload_key():
     assert "active.pipeline" in html, "nothing on the page reads the pipeline key"
     body = html[html.index("SHEET_PANELS.pipeline") :][:3000]
     assert "different" in body, "the page does not say the two graphs are different"
+
+
+# ==========================================================================
+# The similarity matrix. The interesting decisions are that the whole square
+# ships rather than a triangle, and that the quantisation is declared.
+# ==========================================================================
+
+
+def _tiny_matrix(tmp_path, values, protids):
+    """An n x n labelled TSV of `values`, written the way the pipeline writes one."""
+    header = "protid\t" + "\t".join(protids)
+    lines = [header]
+    for protid, row in zip(protids, values):
+        lines.append(protid + "\t" + "\t".join(f"{v:.4f}" for v in row))
+    path = tmp_path / "matrix.tsv"
+    path.write_text("\n".join(lines) + "\n")
+    return str(path)
+
+
+def _matrix_fixture(tmp_path, values, clusters):
+    from explorer.payload import SpacePayload
+
+    protids = list(clusters)
+    path = _tiny_matrix(tmp_path, values, protids)
+
+    class Block:
+        provider = "tmscore"
+        params = {"matrix_path": path}
+
+    class Config:
+        blocks = {"tmscore": Block()}
+
+    space = SpacePayload(
+        space_id="structure",
+        protids=protids,
+        embeddings={"pca_umap": [[0.0, 0.0]] * len(protids)},
+        clusters=clusters,
+        readable=[True] * len(protids),
+        verdict={"level": "ok", "reasons": [], "headline": "fine"},
+    )
+    return Config(), [space]
+
+
+def test_the_whole_square_ships_because_the_matrix_is_not_symmetric():
+    """The measurement that decides the shape of the payload.
+
+    A triangle would silently choose one of two real values wherever
+    ``a_ij != a_ji``, and on the shipped cohorts that is about a fifth of all
+    pairs. The asymmetry is measured and travels with the matrix so the panel
+    can say so rather than imply symmetry by drawing half.
+    """
+    import base64
+
+    pytest.importorskip("numpy")
+    from explorer.payload import _tm_matrix
+
+    values = [[1.0, 0.9, 0.2], [0.3, 1.0, 0.5], [0.2, 0.5, 1.0]]
+    config, spaces = _matrix_fixture(
+        _matrix_fixture_dir(), values, {"a": "LC0", "b": "LC0", "c": "LC1"}
+    )
+    matrix = _tm_matrix(config, spaces)
+    assert matrix["n"] == 3
+    assert len(base64.b64decode(matrix["values"])) == 9, "a triangle was shipped"
+    # a_01 = 0.9 against a_10 = 0.3 is the only asymmetric pair here.
+    assert matrix["asymmetry"]["n_asymmetric"] == 1
+    assert matrix["asymmetry"]["n_pairs"] == 3
+    assert matrix["asymmetry"]["max_gap"] == pytest.approx(0.6, abs=1e-6)
+
+
+def test_the_quantisation_error_is_measured_and_shipped_not_assumed():
+    """255 levels is coarser than the four significant figures foldseek emits.
+
+    That is invisible in a heat map and fatal in a number, so the panel prints
+    the error and calls a cell a colour. A payload that quantised without
+    saying by how much would let a reader quote a cell.
+    """
+    pytest.importorskip("numpy")
+    from explorer.payload import _tm_matrix
+
+    values = [[1.0, 0.5], [0.5, 1.0]]
+    config, spaces = _matrix_fixture(_matrix_fixture_dir(), values, {"a": "LC0", "b": "LC0"})
+    matrix = _tm_matrix(config, spaces)
+    assert matrix["levels"] == 255
+    assert 0.0 <= matrix["max_error"] < 0.01
+    assert matrix["low"] == pytest.approx(0.5)
+    assert matrix["high"] == pytest.approx(1.0)
+
+
+def test_the_matrix_is_sorted_by_cluster_and_then_by_accession():
+    """Deterministic, because two runs of the same inputs must produce the same
+    bytes -- the property the provenance footer refuses a timestamp for. A sort
+    on cluster alone leaves ties to dict order."""
+    pytest.importorskip("numpy")
+    from explorer.payload import _tm_matrix
+
+    values = [[1.0, 0.4, 0.4], [0.4, 1.0, 0.4], [0.4, 0.4, 1.0]]
+    config, spaces = _matrix_fixture(
+        _matrix_fixture_dir(), values, {"z": "LC0", "a": "LC1", "b": "LC0"}
+    )
+    matrix = _tm_matrix(config, spaces)
+    assert matrix["protids"] == ["b", "z", "a"]
+    assert matrix["bands"] == [{"cluster": "LC0", "count": 2}, {"cluster": "LC1", "count": 1}]
+
+
+def test_a_run_with_no_matrix_keeps_the_panel_awaiting_its_input():
+    pytest.importorskip("numpy")
+    from explorer.panels import catalogue_for
+    from explorer.payload import _tm_matrix
+
+    class Block:
+        provider = "tmscore"
+        params = {"matrix_path": "/nonexistent/matrix.tsv"}
+
+    class Config:
+        blocks = {"tmscore": Block()}
+
+    assert _tm_matrix(Config(), []) == {}
+    entry = next(p for p in catalogue_for(set()) if p["panel_id"] == "tm_matrix")
+    assert entry["drawable"] is False and entry["missing"] == ["matrix"]
+    assert next(p for p in catalogue_for({"matrix"}) if p["panel_id"] == "tm_matrix")["drawable"]
+
+
+def test_the_heatmap_labels_the_value_as_3di_derived_not_tm_align():
+    """FOLLOWUPS #60. The score is a foldseek 3Di+AA alignment score, and the
+    panel is the most likely place on the page for someone to read it as
+    TM-align output -- it is the only panel that shows the number itself."""
+    pytest.importorskip("numpy")
+    from explorer.payload import _tm_matrix
+
+    values = [[1.0, 0.5], [0.5, 1.0]]
+    config, spaces = _matrix_fixture(_matrix_fixture_dir(), values, {"a": "LC0", "b": "LC0"})
+    assert "3Di+AA" in _tm_matrix(config, spaces)["value_label"]
+    assert "not TM-align" in _tm_matrix(config, spaces)["value_label"]
+
+
+def test_the_heatmap_renderer_decodes_the_matrix_and_refuses_a_wrong_size():
+    """A byte count that disagrees with the stated n means the two halves of
+    the payload disagree. Drawing something anyway would put a picture on the
+    page that is wrong rather than absent."""
+    from explorer.template import render
+
+    html = render({"spaces": [], "tm_matrix": {}}, plotly_js="", title="t")
+    assert "SHEET_PANELS.heatmap" in html, "the heatmap kind is not registered"
+    assert "function decodeMatrix" in html
+    assert "active.tm_matrix" in html, "nothing on the page reads the matrix key"
+    body = html[html.index("SHEET_PANELS.heatmap") :][:3500]
+    assert "not n × n" in body, "a size mismatch is drawn rather than refused"
+    assert "never as a measurement" in body, "the quantisation is not declared to the reader"
+
+
+def test_a_panel_that_measures_layout_draws_after_it_is_attached():
+    """The heatmap drew blank in the browser and no test could have seen it.
+
+    A renderer returns its node before `renderSheet` appends it, so Plotly --
+    which measures layout -- sized itself against a detached element. The first
+    fix was `requestAnimationFrame`, which works in a browser and makes the
+    panel's correctness depend on when someone happens to look at the DOM. A
+    queue flushed straight after the append is deterministic instead.
+    """
+    from explorer.template import render
+
+    html = render({"spaces": []}, plotly_js="", title="t")
+    assert "const PENDING_DRAWS" in html
+    assert "flushPendingDraws()" in html
+    heatmap = html[html.index("SHEET_PANELS.heatmap") :][:3500]
+    assert "PENDING_DRAWS.push" in heatmap, "the heatmap draws before it is attached"
+    assert (
+        "requestAnimationFrame" not in heatmap
+    ), "a timing-dependent draw is one no check can see fail"
+
+
+def test_no_heatmap_shape_reaches_outside_the_data_range():
+    """The bug that made the panel blank while every DOM check passed.
+
+    A shape on a data axis is in DATA coordinates, so running a cluster
+    boundary line to `+1e6` to mean "the far edge" stretched the axis to a
+    million and shrank 367 cells of heat map to a speck. The colour bar and the
+    grid lines drew perfectly, the DOM reported a 367x367 trace, and the
+    picture was empty. Nothing but a screenshot could see it, so this test
+    pins the one property that was wrong.
+    """
+    from explorer.template import render
+
+    html = render({"spaces": []}, plotly_js="", title="t")
+    shapes = html[html.index("function clusterBandShapes") :]
+    shapes = shapes[: shapes.index("\n}")]
+    assert "1e6" not in shapes, "a shape coordinate escapes the data range again"
+    assert "n - 0.5" in shapes, "the lines do not span the matrix"
+    heatmap = html[html.index("SHEET_PANELS.heatmap") :][:4000]
+    assert "range: [-0.5, n - 0.5]" in heatmap, "the x axis is left to autorange"
+    assert "range: [n - 0.5, -0.5]" in heatmap, "the y axis is left to autorange"
