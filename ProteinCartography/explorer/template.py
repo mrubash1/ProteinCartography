@@ -310,6 +310,12 @@ td .out { display: block; color: var(--muted);
 <script type="text/javascript">
 const PAYLOAD = __PAYLOAD__;
 
+// The judgement lines, read from the payload rather than retyped here. A
+// threshold typed into the template can drift from the one the diagnostics
+// enforce, and then the picture and the verdict disagree.
+const THRESHOLDS = PAYLOAD.thresholds || {};
+const COIN_FLIP = THRESHOLDS.coin_flip;
+
 const state = { overlay: "__none__", reducer: null, disagreement: false,
                 selected: new Set(), sheet: "maps" };
 
@@ -1055,6 +1061,92 @@ SHEET_PANELS.censoring = {
       });
     }
     if (censoring.comparison) wrap.append(renderCensoringComparison(censoring.comparison));
+    return wrap;
+  },
+};
+
+// Would you get the same neighbours again. One trace per space, because
+// stability is measured on each SPACE's own distances -- a single shared
+// overlay would colour every panel by one space's answer, which is a category
+// error rather than a convenience (FOLLOWUPS #62).
+//
+// This judges the SPACE, not the layout. A protein can have perfectly
+// determinate neighbours in the high-dimensional space and still be drawn in
+// the wrong place by the reducer; that second question is faithfulness, and it
+// is the one the panel banners answer. The two are kept apart here in words.
+SHEET_PANELS.stability = {
+  isEmpty() {
+    return !spaces.some((space) => space.stability && Object.keys(space.stability).length);
+  },
+  render() {
+    const wrap = document.createElement("div");
+    const note = document.createElement("div");
+    note.className = "table-note";
+    note.innerHTML =
+      "Each protein's neighbourhood is recomputed on repeated subsamples of the " +
+      "cohort and compared with its neighbourhood in the full one; the value is " +
+      "the mean overlap. <b>At or below " + fmtValue(COIN_FLIP) + " a protein's " +
+      "neighbours are a coin flip</b> and nothing about who it sits near is " +
+      "evidence. This judges the <b>space</b>, not the drawing of it — a protein " +
+      "with determinate neighbours can still be placed badly by the reducer, " +
+      "which is what the panel banners above answer.";
+    wrap.append(note);
+    const rows = spaces
+      .filter((space) => space.stability && Object.keys(space.stability).length)
+      .map((space) => {
+        const values = space.protids
+          .map((protid) => space.stability[protid])
+          .filter((value) => value !== undefined);
+        const sorted = values.slice().sort((a, b) => a - b);
+        const flips = sorted.filter((value) => value <= COIN_FLIP).length;
+        return {
+          space_id: space.space_id,
+          sorted,
+          flips,
+          median: sorted.length ? sorted[Math.floor(sorted.length / 2)] : null,
+        };
+      });
+    wrap.append(
+      reportRows(
+        rows.map((row) => [
+          row.space_id,
+          `${fmtValue(row.flips)} of ${fmtValue(row.sorted.length)} are coin flips` +
+            ` · median ${fmtValue(row.median)}`,
+          row.flips === row.sorted.length
+            ? "every protein: nothing in this space's neighbourhoods is evidence"
+            : "",
+        ])
+      )
+    );
+    const plot = document.createElement("div");
+    plot.className = "plot";
+    wrap.append(plot);
+    PENDING_DRAWS.push(() => {
+      Plotly.react(
+        plot,
+        rows.map((row) => ({
+          type: "scattergl",
+          mode: "lines",
+          name: row.space_id,
+          x: row.sorted.map((_, i) => i / Math.max(1, row.sorted.length - 1)),
+          y: row.sorted,
+          hovertemplate: `${row.space_id}<br>%{y:.3f}<extra></extra>`,
+        })),
+        {
+          margin: { l: 44, r: 12, t: 8, b: 34 },
+          xaxis: { title: "proteins, least stable first", range: [0, 1], tickformat: ".0%" },
+          yaxis: { title: "neighbours kept", range: [0, 1] },
+          // The threshold as a line, so a reader sees which curves clear it
+          // without comparing a number in the table against a curve.
+          shapes: [{
+            type: "line", x0: 0, x1: 1, y0: COIN_FLIP, y1: COIN_FLIP,
+            line: { color: "#b3261e", width: 1, dash: "dot" },
+          }],
+          legend: { orientation: "h", y: -0.22, font: { size: 10 } },
+        },
+        { displayModeBar: false, responsive: true }
+      );
+    });
     return wrap;
   },
 };

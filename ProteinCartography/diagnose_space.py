@@ -315,16 +315,23 @@ def main() -> int:
     #    `test_diagnostics_config` can see the read: it looks for the attribute
     #    access itself, and a local name defeats that.
     if config.diagnostics.bootstrap_replicates:
-        report["stability"] = [
-            neighborhood_stability(
-                args.space_id,
-                high,
-                protids,
-                k=config.diagnostics.k,
-                replicates=config.diagnostics.bootstrap_replicates,
-                subsample_fraction=config.diagnostics.subsample_fraction,
-            ).to_dict()
-        ]
+        stability = neighborhood_stability(
+            args.space_id,
+            high,
+            protids,
+            k=config.diagnostics.k,
+            replicates=config.diagnostics.bootstrap_replicates,
+            subsample_fraction=config.diagnostics.subsample_fraction,
+        )
+        # The per-protein series, written beside the summary exactly as
+        # faithfulness already writes its own. `to_dict` keeps the mean, the min
+        # and the coin-flip LIST, which answers "is this space stable" and
+        # discards the ramp that answers "is THIS protein stable" -- and the
+        # source calls the per-protein overlay not optional (3.01).
+        stability.to_frame().to_csv(
+            os.path.join(space_dir, layout.stability_filename()), sep="\t"
+        )
+        report["stability"] = [stability.to_dict()]
     else:
         _skip(f"{args.space_id}: bootstrap_replicates is 0, so stability was not measured")
 

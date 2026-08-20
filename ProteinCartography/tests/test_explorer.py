@@ -2136,7 +2136,6 @@ def test_the_comparison_needs_two_named_spaces_and_will_not_guess():
     to match. So it is declared, validated against the defined spaces, and
     absent when not declared."""
     import pytest as _pytest
-
     from config_schema import ConfigError, DiagnosticsConfig
 
     assert DiagnosticsConfig().censoring_comparison == ()
@@ -2152,7 +2151,6 @@ def test_a_censoring_comparison_naming_an_undefined_space_is_rejected():
     """The same rule `coregistration.compare` already follows. A typo here
     would silently produce a panel with no comparison rather than an error."""
     import pytest as _pytest
-
     from config_schema import ConfigError, from_legacy
 
     config = {
@@ -2197,3 +2195,102 @@ def test_the_matrix_panels_read_the_named_space_s_own_block_not_the_first_one():
     assert _matrix_path_for(Config(), "structure") == "/full.tsv"
     assert _matrix_path_for(Config(), "structure_capped") == "/capped.tsv"
     assert _matrix_path_for(Config(), "nonexistent") == ""
+
+
+# ==========================================================================
+# The per-protein stability series. `to_frame` computed it all along and
+# nothing wrote it, so the panel that needs the ramp had only the summary.
+# ==========================================================================
+
+
+def test_the_stability_series_is_written_beside_the_summary(tmp_path):
+    """Faithfulness already writes its per-protein file; stability did not.
+
+    `to_dict` keeps the mean, the min and the coin-flip list -- which answers
+    "is this space stable" and discards the ramp that answers "is THIS protein
+    stable". The source calls the per-protein overlay not optional (3.01).
+    """
+    pytest.importorskip("numpy")
+    import numpy as np
+    from diagnostics.stability import neighborhood_stability
+    from spaces import layout
+
+    rng = np.random.default_rng(0)
+    protids = [f"p{i}" for i in range(24)]
+    points = rng.normal(size=(24, 5))
+    # Square distances over the protids, which is what the measurement takes.
+    distances = np.linalg.norm(points[:, None, :] - points[None, :, :], axis=-1)
+    result = neighborhood_stability("s", distances, protids, k=4, replicates=4)
+    frame = result.to_frame()
+    assert list(frame.index) == protids
+    assert "stability" in frame.columns
+    assert layout.stability_filename() == "stability.tsv"
+    # No reducer in the name, and that asymmetry is the point.
+    assert "pca_umap" not in layout.stability_filename()
+
+
+def test_diagnose_space_writes_the_series_next_to_its_summary():
+    """Asserted on the source, because running the whole entry point here needs
+    the reducer stack. The write has to sit inside the `bootstrap_replicates`
+    branch: with replicates at 0 nothing was measured and a file of NaNs would
+    claim otherwise."""
+    import inspect
+
+    import diagnose_space
+
+    source = inspect.getsource(diagnose_space)
+    assert "layout.stability_filename()" in source
+    branch = source[source.index("if config.diagnostics.bootstrap_replicates:") :][:1200]
+    assert "stability.to_frame().to_csv" in branch
+
+
+def test_the_stability_series_is_per_space_and_travels_per_space(tmp_path):
+    """Stability is measured on a SPACE's own distances, so one shared overlay
+    would colour every panel by one space's answer. It is carried on the space,
+    like the readable mask, rather than in the page-wide overlay dict."""
+    pytest.importorskip("pandas")
+    from explorer.payload import SpacePayload, _stability_series
+
+    (tmp_path / "stability.tsv").write_text(
+        "protid\tstability\treplicates_seen\np1\t0.9\t20\np2\t0.1\t20\nother\t0.5\t20\n"
+    )
+    series = _stability_series(str(tmp_path), ["p1", "p2"])
+    assert series == {"p1": 0.9, "p2": 0.1}, "a protein off the maps must not appear"
+    space = SpacePayload(
+        space_id="s",
+        protids=["p1", "p2"],
+        embeddings={"pca_umap": [[0.0, 0.0], [1.0, 1.0]]},
+        clusters={},
+        readable=[True, True],
+        verdict={"level": "ok", "reasons": [], "headline": "fine"},
+        stability=series,
+    )
+    assert space.to_dict()["stability"] == series
+
+
+def test_the_coin_flip_line_is_read_from_the_module_that_enforces_it():
+    """A threshold retyped into the template can drift from the one the
+    diagnostics apply, and then the picture and the verdict disagree."""
+    from diagnostics.stability import COIN_FLIP_THRESHOLD
+    from explorer.payload import _thresholds
+    from explorer.template import render
+
+    assert _thresholds()["coin_flip"] == COIN_FLIP_THRESHOLD
+    html = render({"spaces": [], "thresholds": _thresholds()}, plotly_js="", title="t")
+    assert "const COIN_FLIP = THRESHOLDS.coin_flip" in html
+    body = html[html.index("SHEET_PANELS.stability") :][:3000]
+    assert "0.30" not in body and "0.3;" not in body, "the threshold is retyped in the template"
+
+
+def test_the_stability_panel_says_it_judges_the_space_not_the_layout():
+    """FOLLOWUPS #62. A protein with determinate neighbours can still be drawn
+    in the wrong place, and that second question is faithfulness -- which the
+    panel banners answer. Merging them is the misreading this panel is most
+    likely to cause."""
+    from explorer.template import render
+
+    html = render({"spaces": []}, plotly_js="", title="t")
+    assert "SHEET_PANELS.stability" in html, "the stability kind is not registered"
+    body = html[html.index("SHEET_PANELS.stability") :][:3000]
+    assert "space.stability" in body
+    assert "not the drawing of it" in body or "not the layout" in body

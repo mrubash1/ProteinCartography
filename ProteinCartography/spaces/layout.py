@@ -84,6 +84,17 @@ def faithfulness_filename(reducer: str) -> str:
     return f"faithfulness_{reducer}.tsv"
 
 
+def stability_filename() -> str:
+    """Per-protein neighborhood stability for one space.
+
+    Takes no reducer, unlike `faithfulness_filename`, and that asymmetry is the
+    finding it carries: stability is measured on the SPACE's own distances and
+    not on any layout, so it is one file per space however many reducers ran
+    (FOLLOWUPS #62).
+    """
+    return "stability.tsv"
+
+
 def aggregated_features_filename(analysis_name: str) -> str:
     """The legacy pipeline's aggregated feature table.
 

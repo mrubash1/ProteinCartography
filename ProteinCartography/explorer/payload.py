@@ -104,6 +104,9 @@ class SpacePayload:
     #: from `explorer.descriptions`. Empty for a payload built before the
     #: fold-outs existed, and the template renders nothing for an empty one.
     description: dict = field(default_factory=dict)
+    #: ``{protid: neighborhood_stability}`` for this space. Per space rather
+    #: than per reducer, because that is what the measurement is.
+    stability: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -117,6 +120,7 @@ class SpacePayload:
             "contributions": self.contributions,
             "panel_type": self.panel_type,
             "description": self.description,
+            "stability": self.stability,
         }
 
 
@@ -273,6 +277,31 @@ def _records(output_dir: str, protids: list) -> list:
     return rows
 
 
+def _stability_series(directory: str, protids: list) -> dict:
+    """`{protid: neighborhood_stability}` for one space, or `{}`.
+
+    Per SPACE and not per reducer: stability is measured on the space's own
+    distances, so it says whether these proteins have determinate neighbours at
+    all, and NOT whether a particular layout drew them faithfully (FOLLOWUPS
+    #62). The two are separate judgements and the panel says which this is.
+    """
+    path = os.path.join(directory, layout.stability_filename())
+    if not os.path.exists(path):
+        return {}
+    import pandas as pd
+
+    frame = pd.read_csv(path, sep="\t")
+    if "protid" not in frame or "stability" not in frame:
+        return {}
+    wanted = set(protids)
+    pairs = zip(frame["protid"], frame["stability"])
+    return {
+        str(protid): float(value)
+        for protid, value in pairs
+        if str(protid) in wanted and not pd.isna(value)
+    }
+
+
 def _space_blocks(output_dir: str, config, space) -> list:
     """Per block of one space: provider, resolved params, and its cohort facts.
 
@@ -379,6 +408,9 @@ class ExplorerPayload:
     #: What the per-query cap removed, from `matrix_io.summarize_censoring`.
     #: Carries its zero for an uncensored matrix rather than being empty.
     censoring: dict = field(default_factory=dict)
+    #: The judgement lines the page draws, read from the modules that enforce
+    #: them rather than retyped into the template.
+    thresholds: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -394,6 +426,7 @@ class ExplorerPayload:
             "pipeline": self.pipeline,
             "tm_matrix": self.tm_matrix,
             "censoring": self.censoring,
+            "thresholds": self.thresholds,
         }
 
 
@@ -473,6 +506,7 @@ def build_payload(config, output_dir: str, analysis_name: str = "analysis") -> E
                 verdict=space_verdict(diagnostics, len(protids)),
                 diagnostics=summary,
                 contributions=contributions,
+                stability=_stability_series(directory, protids),
                 description=descriptions.describe_space(
                     space_id,
                     strategy=getattr(space, "strategy", "none"),
@@ -522,6 +556,8 @@ def build_payload(config, output_dir: str, analysis_name: str = "analysis") -> E
         available.add("matrix")
     if censoring:
         available.add("censoring")
+    if any(space.stability for space in spaces):
+        available.add("stability_series")
     return ExplorerPayload(
         analysis_name=analysis_name,
         spaces=spaces,
@@ -535,6 +571,7 @@ def build_payload(config, output_dir: str, analysis_name: str = "analysis") -> E
         pipeline=pipeline,
         tm_matrix=tm_matrix,
         censoring=censoring,
+        thresholds=_thresholds(),
     )
 
 
@@ -722,6 +759,20 @@ def _pipeline(config, spaces: list) -> dict:
     if not blocks and not rows:
         return {}
     return {"blocks": blocks, "rows": rows}
+
+
+def _thresholds() -> dict:
+    """The judgement lines the page draws, read from the code that enforces them.
+
+    Retyping 0.30 into the template would let the picture and the verdict
+    disagree the day either moves -- the same reasoning as the signal
+    inventory, which reads its rows out of the guard rather than restating
+    them.
+    """
+    from diagnostics.embedding import DISTORTED_THRESHOLD
+    from diagnostics.stability import COIN_FLIP_THRESHOLD
+
+    return {"coin_flip": float(COIN_FLIP_THRESHOLD), "distorted": float(DISTORTED_THRESHOLD)}
 
 
 def _matrix_path_for(config, space_id: str) -> str:
