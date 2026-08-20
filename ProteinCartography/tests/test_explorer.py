@@ -1080,3 +1080,71 @@ def test_the_fold_out_escapes_before_it_marks_up():
     marker = html.index("function inlineMarkup")
     body = html[marker : marker + 400]
     assert body.index("escapeHtml(text)") < body.index("replace(/`([^`]+)`/g")
+
+
+# ==========================================================================
+# The records panel. Its payload key shipped with no test, which is the
+# failure #29 and #32 are about: a value written into the payload is not
+# thereby read by anything. These assert that it is.
+# ==========================================================================
+
+
+def test_the_records_key_is_restricted_to_the_proteins_on_the_maps(tmp_path):
+    """A row for a protein no panel plots is a row the reader cannot find.
+
+    It would also make the table's count disagree with the footer's, and the
+    two counts being the same number is what tells a reader the table is of
+    this cohort rather than of the feature file.
+    """
+    from explorer.payload import _records
+
+    features = tmp_path / "protein_features"
+    features.mkdir()
+    (features / "uniprot_features.tsv").write_text(
+        "protid\tProtein names\tOrganism\tLength\n"
+        "P1\tactin\tHomo sapiens\t375\n"
+        "P2\tprofilin\tMus musculus\t140\n"
+        "NOT_PLOTTED\tsomething else\tEscherichia coli\t99\n"
+    )
+    rows = _records(str(tmp_path), ["P1", "P2"])
+    assert [row["accession"] for row in rows] == ["P1", "P2"]
+    assert rows[0] == {
+        "accession": "P1",
+        "protein": "actin",
+        "organism": "Homo sapiens",
+        "length": "375",
+    }
+
+
+def test_a_run_with_no_uniprot_feature_table_advertises_no_records_panel(tmp_path):
+    """`available` must not claim `records` when the file is absent.
+
+    The catalogue marks the panel drawable from that set, so a run without the
+    table has to leave the panel in its awaiting state naming the file -- which
+    is a question someone can answer -- rather than draw an empty table, which
+    reads as a cohort with no proteins in it.
+    """
+    from explorer.panels import catalogue_for
+    from explorer.payload import _records
+
+    assert _records(str(tmp_path), ["P1"]) == []
+    entry = next(p for p in catalogue_for(set()) if p["panel_id"] == "records")
+    assert entry["drawable"] is False
+    assert entry["missing"] == ["records"]
+    assert "uniprot_features.tsv" in entry["requires"]
+
+
+def test_the_template_reads_the_records_key_it_is_sent():
+    """The registry entry has to exist and has to reach `active.records`.
+
+    Asserted on the page's own source: there is no browser here, and a
+    `records` key nothing reads is exactly the shape of #29 and #32.
+    """
+    from explorer.template import render
+
+    html = render({"spaces": [], "records": []}, plotly_js="", title="t")
+    assert "SHEET_PANELS.records" in html, "the records kind is not registered"
+    assert "active.records" in html, "nothing on the page reads the records key"
+    assert re.search(
+        r"of \$\{rows\.length\} protein\(s\)", html
+    ), "the count must be of the filtered rows against the total"
