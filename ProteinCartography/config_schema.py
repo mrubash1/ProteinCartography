@@ -707,9 +707,31 @@ class DiagnosticsConfig:
     subsample_fraction: float = 0.8
     leiden_resolution_sweep: tuple = ()
     negative_controls: tuple = ()
+    #: ``(censored_space, reference_space)`` -- two spaces built from the SAME
+    #: proteins whose only difference is which pairs were measured. Naming them
+    #: is what lets the explorer report what censoring did to a map, and it has
+    #: to be declared rather than guessed: nothing in a space's own manifest
+    #: says "this one is the capped twin of that one", and a convention over
+    #: space ids would silently attach the label to whatever happened to match.
+    censoring_comparison: tuple = ()
 
     def __post_init__(self):
         _require_int("diagnostics.k", self.k)
+        if self.censoring_comparison:
+            _require(
+                "diagnostics.censoring_comparison",
+                len(self.censoring_comparison) == 2,
+                "expects exactly two space ids, [censored_space, reference_space], "
+                f"got {list(self.censoring_comparison)!r}",
+            )
+            for i, space_id in enumerate(self.censoring_comparison):
+                _require_str(f"diagnostics.censoring_comparison[{i}]", space_id)
+            _require(
+                "diagnostics.censoring_comparison",
+                self.censoring_comparison[0] != self.censoring_comparison[1],
+                "the two spaces must differ; a space compared against itself "
+                "measures the reducer, not the censoring",
+            )
         _require("diagnostics.k", self.k >= 1, f"must be at least 1, got {self.k}")
         _require_int("diagnostics.bootstrap_replicates", self.bootstrap_replicates)
         _require(
@@ -759,6 +781,7 @@ class DiagnosticsConfig:
             "subsample_fraction",
             "leiden_resolution_sweep",
             "negative_controls",
+            "censoring_comparison",
         }
         _reject_unknown_keys("diagnostics", data, known)
         return cls(
@@ -767,6 +790,7 @@ class DiagnosticsConfig:
             subsample_fraction=data.get("subsample_fraction", 0.8),
             leiden_resolution_sweep=tuple(data.get("leiden_resolution_sweep", []) or []),
             negative_controls=tuple(data.get("negative_controls", []) or []),
+            censoring_comparison=tuple(data.get("censoring_comparison", []) or []),
         )
 
 
@@ -811,6 +835,12 @@ class MultispaceConfig:
                 raise ConfigError(
                     f"coregistration.compare[{i}]: {space_id!r} is not a defined "
                     f"space. Defined spaces: {sorted(self.spaces) or '(none)'}"
+                )
+        for i, space_id in enumerate(self.diagnostics.censoring_comparison):
+            if space_id not in self.spaces:
+                raise ConfigError(
+                    f"diagnostics.censoring_comparison[{i}]: {space_id!r} is not a "
+                    f"defined space. Defined spaces: {sorted(self.spaces) or '(none)'}"
                 )
 
     def _validate_fusability(self) -> None:

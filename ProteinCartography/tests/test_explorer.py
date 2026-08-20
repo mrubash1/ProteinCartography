@@ -1781,8 +1781,14 @@ def _matrix_fixture(tmp_path, values, clusters):
         provider = "tmscore"
         params = {"matrix_path": path}
 
+    class Space:
+        blocks = ("tmscore",)
+
     class Config:
         blocks = {"tmscore": Block()}
+        # The panels resolve the matrix through the SPACE, so a fixture without
+        # one exercises nothing.
+        spaces = {"structure": Space()}
 
     space = SpacePayload(
         space_id="structure",
@@ -1865,8 +1871,12 @@ def test_a_run_with_no_matrix_keeps_the_panel_awaiting_its_input():
         provider = "tmscore"
         params = {"matrix_path": "/nonexistent/matrix.tsv"}
 
+    class Space:
+        blocks = ("tmscore",)
+
     class Config:
         blocks = {"tmscore": Block()}
+        spaces = {"structure": Space()}
 
     assert _tm_matrix(Config(), []) == {}
     entry = next(p for p in catalogue_for(set()) if p["panel_id"] == "tm_matrix")
@@ -2083,3 +2093,107 @@ def test_the_page_says_high_disagreement_is_not_untrustworthy():
     assert "discovery surface" in html
     key = html[html.index("function renderColourKey") :][:2600]
     assert "left:" in key and "right:" in key, "the ramp's ends are unlabelled"
+
+
+# ==========================================================================
+# What censoring did to a map. The obvious panel here -- a drag line from
+# each protein's censored position to its uncensored one -- is the wrong
+# one, and the page has to refuse it with a number rather than an argument.
+# ==========================================================================
+
+
+def test_the_superimposable_threshold_sits_far_above_the_reducer_s_own_noise():
+    """The threshold has to be a measurement, not a taste.
+
+    Measured on actin_B: the same matrix reduced with the same parameters and
+    only a different seed gives a Procrustes disparity of 0.010-0.031, so the
+    reducer is stable to three decimals on this data. Two genuinely different
+    modalities give 0.862. A threshold of 0.5 is therefore nowhere near reducer
+    noise and already past "as different as two different modalities".
+    """
+    from explorer.payload import SUPERIMPOSABLE_THRESHOLD
+
+    assert 0.031 < SUPERIMPOSABLE_THRESHOLD < 0.862
+
+
+def test_an_unsuperimposable_pair_refuses_the_displacement():
+    """A line between two positions is read as distance travelled, and that
+    reading needs a shared frame. Above the threshold the page must say so and
+    fall back to something frame-independent."""
+    from explorer.template import render
+
+    html = render({"spaces": [], "censoring": {}}, plotly_js="", title="t")
+    assert "function renderCensoringComparison" in html
+    body = html[html.index("function renderCensoringComparison") :][:4200]
+    assert "not drawn as a displacement" in body
+    assert "comparison.superimposable" in body, "the refusal is not conditional on the number"
+    assert "neighbours kept" in body, "no frame-independent measure is offered instead"
+
+
+def test_the_comparison_needs_two_named_spaces_and_will_not_guess():
+    """Nothing in a space's manifest says "this is the capped twin of that one",
+    and a convention over space ids would attach the label to whatever happened
+    to match. So it is declared, validated against the defined spaces, and
+    absent when not declared."""
+    import pytest as _pytest
+
+    from config_schema import ConfigError, DiagnosticsConfig
+
+    assert DiagnosticsConfig().censoring_comparison == ()
+    with _pytest.raises(ConfigError) as one:
+        DiagnosticsConfig(censoring_comparison=("only_one",))
+    assert "exactly two space ids" in str(one.value)
+    with _pytest.raises(ConfigError) as same:
+        DiagnosticsConfig(censoring_comparison=("structure", "structure"))
+    assert "measures the reducer, not the censoring" in str(same.value)
+
+
+def test_a_censoring_comparison_naming_an_undefined_space_is_rejected():
+    """The same rule `coregistration.compare` already follows. A typo here
+    would silently produce a panel with no comparison rather than an error."""
+    import pytest as _pytest
+
+    from config_schema import ConfigError, from_legacy
+
+    config = {
+        "blocks": {"b": {"provider": "biophys"}},
+        "spaces": {"s": {"blocks": ["b"]}},
+        "diagnostics": {"censoring_comparison": ["s", "nope"]},
+    }
+    with _pytest.raises(ConfigError) as error:
+        from_legacy(config)
+    assert "censoring_comparison[1]" in str(error.value)
+    assert "not a defined space" in str(error.value)
+
+
+def test_the_matrix_panels_read_the_named_space_s_own_block_not_the_first_one():
+    """A run can carry more than one tmscore block.
+
+    The censoring comparison needs a capped twin alongside the shipped block,
+    and both panels used to scan `config.blocks` for the first tmscore provider
+    -- which is dict insertion order, a property of how the config was typed
+    rather than of what the panel describes. It would let the matrix panel draw
+    one matrix under another's caption.
+    """
+    from explorer.payload import _matrix_path_for
+
+    class Block:
+        def __init__(self, path):
+            self.provider = "tmscore"
+            self.params = {"matrix_path": path}
+
+    class Space:
+        def __init__(self, blocks):
+            self.blocks = blocks
+
+    class Config:
+        # `tmscore_capped` deliberately first, which is what a scan would find.
+        blocks = {"tmscore_capped": Block("/capped.tsv"), "tmscore": Block("/full.tsv")}
+        spaces = {
+            "structure": Space(("tmscore",)),
+            "structure_capped": Space(("tmscore_capped",)),
+        }
+
+    assert _matrix_path_for(Config(), "structure") == "/full.tsv"
+    assert _matrix_path_for(Config(), "structure_capped") == "/capped.tsv"
+    assert _matrix_path_for(Config(), "nonexistent") == ""

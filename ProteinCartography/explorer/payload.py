@@ -492,6 +492,10 @@ def build_payload(config, output_dir: str, analysis_name: str = "analysis") -> E
     pipeline = _pipeline(config, spaces)
     tm_matrix = _tm_matrix(config, spaces)
     censoring = _censoring(config, spaces)
+    comparison = _censoring_comparison(output_dir, config, spaces)
+    if comparison:
+        censoring = dict(censoring or {})
+        censoring["comparison"] = comparison
     # What the page HAS, named the way the catalogue names it. A panel is
     # drawable when everything it needs is in here; anything absent becomes the
     # panel's printed "awaiting ..." line rather than a blank.
@@ -720,6 +724,26 @@ def _pipeline(config, spaces: list) -> dict:
     return {"blocks": blocks, "rows": rows}
 
 
+def _matrix_path_for(config, space_id: str) -> str:
+    """The matrix behind ONE named space, by that space's own block.
+
+    Deliberately not "the first block whose provider is tmscore". A run can
+    carry more than one -- the censoring comparison needs a capped twin
+    alongside the shipped block -- and a scan over `config.blocks` would return
+    whichever the mapping happened to yield first. That is dict insertion order,
+    which is a property of how the config was written rather than of what the
+    panel is describing, and it would let the matrix panel silently draw one
+    cohort's matrix while its caption described another.
+    """
+    space = (getattr(config, "spaces", {}) or {}).get(space_id)
+    blocks = getattr(config, "blocks", {}) or {}
+    for block_id in getattr(space, "blocks", ()) or ():
+        block = blocks.get(block_id)
+        if getattr(block, "provider", "") == "tmscore":
+            return (getattr(block, "params", {}) or {}).get("matrix_path") or ""
+    return ""
+
+
 #: How many quantisation levels the heatmap ships. uint8 over the observed
 #: range: at n=367 the full matrix is 135 KB raw and about 180 KB in base64,
 #: against 1.1 MB for float64. See `_tm_matrix` for why the FULL matrix and not
@@ -760,11 +784,7 @@ def _tm_matrix(config, spaces: list, sort_space: str = "structure") -> dict:
     space = next((s for s in spaces if s.space_id == sort_space), None)
     if space is None:
         return {}
-    path = ""
-    for block in (getattr(config, "blocks", {}) or {}).values():
-        if getattr(block, "provider", "") == "tmscore":
-            path = (getattr(block, "params", {}) or {}).get("matrix_path") or ""
-            break
+    path = _matrix_path_for(config, sort_space)
     if not path or not os.path.exists(path):
         return {}
 
@@ -856,11 +876,7 @@ def _censoring(config, spaces: list, sort_space: str = "structure") -> dict:
     space = next((s for s in spaces if s.space_id == sort_space), None)
     if space is None:
         return {}
-    path = ""
-    for block in (getattr(config, "blocks", {}) or {}).values():
-        if getattr(block, "provider", "") == "tmscore":
-            path = (getattr(block, "params", {}) or {}).get("matrix_path") or ""
-            break
+    path = _matrix_path_for(config, sort_space)
     if not path or not os.path.exists(path):
         return {}
 
@@ -887,6 +903,96 @@ def _censoring(config, spaces: list, sort_space: str = "structure") -> dict:
             "max": float(values.max()) if values.size else 0.0,
         },
         "n_proteins": len(rates),
+    }
+
+
+#: Above this Procrustes disparity two 2-D layouts share so little common shape
+#: that superimposing them is meaningless, so the explorer refuses to draw a
+#: protein's two positions as a displacement.
+#:
+#: 0.5 is not a taste. Measured on actin_B: reducing the SAME matrix with the
+#: same parameters and only a different seed gives 0.010-0.031, so the reducer
+#: itself is stable to three decimal places here; two genuinely different
+#: modalities (structure against local_structure) give 0.862. A pair above 0.5
+#: is therefore nowhere near reducer noise and already past "as different as two
+#: different modalities", which is the point where a connecting line stops
+#: describing movement and starts inventing it.
+SUPERIMPOSABLE_THRESHOLD = 0.5
+
+
+def _censoring_comparison(output_dir: str, config, spaces: list) -> dict:
+    """What censoring did to a map, measured against its uncensored twin.
+
+    `diagnostics.censoring_comparison` names two spaces built from the same
+    proteins whose only difference is which pairs were measured. Everything here
+    comes from the coregistration the pipeline already ran on that pair.
+
+    THE DRAG LINE IS THE OBVIOUS PANEL AND IT IS THE WRONG ONE. Drawing each
+    protein's censored position joined to its uncensored one reads as "this is
+    how far the cap moved it", and that reading needs the two layouts to share a
+    frame. They do not: on actin_B the pair's Procrustes disparity is 0.968,
+    which is worse than structure against an entirely different modality. So the
+    displacement is refused, with the measured disparity as the reason rather
+    than an argument, and what is drawn instead is neighbourhood retention --
+    which is invariant to rotation, reflection and scale and therefore says
+    something true whatever the frames do.
+    """
+    # A direct attribute access, not `getattr(..., default)`. The field always
+    # exists on a validated config, and `test_diagnostics_config` reads the AST
+    # to prove every diagnostics field is consumed somewhere -- it cannot see a
+    # getattr, so writing one here would have made this field look dead to the
+    # guard that exists to catch exactly the #29/#32 defect shape.
+    pair = tuple(config.diagnostics.censoring_comparison or ())
+    if len(pair) != 2:
+        return {}
+    censored_id, reference_id = pair
+    known = {space.space_id for space in spaces}
+    if censored_id not in known or reference_id not in known:
+        return {}
+
+    directory = os.path.join(output_dir, "coregistration")
+    per_protein = _per_protein_jaccard(directory, censored_id, reference_id)
+    if not per_protein:
+        per_protein = _per_protein_jaccard(directory, reference_id, censored_id)
+    summary = {}
+    for row in _read_comparisons(layout.summary_path(output_dir)):
+        names = {row.get("space_a"), row.get("space_b")}
+        if names == {censored_id, reference_id}:
+            summary = row
+            break
+    if not summary:
+        return {}
+
+    disparity = summary.get("procrustes_disparity")
+    retained = sorted(
+        ({"protid": protid, "jaccard": value} for protid, value in per_protein.items()),
+        key=lambda row: (row["jaccard"], row["protid"]),
+    )
+    # Every OTHER pair this run compared, so the reader can see what the number
+    # means without being told. A disparity is only interpretable next to the
+    # disparities of pairs whose difference is understood.
+    context = [
+        {
+            "space_a": row.get("space_a"),
+            "space_b": row.get("space_b"),
+            "jaccard_mean": row.get("jaccard_mean"),
+            "procrustes_disparity": row.get("procrustes_disparity"),
+        }
+        for row in _read_comparisons(layout.summary_path(output_dir))
+        if {row.get("space_a"), row.get("space_b")} != {censored_id, reference_id}
+    ]
+    superimposable = disparity is not None and disparity <= SUPERIMPOSABLE_THRESHOLD
+    return {
+        "censored_space": censored_id,
+        "reference_space": reference_id,
+        "jaccard_mean": summary.get("jaccard_mean"),
+        "procrustes_disparity": disparity,
+        "cluster_ari": summary.get("cluster_ari"),
+        "k": summary.get("k"),
+        "retained": retained,
+        "context": context,
+        "threshold": SUPERIMPOSABLE_THRESHOLD,
+        "superimposable": bool(superimposable),
     }
 
 

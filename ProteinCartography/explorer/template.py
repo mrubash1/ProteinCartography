@@ -1054,9 +1054,115 @@ SHEET_PANELS.censoring = {
         );
       });
     }
+    if (censoring.comparison) wrap.append(renderCensoringComparison(censoring.comparison));
     return wrap;
   },
 };
+
+// What censoring did to a map, measured against its uncensored twin.
+//
+// THE DRAG LINE IS THE OBVIOUS PANEL AND IT IS THE WRONG ONE. Joining a
+// protein's censored position to its uncensored one reads as "this is how far
+// the cap moved it", and that reading needs the two layouts to share a frame.
+// So the page checks whether they do, refuses with the measured number when
+// they do not, and draws neighbourhood retention instead -- which is invariant
+// to rotation, reflection and scale and so survives whatever the frames do.
+function renderCensoringComparison(comparison) {
+  const box = document.createElement("div");
+  const head = document.createElement("div");
+  head.className = "table-note";
+  head.innerHTML =
+    `<b>What the cap did to the map.</b> <code>${escapeHtml(comparison.censored_space)}</code> ` +
+    `and <code>${escapeHtml(comparison.reference_space)}</code> are the same proteins ` +
+    "reduced the same way; the only difference is which pairs were measured.";
+  box.append(head);
+  box.append(
+    reportRows([
+      [
+        `neighbours kept (k=${fmtValue(comparison.k)})`,
+        fmtValue(comparison.jaccard_mean),
+        "mean neighbourhood Jaccard — frame-independent",
+      ],
+      [
+        "layouts superimposable",
+        `${fmtValue(comparison.procrustes_disparity)} ` +
+        (comparison.superimposable
+          ? "— below the threshold, so the two frames share a shape"
+          : `— above ${fmtValue(comparison.threshold)}, so they do not`),
+        "Procrustes disparity, 0 is identical",
+      ],
+      [
+        "cluster agreement",
+        comparison.cluster_ari === null || comparison.cluster_ari === undefined
+          ? reportMissing("no partition was compared for this pair")
+          : fmtValue(comparison.cluster_ari),
+        "adjusted Rand index",
+      ],
+    ])
+  );
+  // The refusal, with the number as its reason.
+  if (!comparison.superimposable) {
+    const refused = document.createElement("div");
+    refused.className = "refused";
+    refused.innerHTML =
+      "<b>refused: the two positions are not drawn as a displacement.</b> A line " +
+      "from a protein's censored position to its uncensored one would be read as " +
+      "how far the cap moved it, and that reading needs the two layouts to share " +
+      `a frame. At a Procrustes disparity of ${fmtValue(comparison.procrustes_disparity)} ` +
+      "they share almost none — this pair is less superimposable than two " +
+      "entirely different modalities are, so the length of such a line would be " +
+      "an artifact of two unrelated frames rather than a measurement. What is " +
+      "drawn below instead does not depend on the frames at all.";
+    box.append(refused);
+  }
+  // Neighbourhood retention per protein, worst first. This is the honest
+  // version of "how far did this protein move".
+  const retained = comparison.retained || [];
+  if (retained.length) {
+    const plot = document.createElement("div");
+    plot.className = "plot";
+    box.append(plot);
+    PENDING_DRAWS.push(() => {
+      Plotly.react(
+        plot,
+        [{
+          type: "bar",
+          y: retained.map((row) => row.jaccard),
+          text: retained.map((row) => row.protid),
+          hovertemplate: "%{text}<br>keeps %{y:.3f} of its neighbours<extra></extra>",
+          marker: { color: "#2f7d4f" },
+        }],
+        {
+          margin: { l: 44, r: 12, t: 8, b: 26 },
+          xaxis: { title: "proteins, least retained first", showticklabels: false },
+          yaxis: { title: "neighbours kept", range: [0, 1] },
+          bargap: 0,
+        },
+        { displayModeBar: false, responsive: true }
+      );
+    });
+  }
+  // Context, because a disparity means nothing on its own.
+  const context = comparison.context || [];
+  if (context.length) {
+    const rows = context
+      .slice()
+      .sort((a, b) => (a.procrustes_disparity || 0) - (b.procrustes_disparity || 0))
+      .map((row) => [
+        `${row.space_a} vs ${row.space_b}`,
+        fmtValue(row.procrustes_disparity),
+        `neighbours kept ${fmtValue(row.jaccard_mean)}`,
+      ]);
+    const note = document.createElement("div");
+    note.className = "table-note";
+    note.innerHTML =
+      "Every other pair this run compared, for scale. A disparity is only " +
+      "interpretable beside pairs whose difference is already understood — these " +
+      "are different modalities, where a large number is expected.";
+    box.append(note, reportRows(rows));
+  }
+  return box;
+}
 
 // The similarity matrix itself, cluster-sorted. 2.02's point is that protein i
 // has no feature vector of its own: its feature vector IS its row here, so this
