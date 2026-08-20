@@ -103,6 +103,199 @@ _NO_SCAN = (
 )
 
 
+#: The source's 1.02, all six plates, ordered as it orders them: by how much
+#: each disturbs the existing geometry. The four prose fields are the source's
+#: own words, because the panel's job is to show that argument rather than to
+#: paraphrase it.
+#:
+#: `realized_by` is the interesting column and it is NOT a typed claim. It names
+#: the payload key whose presence means THIS RUN actually builds that flavour,
+#: so the plate reports the cohort in front of the reader instead of a sentence
+#: about the pipeline in general. `unimplemented` is for the three flavours no
+#: provider in this pipeline can produce, and it names the missing provider --
+#: a test asserts the registry still has none, so the day one is added the claim
+#: fails here rather than going stale on the page.
+FLAVOUR_PLATES = (
+    {
+        "plate_id": "A",
+        "name": "Color overlay",
+        "tag": "Geometry preserved",
+        "formula": "geometry = f(TM) · color = g(feature)",
+        "answers": (
+            "Does fold predict this property in this family? Where do "
+            "annotations disagree with structure?"
+        ),
+        "cannot": (
+            "Cannot bring functionally similar, structurally distant proteins "
+            "together. Those points are already far apart before you color them."
+        ),
+        "cost": "Hours. One join onto the features table.",
+        "failure": "Reading a spatial pattern into a color that was never in the geometry.",
+        "realized_by": "overlays",
+    },
+    {
+        "plate_id": "B",
+        "name": "Fusion: structure + sequence",
+        "tag": "Geometry altered",
+        "formula": "D² = w₁·d²(TM) + w₂·d²(PLM)",
+        "answers": (
+            "Which proteins are structurally alike but sequence-divergent, and "
+            "vice versa. The convergence question."
+        ),
+        "cannot": (
+            "Says nothing about mechanism. Two enzymes with identical fold and "
+            "sequence still may not share a substrate."
+        ),
+        "cost": "Days. ESM-C inference plus a rerun of the reduction.",
+        "failure": (
+            "The PLM block already encodes structure implicitly, so you "
+            "double-count fold and think you fused two views."
+        ),
+        "unimplemented": "no protein-language-model block provider is registered",
+    },
+    {
+        "plate_id": "C",
+        "name": "Fusion: structure + biophysics",
+        "tag": "Geometry altered",
+        "formula": "D² = w₁·d²(TM) + w₂·d²(GRAVY, charge, aggregation)",
+        "answers": (
+            "Which structural subfamilies split on surface chemistry. Often the "
+            "split that actually matters for expression."
+        ),
+        "cannot": (
+            "Three scalars against an n-dimensional similarity profile. Without "
+            "block normalization this is a no-op."
+        ),
+        "cost": "Days. Descriptors are cheap; the normalization decision is the work.",
+        "failure": (
+            "Charge in raw units swamps GRAVY in raw units. Standardize within "
+            "the block first, then across blocks."
+        ),
+        "realized_by": "fused_spaces",
+        # The source's failure mode for this plate is live in this pipeline, so
+        # it is printed on the plate rather than left as a general warning. The
+        # block declares `normalization="zscore_within"` and nothing reads that
+        # field; late fusion divides each block by its own mean off-diagonal
+        # distance, which equalises the BLOCKS and not the columns inside them.
+        "hazard": (
+            "This pipeline's late fusion normalizes each block by its own mean "
+            "off-diagonal distance, which equalises the blocks and not the "
+            "columns within them. The biophysical block declares "
+            "`normalization: zscore_within` and that field is read by nothing, "
+            "so the source's stated failure mode -- one raw scalar swamping "
+            "another -- is unguarded here."
+        ),
+    },
+    {
+        "plate_id": "D",
+        "name": "Fusion: structure + function calls",
+        "tag": "Geometry altered",
+        "formula": "D² = w₁·d²(TM) + w₂·d²(EC, GO, localization)",
+        "answers": (
+            "Groups proteins by predicted activity rather than fold, so "
+            "pseudo-enzymes separate from enzymes."
+        ),
+        "cannot": (
+            "Inherits predictor error directly into the coordinates. "
+            "Best-in-class molecular-function Fmax is around 0.46."
+        ),
+        "cost": "Days to weeks. CLEAN, DeepFRI, DeepLoc, plus calibration.",
+        "failure": (
+            "Circularity. Most function predictors were trained on homology, so "
+            "you fuse structure with a proxy for structure."
+        ),
+        "unimplemented": "no function-call block provider is registered",
+    },
+    {
+        "plate_id": "E",
+        "name": "Fusion: developability weighted",
+        "tag": "Geometry altered",
+        "formula": "D² = Σ w·d²(Tm, solubility, MHC-II, humanness)",
+        "answers": (
+            "Ranks candidates for a build. Neighbors are 'similarly buildable,' "
+            "which is what triage needs."
+        ),
+        "cannot": (
+            "Not a biology map. Axes are meaningless and should never be shown "
+            "to someone asking an evolutionary question."
+        ),
+        "cost": (
+            "Weeks. Immunogenicity prediction is the long pole and needs "
+            "allele-set decisions."
+        ),
+        "failure": (
+            "Shipping it as the exploratory map. Label it as triage or it will "
+            "be misread within a week."
+        ),
+        "unimplemented": "no developability block provider is registered",
+    },
+    {
+        "plate_id": "F",
+        "name": "Co-registered spaces",
+        "tag": "Parallel geometries",
+        "formula": "several maps · one protid index · linked selection",
+        "answers": (
+            "All of the above, separately, plus the disagreement between them, "
+            "which is the actual discovery surface."
+        ),
+        "cannot": (
+            "No single picture to put in a deck. Requires a real interface, not "
+            "a static HTML export."
+        ),
+        "cost": "Weeks. The feature store and the linked-brushing UI are the build.",
+        "failure": (
+            "Letting the spaces drift out of sync as features are recomputed. "
+            "Version the table or the comparison is meaningless."
+        ),
+        "realized_by": "comparisons",
+    },
+)
+
+
+def _flavours() -> dict:
+    """The six plates, with their per-run status left for `catalogue_for`."""
+    return {
+        "plates": [dict(plate) for plate in FLAVOUR_PLATES],
+        "note": (
+            "The four prose fields are the source's own, at 1.02. Whether a "
+            "flavour is built is answered for THIS RUN from what the payload "
+            "carries, not from a sentence about the pipeline in general."
+        ),
+    }
+
+
+#: What a plate says about itself once the run is known. Three states and never
+#: two: a flavour this pipeline cannot build at all is a different fact from one
+#: it can build and this cohort did not ask for, and a reader who cannot tell
+#: them apart cannot act on either.
+PLATE_STATES = ("built by this run", "available, not used by this run", "not implemented")
+
+
+def _mark_plates(content: dict, available: set) -> dict:
+    """Stamp each plate with what this run did about it."""
+    plates = content.get("plates")
+    if not plates:
+        return content
+    out = dict(content)
+    out["plates"] = []
+    for plate in plates:
+        plate = dict(plate)
+        if plate.get("unimplemented"):
+            plate["state"] = "not implemented"
+            plate["state_note"] = plate["unimplemented"]
+        elif plate.get("realized_by") in available:
+            plate["state"] = "built by this run"
+            plate["state_note"] = f"the payload carries `{plate['realized_by']}`"
+        else:
+            plate["state"] = "available, not used by this run"
+            plate["state_note"] = (
+                f"this run's payload carries no `{plate.get('realized_by')}`, so "
+                "nothing here draws it"
+            )
+        out["plates"].append(plate)
+    return out
+
+
 #: The overlay-only signals, read out of the guard that enforces them.
 #:
 #: NOT RETYPED, and that is the entire point of the panel. `config_schema`
@@ -254,6 +447,7 @@ CATALOGUE = (
         provenance="method",
         section="1.02",
         question="Which of these are you actually asking for?",
+        content=_flavours(),
     ),
     PanelSpec(
         panel_id="signal_inventory",
@@ -545,5 +739,6 @@ def catalogue_for(available: set) -> list:
         # that the catalogue stays a description of panels and the prose stays
         # in one file where it can be checked against the code it describes.
         entry["description"] = descriptions.describe_panel(spec.panel_id)
+        entry["content"] = _mark_plates(entry["content"], available)
         out.append(entry)
     return out

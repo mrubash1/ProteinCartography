@@ -489,6 +489,12 @@ def build_payload(config, output_dir: str, analysis_name: str = "analysis") -> E
     # records panel it could not fill.
     if records:
         available.add("records")
+    # The overlay flavour is the one the source calls geometry-preserving, and
+    # whether this run has any is a fact about the run: a cohort with no feature
+    # table has no overlay to keep always on. Named here rather than inferred in
+    # the page, like every other entry in this set.
+    if overlays:
+        available.add("overlays")
     return ExplorerPayload(
         analysis_name=analysis_name,
         spaces=spaces,

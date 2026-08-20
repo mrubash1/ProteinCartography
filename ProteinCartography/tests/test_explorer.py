@@ -1370,3 +1370,130 @@ def test_the_tab_count_asks_the_renderer_whether_a_panel_is_blank():
     assert re.search(r"sheetPanels\.filter\(panelIsBlank\)", html), (
         "renderSheets still decides blankness itself"
     )
+
+
+# ==========================================================================
+# The six option plates. The prose is the source's; the only thing this page
+# computes is which flavour the run in front of the reader actually built.
+# ==========================================================================
+
+
+def test_all_six_flavours_are_present_and_in_the_source_s_order():
+    """Ordered by how much each disturbs the existing geometry, which is the
+    source's own ordering and the reason the list is worth showing at all.
+    Dropping one would leave a reader thinking the taxonomy has five."""
+    from explorer.panels import FLAVOUR_PLATES
+
+    assert [p["plate_id"] for p in FLAVOUR_PLATES] == ["A", "B", "C", "D", "E", "F"]
+    for plate in FLAVOUR_PLATES:
+        for field in ("name", "formula", "answers", "cannot", "cost", "failure"):
+            assert plate[field], f"plate {plate['plate_id']} has no {field}"
+
+
+def test_a_plate_is_either_realized_by_a_payload_key_or_named_unimplemented():
+    """Never both and never neither.
+
+    A flavour with no `realized_by` and no `unimplemented` would silently take
+    the "available, not used" branch and tell a reader this pipeline could
+    build something it cannot.
+    """
+    from explorer.panels import FLAVOUR_PLATES
+
+    for plate in FLAVOUR_PLATES:
+        realized = plate.get("realized_by")
+        unimplemented = plate.get("unimplemented")
+        assert bool(realized) != bool(unimplemented), (
+            f"plate {plate['plate_id']} claims both or neither"
+        )
+
+
+def test_the_three_unimplemented_flavours_have_no_provider_to_build_them():
+    """The claim is checkable, so it is checked.
+
+    B, D and E need a protein-language-model, a function-call and a
+    developability block, and this pipeline registers four providers, none of
+    them those. The day one is added, this fails here rather than leaving a
+    stale "not implemented" on the page.
+    """
+    from compute_block import _register_builtins
+    from explorer.panels import FLAVOUR_PLATES
+    from spaces.registry import BLOCK_GROUP, available_providers
+
+    _register_builtins()
+    registered = {info.name for info in available_providers(BLOCK_GROUP)}
+    # A subset assertion, not equality: the registry is process-global and other
+    # tests in this suite register probe providers into it. Equality here failed
+    # only when the whole file ran, which is the worst kind of test.
+    assert {"tmscore", "threedi", "biophys", "domains"} <= registered
+    for absent in ("esm", "plm", "clean", "deepfri", "deeploc", "developab", "mhc"):
+        assert not any(absent in name for name in registered), (
+            f"a {absent!r} provider is registered, so a plate claiming otherwise is stale"
+        )
+    unimplemented = {p["plate_id"] for p in FLAVOUR_PLATES if p.get("unimplemented")}
+    assert unimplemented == {"B", "D", "E"}
+
+
+def test_a_plate_reports_what_this_run_did_rather_than_a_general_claim():
+    """The status is per run, in three states that stay distinct.
+
+    "this pipeline offers C as a named fusion" is a sentence about the
+    pipeline; "this run built it" is a fact about the cohort the reader is
+    looking at, and only the second one can be wrong in a way they would
+    notice.
+    """
+    from explorer.panels import PLATE_STATES, catalogue_for
+
+    def plate(available, plate_id):
+        entry = next(p for p in catalogue_for(available) if p["panel_id"] == "flavours")
+        return next(x for x in entry["content"]["plates"] if x["plate_id"] == plate_id)
+
+    assert plate({"overlays", "comparisons", "fused_spaces"}, "A")["state"] == "built by this run"
+    assert plate(set(), "A")["state"] == "available, not used by this run"
+    assert plate({"comparisons"}, "F")["state"] == "built by this run"
+    assert plate({"comparisons"}, "C")["state"] == "available, not used by this run"
+    assert plate(set(), "B")["state"] == "not implemented"
+    for available in (set(), {"overlays", "comparisons", "fused_spaces"}):
+        for spec in catalogue_for(available):
+            for entry in (spec["content"] or {}).get("plates", []):
+                assert entry["state"] in PLATE_STATES
+                assert entry["state_note"], "a state with no note cannot be acted on"
+
+
+def test_the_overlay_key_reaches_the_available_set():
+    """`overlays` is new in `available` and the flavours panel is what reads
+    it. A key nothing reads is #29 again."""
+    from explorer.panels import catalogue_for
+
+    without = next(p for p in catalogue_for(set()) if p["panel_id"] == "flavours")
+    with_it = next(p for p in catalogue_for({"overlays"}) if p["panel_id"] == "flavours")
+    states = [
+        next(x["state"] for x in entry["content"]["plates"] if x["plate_id"] == "A")
+        for entry in (without, with_it)
+    ]
+    assert states == ["available, not used by this run", "built by this run"]
+
+
+def test_the_c_plate_carries_the_hazard_its_own_failure_mode_describes():
+    """The source's failure mode for C is "charge in raw units swamps GRAVY in
+    raw units. Standardize within the block first" -- and in this pipeline the
+    biophysical block declares `zscore_within` while nothing reads the field
+    (FOLLOWUPS #32). A plate quoting the warning next to a geometry that does
+    not implement it would be worse than not quoting it."""
+    from explorer.panels import FLAVOUR_PLATES
+
+    plate = next(p for p in FLAVOUR_PLATES if p["plate_id"] == "C")
+    assert "zscore_within" in plate["hazard"]
+    assert "read by nothing" in plate["hazard"]
+    others = [p["plate_id"] for p in FLAVOUR_PLATES if p.get("hazard")]
+    assert others == ["C"], "only the plate this pipeline actually builds carries one"
+
+
+def test_the_cards_renderer_reads_the_plates_and_answers_the_blank_count():
+    from explorer.template import render
+
+    html = render({"spaces": []}, plotly_js="", title="t")
+    assert "SHEET_PANELS.cards" in html, "the cards kind is not registered"
+    body = html[html.index("SHEET_PANELS.cards") :][:2600]
+    assert "content.plates" in body
+    assert "isEmpty(panel)" in body, "a plateless cards panel would count as filled"
+    assert "plate.hazard" in body, "the per-pipeline hazard is not rendered"

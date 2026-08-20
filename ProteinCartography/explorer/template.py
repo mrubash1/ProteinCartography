@@ -173,6 +173,38 @@ td.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; fo
    out of the enforcing guard has no reason to trust them. */
 .table-note { padding: 7px 12px; font-size: 12px; color: var(--muted);
   border-bottom: 1px solid var(--line); background: #fbfbfc; }
+/* The 1.02 option plates. A grid inside the card, so six plates do not become
+   six full-width blocks a reader has to scroll past to compare. */
+.plates { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 10px; padding: 11px 12px; }
+.plate { border: 1px solid var(--line); border-radius: 5px; padding: 9px 10px;
+  background: #fcfdfd; font-size: 12px; }
+.plate h3 { margin: 5px 0 3px; font-size: 12.5px; }
+.plate .formula { margin: 0 0 3px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px; color: var(--muted); }
+.plate .plate-tag { font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em;
+  color: var(--muted); margin-bottom: 5px; }
+.plate dl { margin: 0; }
+.plate .field { margin-bottom: 5px; }
+.plate dt { font-size: 10px; text-transform: uppercase; letter-spacing: .04em;
+  color: var(--muted); }
+.plate dd { margin: 1px 0 0; }
+/* What the plate cannot answer, and how it fails, in the caution colour. These
+   are the half of a plate that stops a reader adopting a geometry for a
+   question it cannot answer. */
+.plate .field.bad dd { color: #7a4e00; }
+.plate .field.quiet dd { color: var(--muted); }
+.plate-state { float: right; font-size: 9.5px; text-transform: uppercase;
+  letter-spacing: .04em; padding: 2px 5px; border-radius: 3px; font-weight: 600;
+  background: #eef1f4; color: var(--muted); }
+/* Three states and never two: built here, buildable and not asked for, and not
+   implemented at all are three different facts. */
+.plate-state.state-built { background: #eaf4ee; color: var(--ok); }
+.plate-state.state-available { background: #fdf7e8; color: var(--caution); }
+.plate-state.state-not { background: #eef1f4; color: var(--muted); }
+.plate-hazard { margin-top: 7px; border-left: 3px solid var(--caution);
+  background: #fdf9ef; padding: 5px 8px; font-size: 11.5px; }
+.plate-hazard b { color: var(--caution); }
 /* The verdict word inside a report row, where the banner's full-width tint
    would fight the table. Colour only. */
 .v-ok { color: var(--ok); }
@@ -799,6 +831,68 @@ SHEET_PANELS.records = {
     filter.addEventListener("input", paint);
     wrap.append(bar, table);
     paint();
+    return wrap;
+  },
+};
+
+// The six option plates of the source's 1.02, as plates. Four prose fields per
+// flavour and one status, and the status is the only part this page computes:
+// whether THIS RUN builds that flavour, which the payload answers.
+//
+// `cannot answer` and `failure mode` are styled apart from the other two on
+// purpose. They are the half of each plate that stops a reader adopting a
+// geometry for a question it cannot answer, and set in the same grey as the
+// cost line they read as small print.
+SHEET_PANELS.cards = {
+  isEmpty(panel) {
+    return !(((panel.content || {}).plates) || []).length;
+  },
+  render(panel) {
+    const content = panel.content || {};
+    const wrap = document.createElement("div");
+    if (content.note) {
+      const note = document.createElement("div");
+      note.className = "table-note";
+      note.innerHTML = inlineMarkup(content.note);
+      wrap.append(note);
+    }
+    const holder = document.createElement("div");
+    holder.className = "plates";
+    (content.plates || []).forEach((plate) => {
+      const box = document.createElement("article");
+      box.className = "plate";
+      const fields = [
+        ["answers", plate.answers, ""],
+        ["cannot answer", plate.cannot, "bad"],
+        ["cost", plate.cost, "quiet"],
+        ["failure mode", plate.failure, "bad"],
+      ];
+      const rows = fields
+        .filter(([, value]) => value)
+        .map(([label, value, kind]) =>
+          `<div class="field ${kind}"><dt>${escapeHtml(label)}</dt>` +
+          `<dd>${inlineMarkup(value)}</dd></div>`)
+        .join("");
+      const state = plate.state || "";
+      box.innerHTML =
+        `<span class="plate-state state-${escapeHtml(state.split(" ")[0])}" ` +
+        `title="${escapeHtml(plate.state_note || "")}">${escapeHtml(state)}</span>` +
+        `<h3>${escapeHtml(plate.plate_id)}. ${escapeHtml(plate.name)}</h3>` +
+        `<p class="formula">${escapeHtml(plate.formula || "")}</p>` +
+        `<div class="plate-tag">${escapeHtml(plate.tag || "")}</div>` +
+        `<dl>${rows}</dl>`;
+      // The plate whose stated failure mode is live in this pipeline says so on
+      // the plate. A hazard in a fold-out is a hazard read by the people who
+      // already suspected it.
+      if (plate.hazard) {
+        const hazard = document.createElement("div");
+        hazard.className = "plate-hazard";
+        hazard.innerHTML = `<b>In this pipeline.</b> ${inlineMarkup(plate.hazard)}`;
+        box.append(hazard);
+      }
+      holder.append(box);
+    });
+    wrap.append(holder);
     return wrap;
   },
 };
