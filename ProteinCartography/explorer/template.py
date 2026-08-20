@@ -131,6 +131,18 @@ footer { border-top: 1px solid var(--line); background: var(--panel);
 footer code { font-size: 11.5px; }
 .legend { font-size: 12px; color: var(--muted); padding: 0 22px 4px; }
 .legend b { color: var(--ink); font-weight: 600; }
+/* The one phrase on the page that says "do not trust this point". It is worth
+   the colour: a reader who skims the legend still has to see which marker the
+   sentence is about. */
+.legend .flagged-key { color: var(--bad); }
+.legend .flagged-key::before { content: ""; display: inline-block; width: 9px; height: 9px;
+  border-radius: 50%; border: 2.6px solid var(--bad); margin-right: 5px;
+  vertical-align: baseline; }
+/* Beside the disagreement ramp, where high-is-interesting and do-not-read are
+   most easily run together. */
+.key-caveat { flex-basis: 100%; margin-top: 4px; font-size: 11.5px; color: #4a535c;
+  border-left: 3px solid var(--caution); background: #fdf9ef; padding: 5px 8px; }
+.key-caveat b { color: var(--caution); }
 /* The fold-out. Collapsed by default, because a verdict a reader has to open
    is read only by people who already suspected it -- which is exactly why the
    verdict banner above is NOT in here. This holds the slower material: what is
@@ -280,10 +292,7 @@ td .out { display: block; color: var(--muted);
 
 <div id="colour-key" class="colour-key" style="display:none"></div>
 
-<div class="legend">
-  <b>Hollow points</b> are proteins whose 2-D position the diagnostics say should not be read.
-  Selecting in any panel highlights the same proteins in all of them.
-</div>
+<div class="legend" id="legend"></div>
 
 <div id="grid"></div>
 
@@ -452,6 +461,38 @@ function rebuildColourDomain() {
 // Without this the reader has colour and no key. The source is explicit that a
 // map ships with what it needs to be read; a recoloured scatter with no legend
 // is the same failure as a diagnostic nobody prints.
+// The legend, counted rather than asserted. "Some points are hollow" leaves a
+// reader scanning 367 markers for something they cannot count; the number, and
+// which panel carries it, turns it into something they can check.
+function renderLegend() {
+  const node = el("legend");
+  const flagged = new Set();
+  const perSpace = [];
+  spaces.forEach((space) => {
+    const bad = space.protids.filter((protid, i) => space.readable[i] === false);
+    bad.forEach((protid) => flagged.add(protid));
+    if (bad.length) perSpace.push(`${space.space_id} ${bad.length}`);
+  });
+  const total = spaces.length ? spaces[0].protids.length : 0;
+  if (!flagged.size) {
+    node.innerHTML =
+      "<b>No protein is flagged in any panel.</b> The diagnostics found every " +
+      "2-D position on this page worth reading. Selecting in any panel " +
+      "highlights the same proteins in all of them.";
+    return;
+  }
+  node.innerHTML =
+    `<b class="flagged-key">Red-ringed points should not be trusted</b> — the ` +
+    "diagnostics say their 2-D position is not faithful, so their placement, " +
+    "their neighbours and their cluster are not evidence. " +
+    `<b>${flagged.size} of ${total}</b> proteins are flagged in at least one ` +
+    `panel (${perSpace.join(", ")}). ` +
+    "Everything else on this page still applies to them: they are real " +
+    "proteins with real measurements, and it is only the picture's placement " +
+    "that is unreliable. " +
+    "Selecting in any panel highlights the same proteins in all of them.";
+}
+
 function renderColourKey() {
   const box = el("colour-key");
   box.textContent = "";
@@ -472,15 +513,39 @@ function renderColourKey() {
   } else {
     const ramp = document.createElement("span");
     ramp.className = "key-ramp";
+    // Both ends named. A bare pair of numbers leaves the reader to guess which
+    // end is the interesting one, and on the disagreement overlay that guess is
+    // usually wrong in the direction that matters.
     box.append(
       document.createTextNode(fmtValue(colourDomain.min) + " "), ramp,
       document.createTextNode(" " + fmtValue(colourDomain.max))
     );
+    if (state.disagreement) {
+      const ends = document.createElement("span");
+      ends.className = "key-note";
+      ends.innerHTML =
+        "&nbsp;— left: this protein keeps the same neighbours in every space. " +
+        "right: its neighbours change most between spaces.";
+      box.append(ends);
+    }
   }
   const note = document.createElement("span");
   note.className = "key-note";
   note.textContent = "one key for every panel";
   box.append(note);
+  // The distinction this page most needs to keep sharp, said where the two are
+  // most easily confused -- beside the ramp itself.
+  if (state.disagreement) {
+    const warn = document.createElement("div");
+    warn.className = "key-caveat";
+    warn.innerHTML =
+      "<b>High disagreement is not the same as untrustworthy.</b> It is the " +
+      "source's discovery surface: a protein whose structural neighbours are " +
+      "not its chemical ones is the interesting case, not a broken one. The " +
+      "proteins you should <b>not</b> trust are the red-ringed ones, and they " +
+      "are flagged by the diagnostics rather than by this colour.";
+    box.append(warn);
+  }
 }
 
 function colourFor(space) {
@@ -519,18 +584,23 @@ function traceFor(space) {
   const selected = state.selected;
   const anySelected = selected.size > 0;
 
-  // Readable and unreadable proteins go into two traces so the marker outline
-  // can differ. Plotly cannot vary `symbol` fill per point in a way that reads
-  // clearly at this size, and the distinction has to survive being glanced at.
+  // Readable and unreadable proteins go into two traces so the marker can
+  // differ. The distinction has to survive being glanced at, and an open circle
+  // did not: with a Viridis fill the ring takes the overlay's own colour, so a
+  // flagged point in the middle of the ramp looked like an ordinary one. The
+  // flagged trace now keeps the overlay colour as its FILL -- it is still a
+  // real protein with a real value -- and adds a red ring that no overlay can
+  // produce, so "the diagnostics flagged this" is never a shade of the palette.
   const groups = [
-    { readable: true, symbol: "circle", opacity: 0.92 },
-    { readable: false, symbol: "circle-open", opacity: 0.85 },
+    { readable: true, symbol: "circle", opacity: 0.92, ring: null, ringWidth: 1.4 },
+    { readable: false, symbol: "circle", opacity: 0.95, ring: "#b3261e", ringWidth: 2.6 },
   ];
-  return groups.map(({ readable, symbol, opacity }) => {
+  return groups.map(({ readable, symbol, opacity, ring, ringWidth }) => {
     const idx = space.protids
       .map((_, i) => i)
       .filter((i) => space.readable[i] === readable);
-    const marker = { symbol, size: 9, line: { width: 1.4 } };
+    const marker = { symbol, size: 9, line: { width: ringWidth } };
+    if (ring) marker.line.color = ring;
     if (colour.kind === "continuous") {
       marker.color = idx.map((i) => colour.values[i]);
       marker.colorscale = "Viridis";
@@ -736,6 +806,7 @@ function panelFor(space) {
 function draw() {
   rebuildColourDomain();
   renderColourKey();
+  renderLegend();
   const grid = el("grid");
   if (!grid.dataset.built) {
     spaces.forEach((space) => {

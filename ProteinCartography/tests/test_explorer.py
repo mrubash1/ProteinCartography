@@ -1764,9 +1764,7 @@ def _tiny_matrix(tmp_path, values, protids):
     lines = [header]
     for protid, row in zip(protids, values):
         lines.append(
-            protid
-            + "\t"
-            + "\t".join(CENSORED_FILL_TOKEN if v == 0 else f"{v:.4f}" for v in row)
+            protid + "\t" + "\t".join(CENSORED_FILL_TOKEN if v == 0 else f"{v:.4f}" for v in row)
         )
     path = tmp_path / "matrix.tsv"
     path.write_text("\n".join(lines) + "\n")
@@ -2027,3 +2025,61 @@ def test_the_censoring_panel_prints_both_sides_and_never_only_the_rate():
     assert "rows_at_max_fraction" in body and "cols_at_max_fraction" in body
     assert "exhaustive" in body, "an uncensored cohort is not told it is uncensored"
     assert "measured_zero_count" in body, "the mask's own assumption is not reported"
+
+
+# ==========================================================================
+# Which points a reader must not trust. Two different things live near each
+# other on this page and they must not be run together.
+# ==========================================================================
+
+
+def test_the_flagged_points_are_marked_by_something_no_overlay_can_produce():
+    """An open circle was not enough.
+
+    With a continuous overlay the ring takes the palette's own colour, so a
+    flagged protein sitting mid-ramp looked like an ordinary one. The flagged
+    trace now carries a red ring, which no overlay value can generate, and
+    keeps the overlay colour as its fill -- it is still a real protein with a
+    real measurement, and only its position is untrustworthy.
+    """
+    from explorer.template import render
+
+    html = render({"spaces": []}, plotly_js="", title="t")
+    trace = html[html.index("function traceFor") :]
+    trace = trace[: trace.index("\n}")]
+    assert "circle-open" not in trace, "the flag is still a missing fill"
+    assert "#b3261e" in trace, "the flagged trace has no ring colour of its own"
+    assert "marker.line.color = ring" in trace
+
+
+def test_the_legend_counts_the_flagged_proteins_rather_than_asserting_them():
+    """ "Some points are hollow" leaves a reader scanning 367 markers for
+    something they cannot count. The number, and which panel carries it, is
+    checkable."""
+    from explorer.template import render
+
+    html = render({"spaces": []}, plotly_js="", title="t")
+    assert "function renderLegend" in html
+    assert "renderLegend()" in html, "the legend is never rendered"
+    legend = html[html.index("function renderLegend") :][:1800]
+    assert "space.readable[i] === false" in legend, "the count is not read from the mask"
+    assert "of at least one" not in legend
+    assert "No protein is flagged" in legend, "a clean cohort is not told it is clean"
+
+
+def test_the_page_says_high_disagreement_is_not_untrustworthy():
+    """The distinction this page most needs to keep sharp.
+
+    1.06 calls the disagreement between spaces the actual discovery surface: a
+    protein whose structural neighbours are not its chemical ones is the
+    interesting case, not a broken one. The do-not-read flag is a different
+    judgement from a different source, and a reader who merges them will
+    discard their best candidates.
+    """
+    from explorer.template import render
+
+    html = render({"spaces": []}, plotly_js="", title="t")
+    assert "High disagreement is not the same as untrustworthy" in html
+    assert "discovery surface" in html
+    key = html[html.index("function renderColourKey") :][:2600]
+    assert "left:" in key and "right:" in key, "the ramp's ends are unlabelled"
