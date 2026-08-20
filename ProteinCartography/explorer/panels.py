@@ -342,6 +342,96 @@ def _signal_inventory() -> dict:
     }
 
 
+#: The seven discordance patterns of the source's 6.06, verbatim.
+#:
+#: Discordance is not one phenomenon, and the source's point is that the TEST
+#: column is the one that matters: it is what separates a cause from its
+#: lookalike. Two of the seven -- saturation and structural noise -- resolve in
+#: OPPOSITE directions on which tree to trust, so a table listing causes without
+#: their tests would let a reader pick whichever conclusion they were hoping for.
+#:
+#: Static, and it stays static. Nothing in this pipeline produces a gene tree, so
+#: none of these patterns can be detected here; the panel is a reading guide for
+#: the day a tree arrives, which is why its provenance tag is `method` and not
+#: `real`.
+DISCORDANCE_PATTERNS = (
+    (
+        "Two copies per species, sister to each other",
+        "Recent duplication",
+        "Duplication node sits below the speciation node it should sit above; "
+        "both copies present in most descendants",
+        "Paralogs land close together; a tight pair that is not a fold discovery",
+    ),
+    (
+        "Two copies, each sister to the other species' copy",
+        "Ancient duplication then loss",
+        "Copies group by paralog class, not by species; the split predates the taxa",
+        "Two parallel clusters offset in the same direction; the offset is the "
+        "functional divergence",
+    ),
+    (
+        "One tip nested deep inside an unrelated clade",
+        "Horizontal transfer",
+        "Short patristic distance, wildly wrong taxonomy, often a different GC or "
+        "codon bias; screen with PreHGT",
+        "A single point far from its taxonomic neighbours. This is the outlier "
+        "people misread as innovation",
+    ),
+    (
+        "Shallow relationships shuffled, deep ones stable",
+        "Incomplete lineage sorting",
+        "Concentrated on short internal branches; conflicting topologies appear at "
+        "roughly equal frequency",
+        "Almost none. ILS moves the tree, not the structure, which is exactly why "
+        "it is safe to ignore here",
+    ),
+    (
+        "Long branch attaching to another long branch",
+        "Long-branch attraction",
+        "Goes away under a better model or with more taxa; bootstrap high but "
+        "posterior unstable",
+        "Fake innovation: the rate looks enormous because the branch length is wrong",
+    ),
+    (
+        "Structure tree and gene tree disagree at deep nodes",
+        "Sequence saturation",
+        "Sequence identity below ~20% across the split; structure still carries signal",
+        "Trust the structure tree here. This is the regime the map exists for",
+    ),
+    (
+        "Structure tree and gene tree disagree at shallow nodes",
+        "Structural noise or model error",
+        "pLDDT low in the regions driving the TM difference; check per-residue "
+        "confidence",
+        "Trust the gene tree here. Points may be adjacent for prediction-quality "
+        "reasons only",
+    ),
+)
+
+
+def _discordance() -> dict:
+    return {
+        "columns": [
+            {"key": "seen", "label": "what you see"},
+            {"key": "cause", "label": "most likely cause"},
+            {"key": "test", "label": "how to tell it apart"},
+            {"key": "effect", "label": "effect on the map"},
+        ],
+        "rows": [
+            {"seen": seen, "cause": cause, "test": test, "effect": effect}
+            for seen, cause, test, effect in DISCORDANCE_PATTERNS
+        ],
+        "note": (
+            "The middle column is the one that matters: it is the test that "
+            "separates a cause from its lookalike. Two of the seven resolve in "
+            "opposite directions on which tree to trust, so a cause read without "
+            "its test is a conclusion chosen rather than measured. Nothing in "
+            "this pipeline produces a gene tree, so none of these can be detected "
+            "here -- this is a reading guide, not a measurement of this cohort."
+        ),
+    }
+
+
 #: The report's sections, in the order 7.03 E2 fixes: cohort and provenance,
 #: retrieval coverage, geometry health, rate fit, and only THEN the map.
 #:
@@ -696,6 +786,7 @@ CATALOGUE = (
         provenance="method",
         section="6.06",
         question="The cause, the test that separates it from its lookalike, and the effect.",
+        content=_discordance(),
     ),
     # --- the report, whose section order is fixed by the source ---------------
     PanelSpec(

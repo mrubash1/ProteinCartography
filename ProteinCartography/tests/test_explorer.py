@@ -1497,3 +1497,40 @@ def test_the_cards_renderer_reads_the_plates_and_answers_the_blank_count():
     assert "content.plates" in body
     assert "isEmpty(panel)" in body, "a plateless cards panel would count as filled"
     assert "plate.hazard" in body, "the per-pipeline hazard is not rendered"
+
+
+def test_all_seven_discordance_patterns_carry_a_test_that_separates_them():
+    """The middle column is the panel.
+
+    Two patterns -- sequence saturation and structural noise -- resolve in
+    OPPOSITE directions on which tree to trust, and both present as "the two
+    trees disagree". A cause listed without the test that distinguishes it
+    lets a reader pick whichever conclusion they were hoping for, which is
+    worse than an empty panel.
+    """
+    from explorer.panels import DISCORDANCE_PATTERNS
+
+    assert len(DISCORDANCE_PATTERNS) == 7
+    for seen, cause, test, effect in DISCORDANCE_PATTERNS:
+        assert seen and cause and test and effect
+        assert len(test) > 40, f"{cause}: the test is too short to separate anything"
+    opposed = [row for row in DISCORDANCE_PATTERNS if "Trust the" in row[3]]
+    assert len(opposed) == 2, "the two opposite resolutions are the reason for the test column"
+    assert {row[3].split(".")[0] for row in opposed} == {
+        "Trust the structure tree here",
+        "Trust the gene tree here",
+    }
+
+
+def test_the_discordance_panel_reuses_the_shared_table_renderer():
+    """No new renderer, which was the point of building the table kind
+    generically: the second table panel is content only."""
+    from explorer.panels import CATALOGUE
+
+    entry = next(p for p in CATALOGUE if p.panel_id == "discordance")
+    assert entry.panel_type == "table"
+    assert [c["key"] for c in entry.content["columns"]] == ["seen", "cause", "test", "effect"]
+    assert len(entry.content["rows"]) == 7
+    assert "gene tree" in entry.content["note"], (
+        "the panel must say this pipeline cannot detect any of these"
+    )
