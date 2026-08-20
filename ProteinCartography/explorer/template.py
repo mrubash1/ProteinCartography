@@ -168,6 +168,11 @@ td.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; fo
   border-left: 3px solid var(--caution); background: #fdf9ef; }
 .refused b { color: var(--caution); }
 .refused .fills { display: block; margin-top: 4px; font-size: 11px; }
+/* A table panel's own caption: where its rows were read from. Above the table
+   rather than under it, because a reader who does not know the rows are read
+   out of the enforcing guard has no reason to trust them. */
+.table-note { padding: 7px 12px; font-size: 12px; color: var(--muted);
+  border-bottom: 1px solid var(--line); background: #fbfbfc; }
 /* The verdict word inside a report row, where the banner's full-width tint
    would fight the table. Colour only. */
 .v-ok { color: var(--ok); }
@@ -798,6 +803,58 @@ SHEET_PANELS.records = {
   },
 };
 
+// A panel whose content IS a table: columns and rows, both from the payload.
+// Two catalogue panels declare `panel_type: "table"` -- the overlay-only signal
+// inventory and the seven ways two trees disagree -- and neither is a plot, a
+// count or a measurement of this cohort. One renderer serves both because the
+// difference between them is entirely in their rows.
+//
+// The columns come from the payload too, rather than from a per-panel branch
+// here. A renderer that knew the signal inventory's three column names would
+// have to grow a branch for every table panel after it, and each branch is a
+// place for the page to disagree with the data it was handed.
+SHEET_PANELS.table = {
+  // Declared and empty is empty, whatever the registry says. Without this the
+  // tab bar counts a table panel with no rows as filled.
+  isEmpty(panel) {
+    return !(((panel.content || {}).rows) || []).length;
+  },
+  render(panel) {
+    const content = panel.content || {};
+    const columns = content.columns || [];
+    const rows = content.rows || [];
+    const wrap = document.createElement("div");
+    if (!columns.length || !rows.length) {
+      // Declared as a table and handed no table. Same rule as everywhere else
+      // on this page: say which of the two halves is missing.
+      const box = document.createElement("div");
+      box.className = "refused";
+      box.innerHTML =
+        `<b>this table's ${columns.length ? "rows" : "columns"} are empty</b> — ` +
+        "the payload declares the panel and does not carry its content";
+      wrap.append(box);
+      return wrap;
+    }
+    if (content.note) {
+      const note = document.createElement("div");
+      note.className = "table-note";
+      note.innerHTML = inlineMarkup(content.note);
+      wrap.append(note);
+    }
+    wrap.append(
+      sheetTable(
+        columns.map((column) => ({
+          label: column.label,
+          cell: (row) => `<td>${inlineMarkup(String(row[column.key] ?? ""))}</td>`,
+        })),
+        rows
+      )
+    );
+    return wrap;
+  },
+};
+
+
 // --- the diagnostics report ---------------------------------------------------
 // 7.03 E2 fixes the order -- cohort and provenance, retrieval coverage,
 // geometry health, rate fit, and only THEN the map -- and the order is the
@@ -1133,6 +1190,19 @@ function drawablePlaceholder(panel) {
   return box;
 }
 
+// Whether a panel draws NOTHING, which is not the same question as whether it
+// has a renderer. One renderer serves every `table` panel, so the day it was
+// added the tab bar stopped counting a table panel with no rows as empty --
+// while that panel still rendered a refusal and nothing else. A renderer may
+// therefore answer for itself, and a renderer that does not is assumed to draw
+// something once its inputs are present.
+function panelIsBlank(panel) {
+  if (!panel.drawable) return true;
+  const renderer = SHEET_PANELS[panel.panel_type];
+  if (!renderer) return true;
+  return renderer.isEmpty ? renderer.isEmpty(panel) : false;
+}
+
 function renderSheets() {
   const bar = el("sheets");
   bar.textContent = "";
@@ -1148,7 +1218,7 @@ function renderSheets() {
     const sheetPanels = (active.panels || []).filter(
       (p) => p.sheet === sheet.sheet && !BUILT_ELSEWHERE.has(p.panel_type)
     );
-    const blank = sheetPanels.filter((p) => !p.drawable || !SHEET_PANELS[p.panel_type]).length;
+    const blank = sheetPanels.filter(panelIsBlank).length;
     button.textContent = blank ? `${sheet.title} (${blank} empty)` : sheet.title;
     button.addEventListener("click", () => renderSheet(sheet.sheet));
     bar.append(button);

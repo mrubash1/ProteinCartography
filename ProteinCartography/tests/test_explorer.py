@@ -1273,3 +1273,100 @@ def test_the_report_never_prints_a_bare_blank_for_a_number_it_lacks():
     body = html[html.index("const GEOMETRY_COLUMNS") : html.index("REPORT_FILLERS.cohort")]
     for absent in ("negative control", "one block", "not informative"):
         assert absent in body, f"the geometry row does not say why {absent!r} is empty"
+
+
+# ==========================================================================
+# The signal inventory, and the generic table renderer it shares with the
+# discordance panel. The inventory's whole value is that it is READ from the
+# guard rather than retyped, so that is what is tested.
+# ==========================================================================
+
+
+def test_the_signal_inventory_is_read_from_the_guard_that_enforces_it():
+    """A retyped list is free to drift from what the pipeline refuses.
+
+    A panel showing eight signals while the guard enforced nine would be worse
+    than no panel: it would look like a check. So every signal in
+    `NOT_FUSABLE_PROVIDERS` has to appear, and nothing else may.
+    """
+    from config_schema import NOT_FUSABLE_PROVIDERS
+    from explorer.panels import CATALOGUE
+
+    entry = next(p for p in CATALOGUE if p.panel_id == "signal_inventory")
+    shown = {row["signal"] for row in entry.content["rows"]}
+    assert shown == set(NOT_FUSABLE_PROVIDERS.values())
+
+
+def test_the_inventory_groups_by_signal_so_four_providers_of_one_circularity_are_one_row():
+    """The guard is keyed on the provider deliberately -- `patristic`,
+    `iqtree`, `noveltree` and `phylogeny` are four ways to produce one
+    circularity. Four rows repeating one sentence would hide that they are the
+    same argument, so the row is per signal and names its providers."""
+    from explorer.panels import CATALOGUE
+
+    entry = next(p for p in CATALOGUE if p.panel_id == "signal_inventory")
+    row = next(r for r in entry.content["rows"] if r["signal"] == "phylogeny")
+    for provider in ("iqtree", "noveltree", "patristic", "phylogeny"):
+        assert provider in row["providers"]
+
+
+def test_every_signal_the_guard_names_carries_its_reason():
+    """A signal with no recorded reason is a hole in the argument, and the
+    panel prints `not determinable from the code` for it rather than an empty
+    cell. This asserts there are none today, so adding one to the guard
+    without its reason fails here rather than shipping a blank cell."""
+    from explorer.descriptions import NOT_DETERMINABLE
+    from explorer.panels import CATALOGUE
+
+    entry = next(p for p in CATALOGUE if p.panel_id == "signal_inventory")
+    holes = [r["signal"] for r in entry.content["rows"] if NOT_DETERMINABLE in r["reason"]]
+    assert holes == [], f"these signals are enforced with no reason recorded: {holes}"
+
+
+def test_one_table_renderer_serves_every_table_panel():
+    """Two catalogue panels declare `panel_type: "table"`. A renderer that
+    knew one panel's column names would need a branch per panel after it, and
+    each branch is a place for the page to disagree with its payload -- so the
+    columns come from the payload."""
+    from explorer.panels import CATALOGUE
+    from explorer.template import render
+
+    tables = [p.panel_id for p in CATALOGUE if p.panel_type == "table"]
+    assert len(tables) > 1, "the shared renderer is only interesting if it is shared"
+    html = render({"spaces": []}, plotly_js="", title="t")
+    assert "SHEET_PANELS.table" in html, "the table kind is not registered"
+    assert "content.columns" in html, "the renderer does not read the payload's columns"
+    assert "signal_inventory" not in html[html.index("SHEET_PANELS.table") :][:1500], (
+        "the shared renderer branches on a specific panel"
+    )
+
+
+def test_a_table_panel_with_no_rows_says_which_half_is_missing():
+    """Declared as a table and handed no table. The two halves are different
+    facts -- no columns is a template-side mistake and no rows is an empty
+    source -- and collapsing them hides which."""
+    from explorer.template import render
+
+    html = render({"spaces": []}, plotly_js="", title="t")
+    body = html[html.index("SHEET_PANELS.table") :][:1500]
+    assert "the payload declares the panel and does not carry its content" in body
+    assert 'columns.length ? "rows" : "columns"' in body
+
+
+def test_the_tab_count_asks_the_renderer_whether_a_panel_is_blank():
+    """A shared renderer broke this count the day it was added.
+
+    The bar counted a panel as filled as soon as *a* renderer existed for its
+    kind, so the discordance panel -- a `table` with no rows yet -- stopped
+    being counted as empty while it still drew a refusal and nothing else. The
+    two states have to stay distinguishable, so a renderer may answer for
+    itself.
+    """
+    from explorer.template import render
+
+    html = render({"spaces": []}, plotly_js="", title="t")
+    assert "function panelIsBlank" in html
+    assert "renderer.isEmpty" in html, "the count cannot ask the renderer"
+    assert re.search(r"sheetPanels\.filter\(panelIsBlank\)", html), (
+        "renderSheets still decides blankness itself"
+    )

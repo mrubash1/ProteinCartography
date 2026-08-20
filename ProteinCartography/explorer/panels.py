@@ -102,6 +102,53 @@ _NO_SCAN = (
     "experiment runs, so this is a decision and not only compute"
 )
 
+
+#: The overlay-only signals, read out of the guard that enforces them.
+#:
+#: NOT RETYPED, and that is the entire point of the panel. `config_schema`
+#: holds the table and rejects a config at parse time; a list typed again here
+#: would be free to drift from what the pipeline actually refuses, and a panel
+#: showing eight signals while the guard enforced nine would be worse than no
+#: panel -- it would look like a check.
+#:
+#: Grouped by SIGNAL rather than listed by provider, because the guard is keyed
+#: on the provider on purpose: `patristic`, `iqtree`, `noveltree` and
+#: `phylogeny` are four providers of one circularity, and a table with four
+#: rows saying the same sentence hides that.
+def _signal_inventory() -> dict:
+    from config_schema import NOT_FUSABLE_PROVIDERS, NOT_FUSABLE_REASONS
+
+    by_signal: dict = {}
+    for provider, signal in NOT_FUSABLE_PROVIDERS.items():
+        by_signal.setdefault(signal, []).append(provider)
+    rows = []
+    for signal in sorted(by_signal):
+        rows.append(
+            {
+                "signal": signal,
+                "providers": ", ".join(sorted(by_signal[signal])),
+                # A signal the guard names with no reason recorded is a hole in
+                # the argument, not an empty cell. Say which.
+                "reason": NOT_FUSABLE_REASONS.get(signal)
+                or f"{descriptions.NOT_DETERMINABLE}: no entry in NOT_FUSABLE_REASONS",
+            }
+        )
+    return {
+        "columns": [
+            {"key": "signal", "label": "signal"},
+            {"key": "providers", "label": "providers that produce it"},
+            {"key": "reason", "label": "why it may never enter a geometry"},
+        ],
+        "rows": rows,
+        "note": (
+            "Read from `config_schema.NOT_FUSABLE_PROVIDERS` when this page was "
+            "built, and enforced when a config is parsed -- so a signal added to "
+            "the guard appears here without anyone updating the page, and a "
+            "signal removed from it disappears."
+        ),
+    }
+
+
 #: The report's sections, in the order 7.03 E2 fixes: cohort and provenance,
 #: retrieval coverage, geometry health, rate fit, and only THEN the map.
 #:
@@ -219,6 +266,7 @@ CATALOGUE = (
             "Eight quantities that may colour a map and must never enter its "
             "geometry. Enforced, not merely listed — see the geometry guard."
         ),
+        content=_signal_inventory(),
     ),
     # --- how it works ---------------------------------------------------------
     PanelSpec(
