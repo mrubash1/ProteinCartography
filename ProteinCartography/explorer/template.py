@@ -221,6 +221,20 @@ td.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; fo
 .gridnotes { padding: 4px 12px 11px; font-size: 12px; }
 .gridnotes p { margin: 0 0 7px; }
 .gridnotes .kind { font-size: 9.5px; text-transform: uppercase; letter-spacing: .04em; }
+/* The pipeline diagram's boxes. CSS boxes and not SVG: 7.03 E4 bans a build
+   step, and a box with a caption under it is what 2.01 actually asks for. */
+.flow { display: flex; flex-wrap: wrap; gap: 8px; padding: 11px 12px; }
+.flowbox { border: 1px solid var(--line); border-radius: 5px; padding: 7px 9px;
+  background: #fcfdfd; font-size: 11.5px; min-width: 150px; flex: 1 1 150px; }
+.flowbox b { display: block; font-size: 12px; }
+.flowbox span { display: block; color: var(--muted); }
+.flowbox .out { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
+/* The block whose tensor is the similarity matrix. Marked, because it is the
+   step readers of this pipeline most often get wrong. */
+.flowbox-note { border-color: var(--caution); background: #fdf9ef; }
+.flowbox .surprise { margin-top: 5px; color: #7a4e00; font-size: 11px; }
+td .out { display: block; color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
 /* The verdict word inside a report row, where the banner's full-width tint
    would fight the table. Colour only. */
 .v-ok { color: var(--ok); }
@@ -847,6 +861,82 @@ SHEET_PANELS.records = {
     filter.addEventListener("input", paint);
     wrap.append(bar, table);
     paint();
+    return wrap;
+  },
+};
+
+// The resolved pipeline, as the source's 2.01 asks for it: each box a tensor,
+// each arrow an operation. Derived per run in `payload.py`, so this is THIS
+// cohort's pipeline and not a drawing of the general case.
+//
+// Two rows of the diagram exist because two things surprise most readers, and
+// both are numbers here rather than sentences:
+//   * a `profile` block's tensor IS the similarity matrix -- a protein's
+//     feature vector is its own row of it, so PCA's input is the matrix.
+//   * Leiden clusters on its OWN kNN graph. Both k values are printed side by
+//     side, because on these cohorts they are 37 and 15 and nothing on the page
+//     otherwise says so.
+SHEET_PANELS.pipeline = {
+  isEmpty(panel) {
+    const pipeline = active.pipeline || {};
+    return !(pipeline.blocks || []).length && !(pipeline.rows || []).length;
+  },
+  render() {
+    const pipeline = active.pipeline || {};
+    const wrap = document.createElement("div");
+    const blocks = document.createElement("div");
+    blocks.className = "flow";
+    (pipeline.blocks || []).forEach((block) => {
+      const box = document.createElement("div");
+      box.className = "flowbox" + (block.is_profile ? " flowbox-note" : "");
+      box.innerHTML =
+        `<b>${escapeHtml(block.block_id)}</b>` +
+        `<span>${escapeHtml(block.provider)}</span>` +
+        `<span class="out">${escapeHtml(block.representation)}` +
+        `${block.metric ? " · " + escapeHtml(block.metric) : ""}</span>` +
+        (block.is_profile
+          ? '<span class="surprise">its tensor is the similarity matrix itself: a ' +
+            "protein's feature vector is its own row of it, so PCA's input is " +
+            "the matrix and not a set of descriptors</span>"
+          : "");
+      blocks.append(box);
+    });
+    if ((pipeline.blocks || []).length) wrap.append(blocks);
+    const columns = [
+      { label: "space", cell: (r) => `<td>${escapeHtml(r.space_id)}</td>` },
+      {
+        label: "blocks in, and how they join",
+        cell: (r) => `<td>${escapeHtml((r.blocks || []).join(" + "))}` +
+          `<span class="out">strategy: ${escapeHtml(r.strategy)}</span></td>`,
+      },
+      {
+        label: "the map's graph",
+        cell: (r) => `<td>${escapeHtml(r.reducer)}` +
+          `<span class="out">k = ${r.map_n_neighbors === null || r.map_n_neighbors === undefined
+            ? withheldWord("reducer default", "this run's config named no n_neighbors, so " +
+                "the reducer's own default applied; printing a number here would " +
+                "claim the config said something it did not")
+            : fmtValue(r.map_n_neighbors)}</span></td>`,
+      },
+      {
+        label: "the clustering's graph",
+        cell: (r) => `<td>${r.cluster_n_neighbors === null || r.cluster_n_neighbors === undefined
+          ? reportMissing("no partition section was written for this space")
+          : `k = ${fmtValue(r.cluster_n_neighbors)} over ${fmtValue(r.n_pcs)} PCs`}` +
+          `<span class="out">resolution ${fmtValue(r.resolution)} · ` +
+          `${fmtValue(r.n_clusters)} clusters · ${escapeHtml(r.cluster_source || "")}</span></td>`,
+      },
+    ];
+    if ((pipeline.rows || []).length) {
+      const note = document.createElement("div");
+      note.className = "table-note";
+      note.innerHTML =
+        "The last two columns are two <b>different</b> graphs. The map is drawn " +
+        "from one and the clusters come from another, so a cluster boundary and " +
+        "a gap on the map are not the same statement.";
+      wrap.append(note);
+      wrap.append(sheetTable(columns, pipeline.rows));
+    }
     return wrap;
   },
 };

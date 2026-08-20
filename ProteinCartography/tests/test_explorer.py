@@ -1608,3 +1608,128 @@ def test_the_grid_renderer_draws_no_numbers():
     assert "cell.kind" in body, "the cells do not render their kind"
     assert "fmtValue" not in body, "the grid formats a number, and it has none to format"
     assert "gridnotes" in body, "the source's notes are only in tooltips"
+
+
+# ==========================================================================
+# The pipeline diagram. Derived from the resolved config, so it is this
+# cohort's pipeline and not a drawing of the general case.
+# ==========================================================================
+
+
+def test_the_diagram_marks_the_block_whose_tensor_is_the_similarity_matrix():
+    """2.01's first surprise, and it is per block rather than per pipeline.
+
+    A `profile` block's feature vector for a protein IS its own row of the
+    matrix, so PCA's input is the matrix. A `frequency` block's is not, and
+    marking both would make the note meaningless.
+    """
+    from explorer.payload import _pipeline
+
+    class Block:
+        def __init__(self, provider, representation):
+            self.provider = provider
+            self.representation = representation
+            self.metric = "euclidean"
+
+    class Config:
+        blocks = {
+            "tmscore": Block("tmscore", "profile"),
+            "threedi": Block("threedi", None),
+        }
+        spaces: dict = {}
+
+    pipeline = _pipeline(Config(), [])
+    by_id = {b["block_id"]: b for b in pipeline["blocks"]}
+    assert by_id["tmscore"]["is_profile"] is True
+    assert by_id["threedi"]["is_profile"] is False
+    assert by_id["threedi"]["representation"] == "features"
+
+
+def test_the_diagram_carries_both_graphs_because_they_are_different_graphs():
+    """2.01's second surprise. Leiden builds its own kNN graph and the map is
+    drawn from another, so a cluster boundary and a gap on the map are not the
+    same statement. On the shipped cohorts these k values are 37 and 15, and
+    nothing else on the page says so."""
+    from explorer.payload import SpacePayload, _pipeline
+
+    class Space:
+        blocks = ("tmscore",)
+        strategy = "none"
+        reducer_params = {"pca_umap": {"n_neighbors": 15}}
+
+    class Config:
+        blocks: dict = {}
+        spaces = {"structure": Space()}
+
+    space = SpacePayload(
+        space_id="structure",
+        protids=["a"],
+        embeddings={"pca_umap": [[0.0, 0.0]]},
+        clusters={"a": "LC0"},
+        readable=[True],
+        verdict={"level": "ok", "reasons": [], "headline": "fine"},
+        diagnostics={"partition": {"n_neighbors": 37, "n_pcs": 30, "resolution": 1.0}},
+    )
+    row = _pipeline(Config(), [space])["rows"][0]
+    assert row["map_n_neighbors"] == 15
+    assert row["cluster_n_neighbors"] == 37
+    assert row["n_pcs"] == 30
+
+
+def test_a_reducer_default_is_not_reported_as_a_chosen_value():
+    """`reducer_params` empty means the reducer's own default applied, which is
+    not the same fact as a value somebody chose. Printing 15 here would claim
+    the config said something it did not -- the same rule that keeps cohort
+    numbers out of `descriptions.py`."""
+    from explorer.payload import SpacePayload, _pipeline
+    from explorer.template import render
+
+    class Space:
+        blocks = ("tmscore",)
+        strategy = "none"
+        reducer_params: dict = {}
+
+    class Config:
+        blocks: dict = {}
+        spaces = {"structure": Space()}
+
+    space = SpacePayload(
+        space_id="structure",
+        protids=["a"],
+        embeddings={"pca_umap": [[0.0, 0.0]]},
+        clusters={},
+        readable=[True],
+        verdict={"level": "ok", "reasons": [], "headline": "fine"},
+    )
+    assert _pipeline(Config(), [space])["rows"][0]["map_n_neighbors"] is None
+    html = render({"spaces": []}, plotly_js="", title="t")
+    assert "reducer default" in html, "the page prints nothing where the config said nothing"
+
+
+def test_a_config_that_resolves_to_nothing_draws_no_diagram():
+    """Empty rather than a guessed diagram, so the panel says which input it is
+    waiting for -- the same distinction the whole catalogue rests on."""
+    from explorer.panels import catalogue_for
+    from explorer.payload import _pipeline
+
+    class Config:
+        blocks: dict = {}
+        spaces: dict = {}
+
+    assert _pipeline(Config(), []) == {}
+    entry = next(p for p in catalogue_for(set()) if p["panel_id"] == "pipeline_diagram")
+    assert entry["drawable"] is False and entry["missing"] == ["pipeline"]
+    drawable = next(
+        p for p in catalogue_for({"pipeline"}) if p["panel_id"] == "pipeline_diagram"
+    )
+    assert drawable["drawable"] is True
+
+
+def test_the_pipeline_renderer_reads_the_payload_key():
+    from explorer.template import render
+
+    html = render({"spaces": [], "pipeline": {}}, plotly_js="", title="t")
+    assert "SHEET_PANELS.pipeline" in html, "the pipeline kind is not registered"
+    assert "active.pipeline" in html, "nothing on the page reads the pipeline key"
+    body = html[html.index("SHEET_PANELS.pipeline") :][:3000]
+    assert "different" in body, "the page does not say the two graphs are different"

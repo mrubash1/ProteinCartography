@@ -689,6 +689,13 @@ CATALOGUE = (
         provenance="method",
         section="2.01",
         question="Where does a second modality join, and on which graph does each step run?",
+        needs=("pipeline",),
+        requires=(
+            "the resolved configuration, which the explorer derives itself. An "
+            "empty one means no block and no space survived resolution, so there "
+            "is no pipeline to draw rather than a diagram to guess at"
+        ),
+        fills_in="derived per run in explorer/payload.py",
     ),
     PanelSpec(
         panel_id="tm_matrix",

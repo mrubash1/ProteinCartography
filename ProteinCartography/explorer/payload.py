@@ -368,6 +368,10 @@ class ExplorerPayload:
     #: Empty for a run with no UniProt feature table, in which case the records
     #: panel says which file it is waiting for.
     records: list = field(default_factory=list)
+    #: The resolved pipeline as boxes and arrows: the blocks, and per space the
+    #: reduction and the SEPARATE graph Leiden clusters on. Empty for a config
+    #: that resolved to neither, in which case the panel says so.
+    pipeline: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -380,6 +384,7 @@ class ExplorerPayload:
             "sheets": self.sheets,
             "hover": self.hover,
             "records": self.records,
+            "pipeline": self.pipeline,
         }
 
 
@@ -475,6 +480,7 @@ def build_payload(config, output_dir: str, analysis_name: str = "analysis") -> E
     )
     provenance = _provenance(output_dir, config, spaces)
     records = _records(output_dir, index_order or [])
+    pipeline = _pipeline(config, spaces)
     # What the page HAS, named the way the catalogue names it. A panel is
     # drawable when everything it needs is in here; anything absent becomes the
     # panel's printed "awaiting ..." line rather than a blank.
@@ -495,6 +501,8 @@ def build_payload(config, output_dir: str, analysis_name: str = "analysis") -> E
     # the page, like every other entry in this set.
     if overlays:
         available.add("overlays")
+    if pipeline:
+        available.add("pipeline")
     return ExplorerPayload(
         analysis_name=analysis_name,
         spaces=spaces,
@@ -505,6 +513,7 @@ def build_payload(config, output_dir: str, analysis_name: str = "analysis") -> E
         sheets=panels.sheet_titles(),
         hover=_hover_fields(output_dir, {p for space in spaces for p in space.protids}),
         records=records,
+        pipeline=pipeline,
     )
 
 
@@ -627,6 +636,71 @@ def _contributions(directory: str, reducers) -> list:
         }
         for entry in entries
     ]
+
+
+def _pipeline(config, spaces: list) -> dict:
+    """The resolved pipeline as boxes and arrows, for THIS run.
+
+    The source's 2.01 asks for a network diagram -- each box a tensor, each
+    arrow an operation -- and names two things that surprise most readers. Both
+    are facts about this run rather than about the general case, so both are
+    read out of the resolved config and the written diagnostics instead of being
+    drawn as prose:
+
+    * **the input to PCA is the similarity matrix itself**, for any block whose
+      representation is `profile`: a protein's feature vector is its own row of
+      the matrix, so the matrix is the tensor and not a step towards one.
+    * **clustering runs on a different graph than the map**. Leiden builds its
+      own kNN graph, and `partition.n_neighbors` in the diagnostics is that
+      graph's k while the reducer's `n_neighbors` is the map's. On the shipped
+      cohorts these are 37 and 15, which is the whole point of saying it.
+
+    Returns `{}` when there is nothing to draw, so the panel says it is
+    awaiting an input rather than rendering an empty diagram.
+    """
+    blocks = []
+    for block_id in sorted(getattr(config, "blocks", {}) or {}):
+        block = config.blocks[block_id]
+        representation = getattr(block, "representation", None)
+        blocks.append(
+            {
+                "block_id": block_id,
+                "provider": getattr(block, "provider", "") or "",
+                "representation": representation or "features",
+                # The one that surprises people. Said per block, because it is
+                # true of `profile` blocks and false of the others.
+                "is_profile": representation == "profile",
+                "metric": getattr(block, "metric", "") or "",
+            }
+        )
+    rows = []
+    for space in spaces:
+        space_config = (getattr(config, "spaces", {}) or {}).get(space.space_id)
+        reducer_params = dict(getattr(space_config, "reducer_params", {}) or {})
+        partition = (space.diagnostics or {}).get("partition") or {}
+        for reducer in sorted(space.embeddings):
+            params = dict(reducer_params.get(reducer) or {})
+            rows.append(
+                {
+                    "space_id": space.space_id,
+                    "blocks": list(getattr(space_config, "blocks", ()) or ()),
+                    "strategy": getattr(space_config, "strategy", "none") or "none",
+                    "reducer": reducer,
+                    # None, not a number, when the config named none: the
+                    # reducer's own default is not the same fact as a value
+                    # somebody chose, and printing the default here would claim
+                    # the config said something it did not.
+                    "map_n_neighbors": params.get("n_neighbors"),
+                    "n_pcs": partition.get("n_pcs"),
+                    "cluster_n_neighbors": partition.get("n_neighbors"),
+                    "resolution": partition.get("resolution"),
+                    "n_clusters": partition.get("n_clusters"),
+                    "cluster_source": partition.get("source"),
+                }
+            )
+    if not blocks and not rows:
+        return {}
+    return {"blocks": blocks, "rows": rows}
 
 
 def _provenance(output_dir: str, config, spaces: list) -> dict:
