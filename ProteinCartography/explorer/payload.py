@@ -163,6 +163,21 @@ def space_verdict(diagnostics, n_proteins: int) -> dict:
             "below the coin-flip level"
         )
 
+    # A report with sections but NO faithfulness section is a report where
+    # nothing looked at the 2-D coordinates. That is not the same as a layout
+    # with no problems, and reading it as one is the #29/#32 shape again --
+    # absence taken for absence-of-problem. On any pipeline run this cannot
+    # fire, because the Snakefile always passes `--embedding`; it fires exactly
+    # when someone regenerated a report without it, which is when a reader most
+    # needs telling.
+    if "faithfulness" not in diagnostics:
+        level = "unreadable" if level == "unreadable" else "caution"
+        reasons.append(
+            "no faithfulness section was written for this space, so nothing has "
+            "checked whether its 2-D layout preserves the neighbourhoods it came "
+            "from. The positions here are undiagnosed rather than sound"
+        )
+
     for entry in diagnostics.get("faithfulness") or []:
         mean_t = entry.get("trustworthiness_mean")
         mean_c = entry.get("continuity_mean")

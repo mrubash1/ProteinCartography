@@ -2432,3 +2432,47 @@ def test_the_map_says_when_one_column_carries_almost_all_of_it():
     assert "This map is mostly" in html
     assert "a fact about the units, not about the" in html
     assert "FOLLOWUPS #32" in html, "the unread field is not named"
+
+
+def test_a_report_with_no_faithfulness_section_is_not_read_as_a_clean_one():
+    """Absence taken for absence-of-problem, which is the #29/#32 shape again.
+
+    Faithfulness is the ONLY diagnostic that looks at the 2-D coordinates, so a
+    report without it cannot say whether any layout is readable. Found for real:
+    regenerating a cohort's diagnostics without `--embedding` dropped the
+    section, and 306 flagged proteins silently became none while every banner
+    still read "diagnostics found no reason to distrust this map".
+    """
+    from explorer.payload import space_verdict
+
+    partial = {
+        "stability": [{"informative": True, "stability_mean": 0.9}],
+        "partition": {"n_clusters": 4},
+    }
+    verdict = space_verdict(partial, 100)
+    assert verdict["level"] == "caution"
+    assert any("no faithfulness section" in reason for reason in verdict["reasons"])
+    assert any("undiagnosed rather than sound" in reason for reason in verdict["reasons"])
+
+    # And a report that HAS the section is judged on its numbers as before.
+    complete = dict(
+        partial,
+        faithfulness=[
+            {"reducer": "pca_umap", "trustworthiness_mean": 0.95, "continuity_mean": 0.96}
+        ],
+    )
+    assert space_verdict(complete, 100)["level"] == "ok"
+
+
+def test_diagnose_space_says_so_when_it_measures_no_layout():
+    """Every other skipped section calls `_skip`. This one vanished in silence,
+    and it is the worst one to lose quietly."""
+    import inspect
+
+    import diagnose_space
+
+    source = inspect.getsource(diagnose_space)
+    branch = source[source.index("# 4. did the map survive two dimensions") :][:1400]
+    assert "else:" in branch, "the no-embedding case is still silent"
+    assert "no --embedding was supplied" in branch
+    assert "nothing here judges any layout" in branch

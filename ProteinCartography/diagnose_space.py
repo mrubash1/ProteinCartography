@@ -309,6 +309,18 @@ def main() -> int:
             )
             for reducer, path in sorted(embeddings.items())
         ]
+    else:
+        # Every other skipped section says so; this one used to vanish in
+        # silence, and it is the WORST one to lose quietly. Faithfulness is the
+        # only diagnostic that looks at the 2-D coordinates, so a report without
+        # it cannot say whether any layout is readable -- and a reader
+        # downstream sees a space with no complaints rather than a space nobody
+        # checked. Found by regenerating a cohort's diagnostics without
+        # `--embedding` and watching 306 flagged proteins silently become none.
+        _skip(
+            f"{args.space_id}: no --embedding was supplied, so faithfulness was not "
+            "measured and nothing here judges any layout"
+        )
 
     # 5. was the neighborhood ever determinate. Spelled `config.diagnostics.x`
     #    at each use rather than through a local alias, so that
