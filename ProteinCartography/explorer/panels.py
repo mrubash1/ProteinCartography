@@ -219,10 +219,7 @@ FLAVOUR_PLATES = (
             "Not a biology map. Axes are meaningless and should never be shown "
             "to someone asking an evolutionary question."
         ),
-        "cost": (
-            "Weeks. Immunogenicity prediction is the long pole and needs "
-            "allele-set decisions."
-        ),
+        "cost": "Weeks. Immunogenicity prediction is the long pole and needs allele-set decisions.",
         "failure": (
             "Shipping it as the exploratory map. Label it as triage or it will "
             "be misread within a week."
@@ -455,9 +452,7 @@ def _perturbation_grid() -> dict:
             {"key": key, "name": name, "sub": sub, "cost": cost}
             for key, name, sub, cost in PERTURBATIONS
         ],
-        "observables": [
-            {"key": key, "name": name, "sub": sub} for key, name, sub in OBSERVABLES
-        ],
+        "observables": [{"key": key, "name": name, "sub": sub} for key, name, sub in OBSERVABLES],
         "cells": cells,
         "kinds": list(CELL_KINDS),
         "note": (
@@ -529,10 +524,8 @@ DISCORDANCE_PATTERNS = (
     (
         "Structure tree and gene tree disagree at shallow nodes",
         "Structural noise or model error",
-        "pLDDT low in the regions driving the TM difference; check per-residue "
-        "confidence",
-        "Trust the gene tree here. Points may be adjacent for prediction-quality "
-        "reasons only",
+        "pLDDT low in the regions driving the TM difference; check per-residue confidence",
+        "Trust the gene tree here. Points may be adjacent for prediction-quality reasons only",
     ),
 )
 

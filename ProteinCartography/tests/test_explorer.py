@@ -1336,9 +1336,8 @@ def test_one_table_renderer_serves_every_table_panel():
     html = render({"spaces": []}, plotly_js="", title="t")
     assert "SHEET_PANELS.table" in html, "the table kind is not registered"
     assert "content.columns" in html, "the renderer does not read the payload's columns"
-    assert "signal_inventory" not in html[html.index("SHEET_PANELS.table") :][:1500], (
-        "the shared renderer branches on a specific panel"
-    )
+    table_body = html[html.index("SHEET_PANELS.table") :][:1500]
+    assert "signal_inventory" not in table_body, "the shared renderer branches on a specific panel"
 
 
 def test_a_table_panel_with_no_rows_says_which_half_is_missing():
@@ -1367,9 +1366,9 @@ def test_the_tab_count_asks_the_renderer_whether_a_panel_is_blank():
     html = render({"spaces": []}, plotly_js="", title="t")
     assert "function panelIsBlank" in html
     assert "renderer.isEmpty" in html, "the count cannot ask the renderer"
-    assert re.search(r"sheetPanels\.filter\(panelIsBlank\)", html), (
-        "renderSheets still decides blankness itself"
-    )
+    assert re.search(
+        r"sheetPanels\.filter\(panelIsBlank\)", html
+    ), "renderSheets still decides blankness itself"
 
 
 # ==========================================================================
@@ -1402,9 +1401,9 @@ def test_a_plate_is_either_realized_by_a_payload_key_or_named_unimplemented():
     for plate in FLAVOUR_PLATES:
         realized = plate.get("realized_by")
         unimplemented = plate.get("unimplemented")
-        assert bool(realized) != bool(unimplemented), (
-            f"plate {plate['plate_id']} claims both or neither"
-        )
+        assert bool(realized) != bool(
+            unimplemented
+        ), f"plate {plate['plate_id']} claims both or neither"
 
 
 def test_the_three_unimplemented_flavours_have_no_provider_to_build_them():
@@ -1426,9 +1425,9 @@ def test_the_three_unimplemented_flavours_have_no_provider_to_build_them():
     # only when the whole file ran, which is the worst kind of test.
     assert {"tmscore", "threedi", "biophys", "domains"} <= registered
     for absent in ("esm", "plm", "clean", "deepfri", "deeploc", "developab", "mhc"):
-        assert not any(absent in name for name in registered), (
-            f"a {absent!r} provider is registered, so a plate claiming otherwise is stale"
-        )
+        assert not any(
+            absent in name for name in registered
+        ), f"a {absent!r} provider is registered, so a plate claiming otherwise is stale"
     unimplemented = {p["plate_id"] for p in FLAVOUR_PLATES if p.get("unimplemented")}
     assert unimplemented == {"B", "D", "E"}
 
@@ -1531,9 +1530,9 @@ def test_the_discordance_panel_reuses_the_shared_table_renderer():
     assert entry.panel_type == "table"
     assert [c["key"] for c in entry.content["columns"]] == ["seen", "cause", "test", "effect"]
     assert len(entry.content["rows"]) == 7
-    assert "gene tree" in entry.content["note"], (
-        "the panel must say this pipeline cannot detect any of these"
-    )
+    assert (
+        "gene tree" in entry.content["note"]
+    ), "the panel must say this pipeline cannot detect any of these"
 
 
 # ==========================================================================
@@ -1719,9 +1718,7 @@ def test_a_config_that_resolves_to_nothing_draws_no_diagram():
     assert _pipeline(Config(), []) == {}
     entry = next(p for p in catalogue_for(set()) if p["panel_id"] == "pipeline_diagram")
     assert entry["drawable"] is False and entry["missing"] == ["pipeline"]
-    drawable = next(
-        p for p in catalogue_for({"pipeline"}) if p["panel_id"] == "pipeline_diagram"
-    )
+    drawable = next(p for p in catalogue_for({"pipeline"}) if p["panel_id"] == "pipeline_diagram")
     assert drawable["drawable"] is True
 
 
