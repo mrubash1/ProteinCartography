@@ -41,6 +41,18 @@ def write_m8(path, rows):
     return str(path)
 
 
+def write_query_m8(tmp_path, protid, db, rows):
+    """The layout production actually writes: `foldseek_results/{protid}/alis_{db}.m8`.
+
+    The flat `write_m8` above is kept for the tests that are about parsing one
+    file. This one is for anything that counts QUERIES, because the count is
+    per query protein and production runs three databases against each one.
+    """
+    directory = tmp_path / protid
+    directory.mkdir(exist_ok=True)
+    return write_m8(directory / f"alis_{db}.m8", rows)
+
+
 def blast_row(refseq, evalue, bitscore):
     row = ["-"] * len(BLAST_FIELDS)
     index = {name: i for i, name in enumerate(BLAST_FIELDS)}
@@ -84,8 +96,16 @@ def test_the_best_bit_score_across_queries_wins(tmp_path):
 
 
 def test_the_number_of_queries_that_found_a_hit_is_recorded(tmp_path):
-    first = write_m8(tmp_path / "a.m8", [foldseek_row("P1", 1e-3, 10)])
-    second = write_m8(tmp_path / "b.m8", [foldseek_row("P1", 1e-4, 20), foldseek_row("P2", 1.0, 5)])
+    """Two QUERY PROTEINS, in the layout production writes.
+
+    This used to be two flat sibling files, which encoded the wrong model: it
+    read as "two files, therefore two queries" and passed for the wrong reason
+    (FOLLOWUPS #21).
+    """
+    first = write_query_m8(tmp_path, "Q1", "afdb", [foldseek_row("P1", 1e-3, 10)])
+    second = write_query_m8(
+        tmp_path, "Q2", "afdb", [foldseek_row("P1", 1e-4, 20), foldseek_row("P2", 1.0, 5)]
+    )
     table = foldseek_significance([first, second]).set_index("protid")
     assert table.loc["P1", "n_queries"] == 2
     assert table.loc["P2", "n_queries"] == 1
@@ -93,10 +113,79 @@ def test_the_number_of_queries_that_found_a_hit_is_recorded(tmp_path):
 
 def test_repeated_alignments_within_one_file_count_as_one_query(tmp_path):
     """Foldseek can report a protein more than once; that is one piece of evidence."""
-    path = write_m8(tmp_path / "a.m8", [foldseek_row("P1", 1e-3, 10), foldseek_row("P1", 1e-9, 90)])
+    path = write_query_m8(
+        tmp_path, "Q1", "afdb", [foldseek_row("P1", 1e-3, 10), foldseek_row("P1", 1e-9, 90)]
+    )
     table = foldseek_significance([path]).set_index("protid")
     assert table.loc["P1", "n_queries"] == 1
     assert table.loc["P1", "evalue"] == pytest.approx(1e-9)
+
+
+def test_three_databases_under_one_query_count_as_one_query(tmp_path):
+    """The defect itself. Production searches afdb50, afdb-swissprot and
+    afdb-proteome for every query protein, so a hit found by one query arrived
+    as three rows of evidence and `n_queries` said 3."""
+    files = [
+        write_query_m8(tmp_path, "Q1", db, [foldseek_row("P1", 1e-3, 10)])
+        for db in ("afdb50", "afdb-swissprot", "afdb-proteome")
+    ]
+    table = foldseek_significance(files).set_index("protid")
+    assert table.loc["P1", "n_queries"] == 1
+
+
+def test_two_query_directories_count_as_two_queries(tmp_path):
+    """The other half: the fix must not collapse genuinely distinct queries."""
+    files = [
+        write_query_m8(tmp_path, "Q1", "afdb50", [foldseek_row("P1", 1e-3, 10)]),
+        write_query_m8(tmp_path, "Q1", "afdb-swissprot", [foldseek_row("P1", 1e-5, 30)]),
+        write_query_m8(tmp_path, "Q2", "afdb50", [foldseek_row("P1", 1e-4, 20)]),
+    ]
+    table = foldseek_significance(files).set_index("protid")
+    assert table.loc["P1", "n_queries"] == 2
+
+
+def test_one_query_found_by_both_methods_counts_once(tmp_path):
+    """`n_queries` was a SUM of two per-method counts, so a query protein that
+    found an accession by both BLAST and Foldseek was reported twice."""
+    m8 = write_query_m8(tmp_path, "Q1", "afdb50", [foldseek_row("P1", 1e-3, 10)])
+    blast = write_blast(tmp_path / "Q1.blast_results.tsv", [blast_row("NP_1", 1e-8, 200)])
+    mapping = write_mapping(tmp_path / "map.tsv", [("NP_1", "P1")])
+    table = aggregate_significance([m8], [blast], [mapping]).set_index("protid")
+    assert table.loc["P1", "n_queries"] == 1
+    assert table.loc["P1", "sources"] == "blast+foldseek"
+
+
+def test_two_queries_found_by_different_methods_count_as_two(tmp_path):
+    """The union has to be a union and not a minimum either."""
+    m8 = write_query_m8(tmp_path, "Q1", "afdb50", [foldseek_row("P1", 1e-3, 10)])
+    blast = write_blast(tmp_path / "Q2.blast_results.tsv", [blast_row("NP_1", 1e-8, 200)])
+    mapping = write_mapping(tmp_path / "map.tsv", [("NP_1", "P1")])
+    table = aggregate_significance([m8], [blast], [mapping]).set_index("protid")
+    assert table.loc["P1", "n_queries"] == 2
+
+
+def test_an_unrecognised_layout_falls_back_to_file_identity(tmp_path):
+    """Overcounting an ad-hoc invocation is the status quo; merging two distinct
+    queries into one would silently weaken the evidence behind a hit, and this
+    table exists to rank candidates by that evidence."""
+    from hit_significance import query_id
+
+    first = write_m8(tmp_path / "a.m8", [foldseek_row("P1", 1e-3, 10)])
+    second = write_m8(tmp_path / "b.m8", [foldseek_row("P1", 1e-4, 20)])
+    assert query_id(first, "foldseek") != query_id(second, "foldseek")
+    table = foldseek_significance([first, second]).set_index("protid")
+    assert table.loc["P1", "n_queries"] == 2
+
+
+def test_no_new_column_reaches_the_output_table(tmp_path):
+    """The query ids are internal. A new column in hit_significance.tsv would
+    be a change to a default-path output and would show up in parity."""
+    from hit_significance import OUTPUT_COLUMNS
+
+    m8 = write_query_m8(tmp_path, "Q1", "afdb50", [foldseek_row("P1", 1e-3, 10)])
+    table = aggregate_significance([m8], [], [])
+    assert list(table.columns) == OUTPUT_COLUMNS
+    assert "queries" not in table.columns
 
 
 def test_the_table_is_ordered_by_accession(tmp_path):

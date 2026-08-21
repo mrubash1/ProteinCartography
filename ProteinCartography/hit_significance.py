@@ -155,12 +155,52 @@ def foldseek_significance(m8_files) -> pd.DataFrame:
                     "evalue": evalues.values,
                     "bits": bits.values,
                     # The query column is `job.pdb` for every web-API result, so
-                    # the file itself is the only thing that identifies the query.
-                    "query": os.path.abspath(path),
+                    # the PATH is the only thing that identifies the query -- and
+                    # the directory, not the file: three databases per query.
+                    "query": query_id(path, "foldseek"),
                 }
             )
         )
     return _combine(rows, source="foldseek")
+
+
+#: Joins the distinct query ids behind one accession inside `_combine`'s frame.
+#: A unit separator, because a query id is either a protid or an absolute path
+#: and neither can contain one. The column never reaches a file: OUTPUT_COLUMNS
+#: is unchanged, and `aggregate_significance` drops it after taking the union.
+QUERY_SEPARATOR = "\x1f"
+
+
+def query_id(path: str, source: str) -> str:
+    """Which QUERY PROTEIN a result file belongs to, not which file it is.
+
+    `n_queries` is meant to say how many of the run's query proteins found an
+    accession. It counted FILES, and production runs Foldseek against three
+    databases per query -- `foldseek_results/{protid}/alis_{db}.m8` -- so one
+    query protein contributed up to three (FOLLOWUPS #21).
+
+    The query column inside a web-API `.m8` is `job.pdb` for every result, so
+    the path is the only thing that carries the identity:
+
+      * Foldseek: the parent directory, which production names for the protid.
+      * BLAST: the leading dotted field of the basename, `{protid}.blast_results.tsv`.
+
+    Anything else falls back to the absolute path. That OVERCOUNTS an ad-hoc
+    layout, which is what happens today, rather than merging two distinct
+    queries into one -- undercounting would silently weaken the evidence behind
+    a hit, and this table exists to rank candidates by that evidence.
+    """
+    absolute = os.path.abspath(path)
+    name = os.path.basename(absolute)
+    if source == "foldseek":
+        parent = os.path.basename(os.path.dirname(absolute))
+        if name.startswith("alis_") and name.endswith(".m8") and parent:
+            return parent
+        return absolute
+    if source == "blast":
+        leading = name.split(".")[0]
+        return leading if leading and leading != name else absolute
+    return absolute
 
 
 def _read_refseq_mapping(mapping_files) -> dict:
@@ -219,7 +259,7 @@ def blast_significance(blast_files, mapping_files) -> pd.DataFrame:
                     "protid": accession[keep].values,
                     "evalue": pd.to_numeric(frame.loc[keep, "evalue"], errors="coerce").values,
                     "bits": pd.to_numeric(frame.loc[keep, "bitscore"], errors="coerce").values,
-                    "query": os.path.abspath(path),
+                    "query": query_id(path, "blast"),
                 }
             )
         )
@@ -228,7 +268,7 @@ def blast_significance(blast_files, mapping_files) -> pd.DataFrame:
 
 def _combine(rows, source: str) -> pd.DataFrame:
     """Reduce per-alignment rows to one row per accession."""
-    empty = pd.DataFrame(columns=["protid", "evalue", "bits", "n_queries", "sources"])
+    empty = pd.DataFrame(columns=["protid", "evalue", "bits", "n_queries", "queries", "sources"])
     if not rows:
         return empty
     stacked = pd.concat(rows, axis=0, ignore_index=True)
@@ -239,9 +279,25 @@ def _combine(rows, source: str) -> pd.DataFrame:
         evalue=("evalue", "min"),  # lower is stronger
         bits=("bits", "max"),  # higher is stronger
         n_queries=("query", "nunique"),
+        # The ids themselves, not just how many: one query protein can be found
+        # by both methods, and summing two counts would report it twice.
+        queries=("query", lambda values: QUERY_SEPARATOR.join(sorted(set(values)))),
     )
     grouped["sources"] = source
     return grouped.reset_index()
+
+
+def _split_queries(joined) -> set:
+    if not isinstance(joined, str) or not joined:
+        return set()
+    return {part for part in joined.split(QUERY_SEPARATOR) if part}
+
+
+def _union_of_queries(values) -> str:
+    union = set()
+    for joined in values:
+        union |= _split_queries(joined)
+    return QUERY_SEPARATOR.join(sorted(union))
 
 
 def aggregate_significance(m8_files, blast_files, mapping_files) -> pd.DataFrame:
@@ -255,11 +311,17 @@ def aggregate_significance(m8_files, blast_files, mapping_files) -> pd.DataFrame
     merged = both.groupby("protid", sort=True).agg(
         evalue=("evalue", "min"),
         bits=("bits", "max"),
-        n_queries=("n_queries", "sum"),
+        # A UNION, not a sum. One query protein found by both methods
+        # contributed 1 to each count, and summing reported it as two.
+        queries=("queries", _union_of_queries),
         # Both methods finding a hit is worth seeing; it is the concordance
         # signal this pipeline is otherwise built to look for.
         sources=("sources", lambda values: "+".join(sorted(set(values)))),
     )
+    merged["n_queries"] = merged["queries"].map(lambda joined: len(_split_queries(joined)))
+    # `queries` stays internal: OUTPUT_COLUMNS is unchanged, so no new column
+    # reaches hit_significance.tsv and the default output is byte-identical
+    # wherever the count was already right.
     return merged.reset_index()[OUTPUT_COLUMNS]
 
 
