@@ -102,9 +102,16 @@ archive, and does not survive being sent to a collaborator.
 **Extend `plot_interactive.py` to render all panels.** Rejected: it is 1105
 lines, has no rule-injection mechanism, and derives its axes positionally from
 `df.columns[1]` and `[2]`. Extending it would mean a large diff in an existing
-file to serve a use case it was not shaped for. The explorer imports
-`generate_plotting_rules` to reuse the overlay vocabulary and otherwise stays
-separate.
+file to serve a use case it was not shaped for. The explorer shares no code
+with it: it defines its own overlay vocabulary in `explorer/`, and
+`generate_plotting_rules` is imported nowhere under `ProteinCartography/explorer/`
+or in `build_explorer.py`. This paragraph previously asserted that import. It
+never existed, and no reviewer or test could have caught the claim, because an
+ADR is prose. The palette is deliberately NOT unified now: doing it would
+recolour a page whose red-ring-over-overlay-fill semantics were set by a manual
+browser pass that nothing automated re-verifies, and it would be a drive-by
+change under this branch's additive-only rule. If a reviewer wants one palette,
+that is its own ticket with its own browser pass.
 
 **A React/Svelte app bundled to a single file.** Rejected: adds a build step and
 a node toolchain to a conda/snakemake repo. The interaction requirements —
