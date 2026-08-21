@@ -129,6 +129,11 @@ button.on { background: var(--ink); color: #fff; border-color: var(--ink); }
    heading. */
 .cutoff { display: block; font-weight: 400; font-size: 10.5px; color: var(--muted);
   text-transform: none; letter-spacing: 0; margin-top: 2px; }
+/* The sweep under the cluster count. Small and muted: it qualifies the number
+   above it and must not compete with it for the reader's eye. */
+.sweep { display: block; margin-top: 3px; font-size: 10.5px; color: var(--muted);
+  line-height: 1.5; }
+.sweep b { color: var(--ink); }
 .scroll-x { overflow-x: auto; }
 table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
 th, td { text-align: left; padding: 5px 9px; border-bottom: 1px solid var(--line); }
@@ -1973,7 +1978,7 @@ const GEOMETRY_COLUMNS = [
         return reportMissing("this space's diagnostics carry no partition section");
       }
       return `${fmtValue(partition.n_clusters)} at resolution ` +
-        `${fmtValue(partition.resolution)}`;
+        `${fmtValue(partition.resolution)}` + sweepNote(s);
     },
   },
   {
@@ -2013,6 +2018,51 @@ const GEOMETRY_COLUMNS = [
 // worse one. Hence two helpers rather than one.
 function firstOf(space, key) {
   return ((space.diagnostics || {})[key] || [])[0] || null;
+}
+
+// The cluster count printed beside this, and what it was at the other
+// resolutions tried.
+//
+// `partition.n_clusters` reads like a property of the cohort. It is not: it is
+// the count at ONE resolution, and the payload has carried the whole sweep --
+// the count at every resolution tried, the ARI between adjacent ones, and the
+// plateau -- with no template hit at all. On chymo_A1's fused_late the count
+// goes 4, 6, 10, 13 across resolutions 0.25 to 2.0 while the table prints "10
+// at resolution 1" alone.
+//
+// This is the page-facing form of the rule that partitions may never be
+// compared at unmatched cluster count: the sweep is only meaningful beside the
+// number it qualifies, so it is drawn under that number rather than in a panel
+// of its own. The resolution the page actually drew is marked, so a reader can
+// see which row of the sweep they are looking at.
+//
+// Numbers only, no verdict. Whether any two adjacent resolutions agree is a
+// judgement the diagnostics already wrote in words, and it is one click away in
+// the fold-out on the space's own panel; restating it here would be the same
+// sentence at two places with nothing keeping them in step.
+function sweepNote(space) {
+  const sweep = (space.diagnostics || {}).resolution_sweep || {};
+  const steps = sweep.steps || [];
+  if (!steps.length) return "";
+  const drawn = ((space.diagnostics || {}).partition || {}).resolution;
+  const walk = steps
+    .map((step) => {
+      const text = `${fmtValue(step.n_clusters)}@${fmtValue(step.resolution)}`;
+      return step.resolution === drawn ? `<b>${escapeHtml(text)}</b>` : escapeHtml(text);
+    })
+    .join(" · ");
+  // `fmtValue` and nothing else, the same formatter the rest of this table
+  // uses. Rounding here first was pointless -- fmtValue already prints three
+  // decimals -- and a second rounding rule inside one table is how two numbers
+  // of the same kind end up printed differently.
+  const ari = (sweep.adjacent_ari || [])
+    .map((pair) => escapeHtml(fmtValue(pair.ari)))
+    .join(" · ");
+  return (
+    `<span class="sweep">swept: ${walk}` +
+    (ari ? `<br>adjacent ARI: ${ari}` : "") +
+    "</span>"
+  );
 }
 
 function faithCell(space, field) {

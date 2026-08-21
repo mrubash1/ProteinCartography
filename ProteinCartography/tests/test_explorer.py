@@ -3272,3 +3272,61 @@ def test_the_banner_prints_the_stability_mean_at_the_diagnostics_own_precision()
     assert (
         f"{mean:.2f}," not in reason
     ), "the banner is back to two decimals while the diagnostic writes three"
+
+
+def test_the_cluster_count_is_shown_as_one_point_on_a_sweep():
+    """A count printed alone reads as a property of the cohort.
+
+    chymo_A1's fused_late goes 4, 6, 10 and 13 clusters across resolutions 0.25
+    to 2.0, and the geometry table printed "10 at resolution 1" with none of
+    that beside it. The sweep has shipped in the payload since it was written
+    and `grep resolution_sweep` over template.py returned 0 hits.
+    """
+    from explorer.template import render
+
+    html = render({"spaces": []}, plotly_js="", title="t")
+    assert "function sweepNote(space)" in html
+    assert "sweep.steps" in html, "nothing reads the swept resolutions"
+    assert "sweep.adjacent_ari" in html, "nothing reads the agreement between them"
+    cell = html[html.index('label: "clusters"') :][:420]
+    assert "sweepNote(s)" in cell, "the clusters cell does not draw the sweep"
+
+
+def test_the_resolution_the_page_actually_drew_is_marked_in_the_sweep():
+    """Four counts with no indication of which one is on screen is a puzzle.
+
+    The mark is matched on the partition's own resolution rather than on a
+    position in the list, so a sweep that adds or reorders a step cannot
+    silently mark the wrong row.
+    """
+    from explorer.template import render
+
+    html = render({"spaces": []}, plotly_js="", title="t")
+    block = html[html.index("function sweepNote(space)") :][:1400]
+    assert "step.resolution === drawn" in block
+    assert "partition || {}).resolution" in block
+
+
+def test_the_sweep_states_numbers_and_leaves_the_verdict_to_the_diagnostics():
+    """The 0.80-ARI judgement is already written, once, by the diagnostics.
+
+    It reaches the reader through the per-space fold-out added in the previous
+    commit. Restating it in the table would put one judgement in two places with
+    nothing holding them in step -- and the threshold would have to be retyped,
+    because the payload does not carry it.
+    """
+    from explorer.template import render
+
+    html = render({"spaces": []}, plotly_js="", title="t")
+    block = html[html.index("function sweepNote(space)") :][:1400]
+    assert "0.8" not in block, "an ARI threshold was retyped into the sweep"
+    assert "plateau" not in block, "the sweep restates a judgement it should not"
+
+
+def test_a_space_with_no_sweep_adds_nothing_to_its_cluster_count():
+    """actin_B's `structure` space carries no resolution_sweep at all."""
+    from explorer.template import render
+
+    html = render({"spaces": []}, plotly_js="", title="t")
+    block = html[html.index("function sweepNote(space)") :][:1400]
+    assert 'if (!steps.length) return "";' in block
