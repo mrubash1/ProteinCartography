@@ -110,6 +110,11 @@ class SpacePayload:
     #: Per named column, its share of this space's squared distance. Empty
     #: unless the space is one feature block whose columns are named.
     column_shares: list = field(default_factory=list)
+    #: ``{reducer_id: {axis_names, pca_components_requested,
+    #: pca_components_used}}``, read from each reducer's own manifest. The page
+    #: opens on one reducer but can switch, and the axes sentence differs
+    #: between them, so this travels per reducer rather than resolved.
+    axes: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -125,6 +130,7 @@ class SpacePayload:
             "description": self.description,
             "stability": self.stability,
             "column_shares": self.column_shares,
+            "axes": self.axes,
         }
 
 
@@ -636,6 +642,8 @@ def build_payload(config, output_dir: str, analysis_name: str = "analysis") -> E
             for entry in diagnostics.get("faithfulness") or []
         ]
         contributions = _contributions(directory, embeddings)
+        axes = {reducer: _reducer_axes(directory, reducer) for reducer in embeddings}
+        axes = {reducer: facts for reducer, facts in axes.items() if facts}
         spaces.append(
             SpacePayload(
                 space_id=space_id,
@@ -648,11 +656,13 @@ def build_payload(config, output_dir: str, analysis_name: str = "analysis") -> E
                 contributions=contributions,
                 stability=_stability_series(directory, protids),
                 column_shares=_column_shares(output_dir, config, space),
+                axes=axes,
                 description=descriptions.describe_space(
                     space_id,
                     strategy=getattr(space, "strategy", "none"),
                     blocks=_space_blocks(output_dir, config, space),
                     contributions=contributions,
+                    axes=axes,
                 ),
             )
         )
@@ -813,6 +823,31 @@ def _space_manifest(directory: str, reducers) -> dict:
         if manifest:
             return manifest
     return {}
+
+
+def _reducer_axes(directory: str, reducer: str) -> dict:
+    """What ONE reducer actually did to this space, read from its own manifest.
+
+    The axes paragraph used to be a typed sentence saying "UMAP1 and UMAP2 of a
+    30-component PCA" under every map. Thirty is what the config REQUESTS; PCA
+    returns min(n_components, n_samples, n_features), and a four-column
+    biophysics block can only yield four. So the sentence was wrong on
+    physicochemistry on both shipped cohorts -- sixteen times on the built page
+    -- while the correct number sat in `n_components_used` in the manifest.
+
+    Returns {} when the manifest or its steps are absent, so a run that predates
+    the steps key says nothing rather than guessing.
+    """
+    manifest = _read_json(os.path.join(directory, layout.manifest_filename(reducer))) or {}
+    steps = (manifest.get("extra") or {}).get("steps") or []
+    if not steps:
+        return {}
+    pca = next((step for step in steps if step.get("reducer") == "pca"), {})
+    return {
+        "axis_names": list(steps[-1].get("column_names") or []),
+        "pca_components_requested": pca.get("n_components_requested"),
+        "pca_components_used": pca.get("n_components_used"),
+    }
 
 
 def _contributions(directory: str, reducers) -> list:

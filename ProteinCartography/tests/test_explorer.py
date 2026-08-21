@@ -2666,3 +2666,80 @@ def test_no_tmscore_block_means_no_structural_space_and_no_keys():
     assert _structural_space(Config(), spaces) == ""
     assert not _tm_matrix(Config(), spaces, "")
     assert not _censoring(Config(), spaces, "")
+
+
+def test_the_axes_sentence_reports_the_components_the_run_actually_used(tmp_path):
+    """Thirty is what the config REQUESTS, not what PCA returns.
+
+    `PCA` returns min(n_components, n_samples, n_features), so a four-column
+    biophysics block yields four however many are asked for. The typed sentence
+    said "a 30-component PCA" under every map and was wrong on physicochemistry
+    on BOTH shipped cohorts -- sixteen times on the built page -- while
+    `n_components_used` in the manifest carried the true number all along.
+    """
+    from explorer.descriptions import describe_axes
+
+    text = describe_axes(
+        "pca_umap",
+        {
+            "axis_names": ["UMAP1", "UMAP2"],
+            "pca_components_requested": 30,
+            "pca_components_used": 4,
+        },
+    )
+    assert "4-component PCA" in text
+    assert "30-component" not in text
+    # The divergence is stated, not silently resolved: a reader who knows the
+    # config says 30 has to be able to see why the picture says 4.
+    assert "config asked for 30" in text
+    assert "min(n_components, n_samples, n_features)" in text
+
+
+def test_the_axes_sentence_stays_quiet_when_requested_equals_used():
+    """No divergence, no explanation -- the caveat would be noise on 9 of 11."""
+    from explorer.descriptions import describe_axes
+
+    text = describe_axes(
+        "pca_umap",
+        {
+            "axis_names": ["UMAP1", "UMAP2"],
+            "pca_components_requested": 30,
+            "pca_components_used": 30,
+        },
+    )
+    assert "30-component PCA" in text
+    assert "config asked for" not in text
+
+
+def test_a_run_that_recorded_no_steps_says_nothing_about_its_axes(tmp_path):
+    """A refusal is recoverable; a confident wrong number is not.
+
+    A page built from a tree older than the `steps` key must not fall back to
+    the typed sentence, which is the defect being removed.
+    """
+    from explorer.descriptions import describe_axes
+    from explorer.payload import _reducer_axes
+
+    assert _reducer_axes(str(tmp_path), "pca_umap") == {}
+    assert describe_axes("pca_umap", {}) == ""
+    assert describe_axes("pca_umap", None) == ""
+
+
+def test_no_component_count_is_typed_into_the_axes_prose():
+    """The guard that makes this stay fixed.
+
+    The invariant is not "the number is 4" -- it is that NO component count may
+    be typed into the reducer-independent prose at all, because a typed one
+    cannot track a run. Anyone reintroducing "a 30-component PCA" as a literal
+    fails here rather than on a page nobody greps.
+    """
+    import re
+
+    from explorer.descriptions import AXES
+
+    joined = " ".join(AXES["paragraphs"])
+    assert not re.search(r"\b\d+-component\b", joined), (
+        "a component count is typed into the invariant axes prose; it must be "
+        "composed from the run's manifest by describe_axes instead"
+    )
+    assert "UMAP1" not in joined, "an axis name is typed into the invariant prose"

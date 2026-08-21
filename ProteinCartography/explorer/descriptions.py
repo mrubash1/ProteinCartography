@@ -33,6 +33,7 @@ from __future__ import annotations
 __all__ = [
     "NOT_DETERMINABLE",
     "AXES",
+    "describe_axes",
     "describe_space",
     "describe_panel",
 ]
@@ -58,18 +59,26 @@ def _description(paragraphs=(), hazards=(), sources=()) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# the axes, which are the same on every map this pipeline draws
+# the axes, which are NOT the same on every map this pipeline draws
 # ---------------------------------------------------------------------------
 
 #: Appended to every space description. The single most common misreading of a
 #: UMAP is treating the gap between two clusters as a quantity, and it costs one
 #: sentence to say that it is not.
+#:
+#: This half is reducer-independent and is the only part that may be typed. The
+#: sentence naming the reducer and the PCA width is COMPOSED from the run's own
+#: manifest by `describe_axes`, because the typed version said "a 30-component
+#: PCA" under every map -- and thirty is what the config REQUESTS. PCA returns
+#: min(n_components, n_samples, n_features), so a four-column biophysics block
+#: yields four. The claim was false on physicochemistry on both shipped
+#: cohorts, sixteen times on the built page, while the true number sat in
+#: `n_components_used` in the manifest all along.
 AXES = _description(
     paragraphs=[
-        "Both axes are UMAP1 and UMAP2 of a 30-component PCA of this block's "
-        "features -- `pca_umap` means PCA-30 and then UMAP. They have no units "
-        "and neither axis means anything on its own: rotating or reflecting the "
-        "picture would be an equally correct drawing of the same result.",
+        "The axes have no units and neither means anything on its own: "
+        "rotating or reflecting the picture would be an equally correct "
+        "drawing of the same result.",
         "Nearby points are the readable part, and only as far as the "
         "faithfulness diagnostics in this panel's banner allow. The distance "
         "between two well-separated clusters is not interpretable, and neither "
@@ -77,6 +86,36 @@ AXES = _description(
     ],
     sources=["reduce_space.py:46", "spaces/reducers/core.py:106"],
 )
+
+
+def describe_axes(reducer: str, facts=None) -> str:
+    """The one sentence that differs per map, composed rather than typed.
+
+    Returns "" when the run recorded nothing, so a page built from an older
+    tree says nothing about its axes instead of asserting a width nobody
+    measured. A refusal is recoverable; a confident wrong number is not.
+    """
+    facts = facts or {}
+    names = [str(n) for n in (facts.get("axis_names") or [])]
+    if not names:
+        return ""
+    drawn = " and ".join(f"`{n}`" for n in names[:2])
+    used = facts.get("pca_components_used")
+    requested = facts.get("pca_components_requested")
+    if used is None:
+        return f"Both axes are {drawn}, produced by `{reducer}`."
+    sentence = (
+        f"Both axes are {drawn} of a {used}-component PCA of this space's "
+        f"features -- `{reducer}` on this run means PCA-{used} and then the "
+        "embedding step."
+    )
+    if requested is not None and requested != used:
+        sentence += (
+            f" The config asked for {requested}. PCA returns "
+            f"min(n_components, n_samples, n_features), so this space had only "
+            f"{used} to give, and {used} is what drew the picture."
+        )
+    return sentence
 
 
 # ---------------------------------------------------------------------------
@@ -319,7 +358,9 @@ def describe_strategy(strategy: str, contributions=()) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def describe_space(space_id: str, strategy: str = "none", blocks=(), contributions=()) -> dict:
+def describe_space(
+    space_id: str, strategy: str = "none", blocks=(), contributions=(), *, axes=()
+) -> dict:
     """The fold-out for one map on the grid.
 
     Args:
@@ -330,6 +371,9 @@ def describe_space(space_id: str, strategy: str = "none", blocks=(), contributio
             the cohort-dependent numbers -- the 3Di vocabulary size, the Pfam
             family count -- actually live.
         contributions: the space's measured per-block shares, for a fused space.
+        axes: ``{reducer_id: facts}`` from the run's own manifests. The axes
+            sentence is composed from these; an empty map means the page says
+            nothing about its axes rather than asserting a typed width.
     """
     paragraphs, hazards, sources = [], [], []
     named = [b.get("block_id") or b.get("provider") for b in blocks]
@@ -344,11 +388,21 @@ def describe_space(space_id: str, strategy: str = "none", blocks=(), contributio
     paragraphs.extend(fused["paragraphs"])
     hazards.extend(fused["hazards"])
     sources.extend(fused["sources"])
+    # The composed sentence goes FIRST, because it is the one that differs
+    # between maps; the invariant prose follows it.
+    axes_by_reducer = {
+        reducer: describe_axes(reducer, facts) for reducer, facts in dict(axes).items()
+    }
+    axes_by_reducer = {r: text for r, text in axes_by_reducer.items() if text}
+    if axes_by_reducer:
+        paragraphs.append(next(iter(axes_by_reducer.values())))
     paragraphs.extend(AXES["paragraphs"])
     sources.extend(AXES["sources"])
     # Deduplicated in place, because a fused space names two blocks and the
     # same file would otherwise be cited twice in one footer.
-    return _description(paragraphs, hazards, list(dict.fromkeys(sources)))
+    described = _description(paragraphs, hazards, list(dict.fromkeys(sources)))
+    described["axes_by_reducer"] = axes_by_reducer
+    return described
 
 
 # ---------------------------------------------------------------------------

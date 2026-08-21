@@ -715,8 +715,24 @@ function explainBlock(description) {
     : "What this shows";
   const body = document.createElement("div");
   body.className = "body";
+  // The axes sentence gets its own node, tagged with the reducer that produced
+  // it, because it is the one paragraph here that is NOT a property of the
+  // space -- switching layout changes it. Identified by matching the composed
+  // text rather than by position, so reordering the paragraphs cannot silently
+  // mislabel one. No behaviour change yet: phase 2 updates this node on a
+  // layout switch.
+  const byReducer = d.axes_by_reducer || {};
+  const axesOf = (text) =>
+    Object.keys(byReducer).find((reducer) => byReducer[reducer] === text) || "";
   body.innerHTML =
-    paragraphs.map((p) => `<p>${inlineMarkup(p)}</p>`).join("") +
+    paragraphs
+      .map((p) => {
+        const reducer = axesOf(p);
+        return reducer
+          ? `<p class="axes" data-reducer="${escapeHtml(reducer)}">${inlineMarkup(p)}</p>`
+          : `<p>${inlineMarkup(p)}</p>`;
+      })
+      .join("") +
     hazards.map((h) => `<p class="hazard"><b>Hazard.</b> ${inlineMarkup(h)}</p>`).join("") +
     (sources.length
       ? `<p class="src">Computed by: ${sources.map(escapeHtml).join(" · ")}</p>`
