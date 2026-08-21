@@ -154,9 +154,23 @@ def main() -> int:
             "skipped for a missing provider."
         )
 
-    # Additional cohorts, each a complete payload of its own. The page keeps the
-    # first cohort's keys at the top level so a reader of the payload -- and every
-    # test that reads `PAYLOAD["spaces"]` -- sees exactly what it saw before.
+    # Additional cohorts, each a complete payload of its own.
+    #
+    # THE FIRST COHORT USED TO BE SHIPPED TWICE. Its keys were kept at the top
+    # level as well as inside `cohorts`, described as a compatibility guarantee
+    # for readers of the payload. It was not one the renderer needed: the page
+    # reads exactly `thresholds` off the top level (`const THRESHOLDS =
+    # PAYLOAD.thresholds`), and `COHORTS = PAYLOAD.cohorts || [...]` takes the
+    # array whenever it exists, so the copy was unreachable. Measured on the
+    # two-cohort page it was 670,709 bytes -- 33.8% of the payload and 11.6% of
+    # the whole file -- and it scales as n**2, because it carries its own
+    # `tm_matrix`.
+    #
+    # THE SINGLE-COHORT PATH IS UNTOUCHED and must stay that way. With no
+    # `--also-cohort` there is no `cohorts` key at all, and the renderer's
+    # fallback rebuilds a one-cohort list FROM the top-level keys -- so a page
+    # built without this flag depends on them being there. Only the multi-cohort
+    # document is reduced.
     document = payload.to_dict()
     cohorts = [dict(document, cohort_name=title)]
     for spec in args.also_cohort:
@@ -170,6 +184,12 @@ def main() -> int:
             raise SystemExit(f"[build_explorer] cohort {name!r} produced no panels")
         cohorts.append(dict(other_payload.to_dict(), cohort_name=name))
     if len(cohorts) > 1:
+        # `analysis_name` is the page's identity and costs nothing; `thresholds`
+        # is the one key the renderer actually reads off the top level. Anything
+        # else here is the copy.
+        document = {
+            key: value for key, value in document.items() if key in ("analysis_name", "thresholds")
+        }
         document["cohorts"] = cohorts
 
     plotly_js = get_plotlyjs()

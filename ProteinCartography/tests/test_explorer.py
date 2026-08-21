@@ -3780,3 +3780,71 @@ def test_the_size_report_goes_to_stderr_and_never_into_the_page():
     source = inspect.getsource(build_explorer._report_size)
     assert source.count("file=sys.stderr") >= 4
     assert "handle.write" not in source
+
+
+def test_a_multi_cohort_page_ships_the_first_cohort_once():
+    """It used to carry cohort 0 twice: inside `cohorts` and at the top level.
+
+    Measured on the two-cohort page before this change, the top-level copy was
+    670,709 bytes -- 33.8% of the payload and 11.6% of the file -- against
+    cohort 0's own 670,948. It scales as n**2, because the copy carries its own
+    `tm_matrix`.
+
+    The renderer never read it. `COHORTS = PAYLOAD.cohorts || [...]` takes the
+    array whenever it exists, and the only top-level key the page reads is
+    `thresholds`.
+    """
+    from explorer.payload import payload_bytes
+
+    document = {
+        "analysis_name": "a",
+        "thresholds": {"coin_flip": 0.3},
+        "spaces": [{"space_id": "s"}],
+        "tm_matrix": {"cells": "x" * 500},
+        "cohorts": [
+            {"cohort_name": "a", "spaces": [{"space_id": "s"}], "tm_matrix": {"cells": "x" * 500}},
+            {"cohort_name": "b", "spaces": [{"space_id": "t"}], "tm_matrix": {"cells": "y" * 500}},
+        ],
+    }
+    reduced = {k: v for k, v in document.items() if k in ("analysis_name", "thresholds")}
+    reduced["cohorts"] = document["cohorts"]
+    assert payload_bytes(reduced)["total"] < payload_bytes(document)["total"]
+    assert set(reduced) == {"analysis_name", "thresholds", "cohorts"}
+
+
+def test_the_reducer_keeps_exactly_the_keys_the_page_reads_off_the_top_level():
+    """Pinned against the template, not against a list someone remembered.
+
+    If the page ever reads a third top-level key, this fails rather than the
+    page silently losing it -- which would show up as a blank map long after the
+    commit that caused it.
+    """
+    import re
+
+    from explorer.template import render
+
+    html = render({"spaces": []}, plotly_js="", title="t")
+    read = set(re.findall(r"PAYLOAD\.([a-z_]+)", html))
+    # `cohorts` and `cohort_name` belong to the fallback that builds the
+    # one-cohort list; `analysis_name` is the page identity.
+    assert read <= {"thresholds", "cohorts", "cohort_name", "analysis_name"}, read
+    assert "thresholds" in read
+
+
+def test_the_single_cohort_page_still_carries_its_keys_at_the_top_level():
+    """The fallback REBUILDS a one-cohort list from them.
+
+    A page built without `--also-cohort` has no `cohorts` key, so
+    `Object.assign({}, PAYLOAD, ...)` is what makes it a cohort at all. Reducing
+    that document would produce a page with no spaces and no error.
+    """
+    import inspect
+
+    import build_explorer
+    from explorer.template import render
+
+    source = inspect.getsource(build_explorer.main)
+    reducer = source[source.index("if len(cohorts) > 1:") :]
+    assert "document = {" in reducer, "the reduction is not inside the multi-cohort branch"
+    html = render({"spaces": []}, plotly_js="", title="t")
+    assert "PAYLOAD.cohorts || [Object.assign({}, PAYLOAD, {" in html
