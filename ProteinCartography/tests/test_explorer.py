@@ -2743,3 +2743,87 @@ def test_no_component_count_is_typed_into_the_axes_prose():
         "composed from the run's manifest by describe_axes instead"
     )
     assert "UMAP1" not in joined, "an axis name is typed into the invariant prose"
+
+
+def test_the_inspector_offers_entry_pages_and_never_a_guessed_model_url():
+    """A constructed AF-{acc}-F1 url 404s for isoform-backed entries.
+
+    `fetch_accession.py` records that, so the only honest link is the entry page
+    each database routes itself. Both anchors also carry rel="noopener", because
+    target="_blank" without it hands the opened tab a window.opener handle.
+    """
+    from explorer.template import _TEMPLATE
+
+    assert "https://www.uniprot.org/uniprotkb/{acc}/entry" in _TEMPLATE
+    assert "https://alphafold.ebi.ac.uk/entry/{acc}" in _TEMPLATE
+    assert 'rel="noopener"' in _TEMPLATE
+    # Targets CODE, not prose. A bare "AF-" also matches the comment explaining
+    # why the model url is NOT built, so the assertion would fail on the very
+    # sentence documenting the decision. What must stay absent is a CONSTRUCTED
+    # one: a literal opening "AF-", an interpolation into it, or the /files/
+    # path those urls live under.
+    assert '"AF-' not in _TEMPLATE, "a guessed model-file url literal is back"
+    assert "AF-${" not in _TEMPLATE, "a model url is being interpolated"
+    assert "alphafold.ebi.ac.uk/files" not in _TEMPLATE, "the model-file path is back"
+
+
+def test_the_pages_accession_guard_is_the_same_regex_python_uses():
+    """The one real cross-check here, and the reason it exists.
+
+    The guard is duplicated -- once in Python, once as a JS literal -- because
+    the page cannot import Python. Two copies of a regex in two languages drift
+    silently, and the drift would show up as proteins quietly losing their links
+    rather than as any error. So the literal is pinned to its source of truth.
+    """
+    import re
+
+    from domain_utils import UNIPROT_ACCESSION
+    from explorer.template import _TEMPLATE
+
+    block = re.search(r"const UNIPROT_ACCESSION = new RegExp\(\s*(.+?)\s*\);", _TEMPLATE, re.S)
+    assert block, "the JS accession guard is missing or is no longer built from strings"
+
+    # The JS is split at the same point domain_utils splits its own pattern, so
+    # rejoin the halves before comparing.
+    halves = re.findall(r'"((?:[^"\\]|\\.)*)"', block.group(1))
+    assert len(halves) == 2, f"expected two string halves, found {len(halves)}"
+    js_pattern = "".join(halves)
+
+    # ONE transformation, stated rather than absorbed: a backslash inside a JS
+    # string literal is written doubled, so the Python pattern must be escaped
+    # the same way before the two can be compared. A test that skipped this
+    # would still pass on any pattern containing no backslash at all, which is
+    # exactly the kind of vacuous green this branch has been bitten by.
+    expected = UNIPROT_ACCESSION.pattern.replace("\\", "\\\\")
+    assert js_pattern == expected, (
+        "the page's accession guard has drifted from domain_utils.UNIPROT_ACCESSION:\n"
+        f"  page:   {js_pattern}\n  python: {expected}"
+    )
+
+
+def test_the_full_selection_is_offered_even_though_the_code_line_truncates():
+    """The count and the textarea must not be readable as disagreeing.
+
+    The inline `<code>` list truncates at 12 so it stays readable. The textarea
+    carries the whole selection, and its label repeats the FULL count.
+
+    A copy button was rejected rather than forgotten, and on a MEASURED reason
+    rather than the assumed one. file:// is a secure context in Chrome and
+    `navigator.clipboard.writeText` exists there; it is gated on document focus
+    and rejects with NotAllowedError without it. A button would therefore work
+    sometimes and fail silently otherwise. Selecting text always works.
+    """
+    from explorer.template import _TEMPLATE
+
+    assert "chosen.slice(0, 12)" in _TEMPLATE, "the truncated code line is gone"
+    assert 'textarea class="egress" readonly' in _TEMPLATE
+    assert "chosen.join(" in _TEMPLATE, "the textarea does not carry the whole selection"
+    assert "All ${chosen.length}" in _TEMPLATE, "the label does not repeat the full count"
+    # CODE, not prose, and the trailing paren is the whole distinction: the
+    # comment above the textarea NAMES navigator.clipboard.writeText to explain
+    # why it is not used, so matching the bare identifier fails on the very
+    # sentence documenting the decision. A call has parentheses; a mention does
+    # not. This assertion has now been wrong twice in that exact way.
+    assert (
+        "navigator.clipboard.writeText(" not in _TEMPLATE
+    ), "a clipboard write is back; it is focus-gated and fails silently unfocused"

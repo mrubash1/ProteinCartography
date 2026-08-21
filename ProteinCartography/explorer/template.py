@@ -126,6 +126,20 @@ th, td { text-align: left; padding: 5px 9px; border-bottom: 1px solid var(--line
 th { color: var(--muted); font-weight: 600; font-size: 11px;
      text-transform: uppercase; letter-spacing: .04em; }
 td.withheld { color: var(--muted); font-style: italic; }
+span.withheld { color: var(--muted); font-style: italic; }
+/* Selection egress. A textarea rather than a copy button: clipboard.writeText
+   does exist over file:// but is gated on document focus and rejects with
+   NotAllowedError without it, so a button would work sometimes and fail
+   silently otherwise. Selecting text always works. */
+.egress-label { margin: 8px 0 2px; color: var(--muted); }
+textarea.egress {
+  width: 100%; box-sizing: border-box; font: 12px/1.45 ui-monospace, monospace;
+  resize: vertical; overflow-y: auto; padding: 6px;
+  border: 1px solid var(--line); border-radius: 4px;
+  background: var(--bg); color: inherit;
+}
+ul.egress-links { margin: 8px 0 0; padding-left: 18px; max-height: 220px; overflow-y: auto; }
+ul.egress-links li { margin: 2px 0; }
 section { padding: 6px 22px 20px; }
 section h3 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em;
              color: var(--muted); margin: 18px 0 7px; }
@@ -583,6 +597,23 @@ function colourFor(space) {
   if (!overlay) return { values: new Array(n).fill(null), kind: "none", label: "" };
   return { values: overlay.values, kind: overlay.kind, label: state.overlay };
 }
+
+// Entry PAGES, never a guessed file url. `fetch_accession.py` records that a
+// constructed AF-{acc}-F1 model url 404s for isoform-backed entries, so the
+// only honest link is the one the databases route themselves.
+const UNIPROT_ENTRY = "https://www.uniprot.org/uniprotkb/{acc}/entry";
+const AFDB_ENTRY = "https://alphafold.ebi.ac.uk/entry/{acc}";
+
+// Port of domain_utils.UNIPROT_ACCESSION, split at the SAME point its Python
+// source splits so the two read side by side. A test pins this against that
+// pattern, because two copies of a regex in two languages drift silently -- and
+// the drift would surface as proteins quietly losing their links, not as an
+// error. `\\d` here is one backslash reaching JS: this template is a Python raw
+// string.
+const UNIPROT_ACCESSION = new RegExp(
+  "^(?:[OPQ][0-9][A-Z0-9]{3}[0-9]|[A-NR-Z][0-9][A-Z][A-Z0-9]{2}[0-9]" +
+  "|A0A[A-Z0-9]{7})(?:-\\d+)?$"
+);
 
 const PALETTE = ["#4269d0","#efb118","#ff725c","#6cc5b0","#3ca951","#ff8ab7",
                  "#a463f2","#97bbf5","#9c6b4e","#9498a0"];
@@ -2202,11 +2233,46 @@ function renderInspector() {
     return `<tr><td>${escapeHtml(space.space_id)}</td><td>${spread}</td>` +
            `<td>${unreadable} of ${chosen.length}</td></tr>`;
   });
+  // The code line above truncates at 12 so it stays readable. The textarea
+  // carries the WHOLE selection, and its label repeats the full count so the
+  // two cannot be read as disagreeing.
+  //
+  // A textarea rather than a copy button, and the reason is measured rather
+  // than assumed. file:// IS a secure context in Chrome and
+  // navigator.clipboard.writeText exists there -- but it is gated on document
+  // focus and rejects with NotAllowedError when that is not met. A button would
+  // therefore work sometimes and fail silently other times, which is worse than
+  // not having one. Selecting text needs no permission, no focus and no secure
+  // context, and it shows the reader exactly what they are being handed.
+  const egress =
+    `<p class="egress-label">All ${chosen.length}, one per line — click to select all:</p>` +
+    `<textarea class="egress" readonly rows="6" onfocus="this.select()">` +
+    `${escapeHtml(chosen.join("\n"))}</textarea>`;
+
+  // One row per protein. A protid the guard rejects gets its reason rather than
+  // a broken link or a blank -- the page's standing rule that a refusal is
+  // shown as a refusal. Domain-suffixed ids (`P60709__d01`) land here by design.
+  const links = chosen.map((protid) => {
+    const safe = escapeHtml(protid);
+    if (!UNIPROT_ACCESSION.test(protid)) {
+      return `<li><code>${safe}</code> <span class="withheld">not a UniProt ` +
+             `accession, so it has no entry page to link to</span></li>`;
+    }
+    const acc = encodeURIComponent(protid);
+    const uni = UNIPROT_ENTRY.replace("{acc}", acc);
+    const afdb = AFDB_ENTRY.replace("{acc}", acc);
+    return `<li><code>${safe}</code> ` +
+           `<a href="${uni}" target="_blank" rel="noopener">UniProt</a> · ` +
+           `<a href="${afdb}" target="_blank" rel="noopener">AlphaFold</a></li>`;
+  });
+
   node.innerHTML =
     `<p>${chosen.length} protein(s): <code>${chosen.slice(0, 12).map(escapeHtml).join(", ")}` +
     `${chosen.length > 12 ? ", …" : ""}</code></p>` +
+    egress +
     `<table><thead><tr><th>space</th><th>clusters they fall in</th>` +
-    `<th>positions not readable</th></tr></thead><tbody>${rows.join("")}</tbody></table>`;
+    `<th>positions not readable</th></tr></thead><tbody>${rows.join("")}</tbody></table>` +
+    `<ul class="egress-links">${links.join("")}</ul>`;
 }
 
 function renderProvenance() {
