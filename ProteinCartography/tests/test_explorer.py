@@ -3148,3 +3148,127 @@ def test_both_places_that_print_the_unreadable_count_carry_the_cutoff():
     assert "distortedCutoffNote()" in inspector
     geometry = html[html.index('label: "positions not readable"') :][:200]
     assert "note: distortedCutoffNote()" in geometry
+
+
+# ==========================================================================
+# The sentences the run's diagnostics wrote, which reached the browser and were
+# rendered nowhere. Measured on the two-cohort page at commit 140: 32 strings
+# over 11 space/cohort combinations, 24 distinct -- faithfulness 15, stability
+# 8, resolution sweep 7, redundancy 2 -- and `grep -c warnings` over
+# template.py returned 0.
+# ==========================================================================
+
+
+def _space_with_warnings(**diagnostics):
+    return {
+        "space_id": "s",
+        "verdict": {"level": "ok", "headline": "ok", "reasons": []},
+        "protids": [],
+        "readable": [],
+        "clusters": {},
+        "diagnostics": diagnostics,
+    }
+
+
+def test_a_diagnostic_sentence_reaches_the_rendered_page():
+    """Nothing asserted this before, and nothing rendered them.
+
+    The strings travel inside whole diagnostic sections that `SUMMARY_SECTIONS`
+    copies, so no payload test noticed they arrived, and no template test
+    noticed they were dropped.
+    """
+    from explorer.template import render
+
+    html = render({"spaces": []}, plotly_js="", title="t")
+    assert "function diagnosticsBlock(space)" in html
+    assert "entry.warnings" in html, "nothing reads a section's warnings"
+    shell = html[html.index("function panelShell(space)") : html.index("PANELS.scatter = {")]
+    assert "diagnosticsBlock(space)" in shell, "the space panel never calls it"
+
+
+def test_the_disclosure_is_titled_by_what_it_contains_not_called_warnings():
+    """4 of 11 combinations carry an all-clear.
+
+    `embedding.warnings()` appends "the layout is faithful at k=15:
+    trustworthiness 0.94, continuity 0.96" when nothing fired. A fold-out
+    labelled "warnings" containing that sentence contradicts itself, and it
+    would do so on more than a third of the page.
+    """
+    from explorer.template import render
+
+    html = render({"spaces": []}, plotly_js="", title="t")
+    block = html[html.index("function diagnosticsBlock(space)") :][:3000]
+    assert "What the diagnostics wrote about this space" in block
+    assert "an all-clear" in block, "the all-clear count is not disclosed"
+    assert '"cleared"' in block, "an all-clear is not distinguished from a warning"
+    summary_line = block[block.index("summary.textContent") :][:260]
+    assert (
+        "warning" not in summary_line.lower()
+    ), "the disclosure calls its contents warnings, which is false on the all-clears"
+
+
+def test_the_block_reads_the_space_it_is_given_and_never_walks_the_payload():
+    """Cohort 0 is duplicated at the payload top level by design.
+
+    A renderer that walked the payload rather than the space handed to it would
+    draw the first cohort's sixteen sentences twice. `panelShell` is called per
+    space of the ACTIVE cohort, so taking `space.diagnostics` is what keeps the
+    count right.
+    """
+    from explorer.template import render
+
+    html = render({"spaces": []}, plotly_js="", title="t")
+    block = html[html.index("function diagnosticsBlock(space)") :][:3000]
+    assert "space.diagnostics" in block
+    for walked in ("PAYLOAD.cohorts", "PAYLOAD.spaces", "cohorts.forEach"):
+        assert walked not in block, f"the block reaches for {walked}"
+
+
+def test_a_section_with_no_prose_renders_no_disclosure():
+    """An empty triangle promises content and then has none.
+
+    This is the negative half the memo asked for: a space whose diagnostics
+    carry sections but no `warnings` at all must render nothing, not an empty
+    fold-out.
+    """
+    from explorer.template import render
+
+    html = render({"spaces": []}, plotly_js="", title="t")
+    block = html[html.index("function diagnosticsBlock(space)") :][:3000]
+    assert "if (!total) return null;" in block
+    assert "if (!lines.length) return;" in block
+
+
+def test_the_section_order_is_fixed_and_not_json_insertion_order():
+    """`Object.keys` over a payload section would order by however it was written."""
+    from explorer.template import render
+
+    html = render({"spaces": []}, plotly_js="", title="t")
+    assert "const DIAGNOSTIC_SECTIONS = [" in html
+    listed = html[html.index("const DIAGNOSTIC_SECTIONS = [") :][:520]
+    for key in ("faithfulness", "stability", "redundancy", "resolution_sweep"):
+        assert f'"{key}"' in listed, f"{key} writes prose and is not in the order"
+
+
+def test_the_banner_prints_the_stability_mean_at_the_diagnostics_own_precision():
+    """One measurement, one precision, now that both appear on one screen.
+
+    The banner rounded to two decimals and `diagnostics.stability` writes three,
+    so the same number read 0.12 in the verdict and 0.119 in the sentence three
+    lines below it. Two roundings of one measurement look like two measurements
+    that disagree; the fold-out is what puts them together.
+
+    Asserted structurally rather than against a literal: the check is that the
+    two agree, not that either says any particular thing.
+    """
+    from explorer.payload import space_verdict
+
+    mean = 0.1194
+    verdict = space_verdict(
+        {"stability": [{"stability_mean": mean, "informative": True}]}, n_proteins=367
+    )
+    reason = next(r for r in verdict["reasons"] if "coin-flip" in r)
+    assert f"{mean:.3f}" in reason, reason
+    assert (
+        f"{mean:.2f}," not in reason
+    ), "the banner is back to two decimals while the diagnostic writes three"

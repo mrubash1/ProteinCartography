@@ -165,7 +165,12 @@ def space_verdict(diagnostics, n_proteins: int) -> dict:
     elif stability and stability.get("stability_mean", 1.0) <= COIN_FLIP_THRESHOLD:
         level = "unreadable"
         reasons.append(
-            f"mean neighbourhood stability is {stability['stability_mean']:.2f}, at or "
+            # THREE decimals, matching `diagnostics.stability`'s own sentence
+            # exactly. At two the banner said 0.12 while the diagnostic three
+            # lines below it said 0.119 about the same measurement, and phase 3
+            # puts the two on one screen -- one number printed twice at two
+            # precisions reads as two measurements that disagree.
+            f"mean neighbourhood stability is {stability['stability_mean']:.3f}, at or "
             "below the coin-flip level"
         )
 

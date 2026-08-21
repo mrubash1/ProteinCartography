@@ -185,6 +185,15 @@ footer code { font-size: 11.5px; }
   background: #fdf9ef; padding-top: 4px; padding-bottom: 4px; }
 .explain .hazard b { color: var(--caution); }
 .explain .src { color: var(--muted); font-size: 11px; margin-top: 8px; }
+/* The diagnostics' own sentences. A section label, then that section's lines --
+   no hazard bar, because these are not this page's caveats about a panel, they
+   are the run's own output about a space. */
+.explain.wrote .wrote-label { font-size: 11px; letter-spacing: 0.04em;
+  text-transform: uppercase; color: var(--muted); margin: 8px 0 3px; }
+.explain.wrote ul { margin: 0 0 4px; padding-left: 18px; }
+.explain.wrote li { margin-bottom: 5px; }
+/* An all-clear is not a warning and must not be read as one. */
+.explain.wrote li.cleared { color: var(--ok); }
 /* A catalogue panel's own body. Bounded and scrolled inside the card, so a
    367-row table cannot set the height of the whole sheet. */
 .tablebox { max-height: 330px; overflow: auto; }
@@ -773,6 +782,86 @@ function inlineMarkup(text) {
     .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
 }
 
+//: The diagnostic sections that write prose, in reading order, with the label
+//: each gets on the page. Fixed here rather than taken from `Object.keys`, so
+//: the order does not follow JSON insertion order and a section nobody named
+//: cannot appear under its raw key.
+const DIAGNOSTIC_SECTIONS = [
+  ["faithfulness", "layout faithfulness"],
+  ["stability", "neighbourhood stability"],
+  ["redundancy", "block redundancy"],
+  ["resolution_sweep", "resolution sweep"],
+  ["partition", "partition"],
+  ["negative_controls", "negative controls"],
+];
+
+//: `embedding.warnings()` appends this when NOTHING fired. It is an all-clear,
+//: not a warning, and it is present on 4 of the 11 space/cohort combinations
+//: shipped -- so a disclosure calling its contents warnings would contradict
+//: itself on more than a third of the page. Two consequences, both deliberate:
+//: the disclosure is titled by what it CONTAINS, and an all-clear is marked so
+//: it is not styled as a hazard.
+const ALL_CLEAR = "the layout is faithful at k=";
+
+// Every sentence the run's diagnostics wrote about ONE space, in one collapsed
+// disclosure under that space's panel.
+//
+// Read from the space handed in -- which is always a space of the ACTIVE cohort
+// -- and never by walking the payload. Cohort 0's spaces are duplicated at the
+// payload top level on purpose (build_explorer.py), so a walk would draw the
+// first cohort's sixteen sentences twice.
+//
+// Collapsed, per ADR 0014: a caveat you have to open is read by the people who
+// already suspected it, which is right for a per-space detail and wrong for a
+// banner. The banner above it is unchanged and stays open.
+function diagnosticsBlock(space) {
+  const diagnostics = space.diagnostics || {};
+  const groups = [];
+  let total = 0;
+  let cleared = 0;
+  DIAGNOSTIC_SECTIONS.forEach(([key, label]) => {
+    const value = diagnostics[key];
+    if (!value) return;
+    const entries = Array.isArray(value) ? value : [value];
+    const lines = [];
+    entries.forEach((entry) => {
+      if (!entry || typeof entry !== "object") return;
+      (entry.warnings || []).forEach((text) => lines.push(String(text)));
+    });
+    if (!lines.length) return;
+    total += lines.length;
+    cleared += lines.filter((t) => t.indexOf(ALL_CLEAR) !== -1).length;
+    groups.push({ label, lines });
+  });
+  if (!total) return null;
+  const box = document.createElement("details");
+  box.className = "explain wrote";
+  const summary = document.createElement("summary");
+  // Named by what is in it. "Warnings" would be false on the all-clears and
+  // "notes" would be false on "their individual positions should not be read".
+  summary.textContent =
+    `What the diagnostics wrote about this space (${total} sentence(s)` +
+    (cleared ? `, ${cleared} of them an all-clear)` : ")");
+  const body = document.createElement("div");
+  body.className = "body";
+  groups.forEach(({ label, lines }) => {
+    const head = document.createElement("p");
+    head.className = "wrote-label";
+    head.textContent = label;
+    body.append(head);
+    const list = document.createElement("ul");
+    lines.forEach((text) => {
+      const item = document.createElement("li");
+      if (text.indexOf(ALL_CLEAR) !== -1) item.className = "cleared";
+      item.textContent = text;
+      list.append(item);
+    });
+    body.append(list);
+  });
+  box.append(summary, body);
+  return box;
+}
+
 function explainBlock(description) {
   const d = description || {};
   const paragraphs = d.paragraphs || [];
@@ -891,6 +980,8 @@ function panelShell(space) {
   }
   const explain = explainBlock(space.description);
   if (explain) panel.append(explain);
+  const wrote = diagnosticsBlock(space);
+  if (wrote) panel.append(wrote);
   return panel;
 }
 
