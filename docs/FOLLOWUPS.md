@@ -79,3 +79,59 @@ which those eight entries had already contradicted.
 | 68 | **`identity_vs_tm` was described as the cheapest gap on the page, by a route that cannot produce an identity table for either shipped cohort.** The panel's `requires` read "aggregate_foldseek_fraction_seq_identity.py already exists and foldseek emits fident, so it is one search pass per cohort". That script keeps only targets matching `-F1-model` and extracts the protid with `re.findall("AF-(.*)-F1-model", x)`, while a cohort's own all-vs-all names targets like `A0A068F598.pdb` — **so the filter drops every row**. Its input is the Foldseek WEB API rather than a local pass, `key_protids` is empty for both shipped cohorts (cluster mode, and the demo leaves it empty deliberately because setting it pulls the web API into the DAG), and its output is a wide per-key-protid feature table (`fident_v_<protid>`, `prob_v_<protid>`, `evalue_v_<protid>`) rather than the pairwise table a per-pair scatter needs. **Measured, so the real price is known:** the exhaustive pass ALREADY RAN for both cohorts and its output is complete — `all.m8` holds exactly n² rows, 134,689 for chymo_A1 (n=367) and 94,864 for actin_B (n=308) — but its `--format-output` asked for `query,target,alntmscore,qlen,tlen,alnlen`, six columns with no `fident`, and every `searchtmp/` is 0 B, so the alignment databases are gone and the pass must be RE-RUN rather than re-formatted. Re-running is cheap in the stage that matters: the 3Di+AA `structurealign` stage that produces the backtrace `fident` is read from took **11.5 s** (chymo_A1) and **9.2 s** (actin_B), against **28m56s** and **19m09s** for the `tmalign` stage in the same runs. | `ProteinCartography/explorer/panels.py` (`identity_vs_tm`); `ProteinCartography/aggregate_foldseek_fraction_seq_identity.py:63-69` | **The false route is corrected and the panel is parked, not built.** Building it is a second n² payload block on an already 5.75 MB page, plus a `scatter` renderer that does not exist, plus a browser pass — the compute is the small part. It also needs an answer to whether an identity read off a structural superposition is an acceptable x-axis to plot structural similarity against; it is not independent of the y-axis, and the panel's whole point is the relationship between them. **The memo's stated reason to park it — that mixing a capped and an uncapped population across the two axes would be misleading — does NOT apply here**, because both shipped cohorts are exhaustive: the n² row counts above, corroborated by a measured censored fraction of exactly 0.0000 on both. Parked for the real reasons instead. One further limitation noted rather than fixed, because fixing it here would be a drive-by: the aggregator's AFDB-only target filter is an upstream constraint that also blocks any non-AFDB cohort from ever using it. |
 | 69 | **RECORDED REFUSAL: the explorer does not use the Arcadia house palette, and should not until the coupling is real rather than copied.** Four reasons, each checkable in this repository. (1) `arcadia_pycolor` is a `git+https` pip dependency declared in `envs/cartography_dev.yml`, `envs/cartography_tidy.yml`, `envs/cartography_pub.yml` and `envs/plotting.yml`, and is imported by `color_utils.py`, `plot_interactive.py`, `plot_cluster_distributions.py` and `semantic_analysis.py` — all of which run inside those envs. (2) **The explorer is deliberately dependency-free**: `explorer/panels.py` and `explorer/descriptions.py` both say so, and `tests/test_optional_dependencies.py` asserts `explorer.payload`, `explorer.template` and `explorer.panels` import in a bare environment. Importing the palette would break that assertion, so the colours would have to be hand-copied as hex — which is a copy that drifts silently the first time upstream changes a swatch. (3) The page's `PALETTE` is ten hex literals indexed **modulo its length**, so a cohort with more than ten clusters already reuses colours by design; a house palette does not fix that and would hide it behind brand-correct duplicates. (4) The one place colour carries meaning rather than identity — the red ring marking positions the diagnostics say not to read — was tuned against the overlay fills by a manual browser pass that nothing automated re-verifies, so a palette swap would silently change a semantic contrast into an aesthetic one. | `ProteinCartography/explorer/template.py` (`PALETTE`, and the two `PALETTE[i % PALETTE.length]` sites); `envs/*.yml`; `ProteinCartography/tests/test_optional_dependencies.py` | **Refused, and refusing is already the shipped behaviour — nothing changes by not doing it.** The version worth building is not a hex copy: it is `arcadia_pycolor` becoming importable from a bare env, or the explorer gaining a build step that inlines the palette from the package at generation time with the version recorded in the provenance footer. Either is a real piece of work with a browser pass attached, and neither is a colour change. |
 | 70 | **RECORDED REFUSAL: no hand-maintained "Start here" orientation sheet.** The proposal was a ninth sheet that would tell a first-time reader which panel to look at first and what the page is claiming. It is refused for one reason that outranks the others: **the page already computes sentences it does not render.** A per-space verdict string is derived for every space and cohort and reaches no surface, so a hand-written orientation sheet would be prose competing with measurements the run already made — and prose is the half that goes stale, because nothing recomputes it when a cohort changes. Rendering the computed sentences is the work that would make an orientation sheet unnecessary, or would change what it should say; it is tracked separately as PC-004 and is not free, because several of those strings are reassurances filed under a heading that says warnings. A second reason stands on its own: a sheet that says "start here" is a claim about what matters, and the page's whole argument is that what matters is whatever the diagnostics flag on THIS cohort — which differs between the two cohorts already shipped. | `ProteinCartography/explorer/panels.py` (the eight sheets); `ProteinCartography/explorer/payload.py` (`space_verdict`) | **Refused, and it is already the shipped behaviour.** One idea from the proposal was worth keeping and has been taken: that the same stability number reads two ways depending on the reader's job. That sentence now lives in the stability panel's own fold-out, next to the number it describes, rather than on a sheet a reader would have to find first. Related: the tab bar already labels the sheets that are entirely refusals, e.g. "(4 empty)", so a reader is told where the gaps are without a page telling them where to start. Demoting or summarising those sheets is separately refused — a refusal shown as a refusal is the contract, and hiding one behind a summary is the thing that contract exists to prevent. |
+
+
+---
+
+## What is held out on purpose
+
+Everything above is a numbered observation. This section is different: it is a
+**decision record**. Each row is something deliberately NOT being fixed in this
+PR, with the reason and who can re-open it. It exists because an unowned
+deferral decays into nobody's problem — rows 1 and 2 of the table above already
+record their own deferrals as expired and "now ownerless", which is the failure
+this section is meant to stop repeating.
+
+Nothing here is a defect this PR introduced, and nothing here is unowned.
+
+### A. Scope refusals — this branch's, refused on review-surface grounds
+
+The recorded answer to all of these is **no, not in this PR**. Re-opening any of
+them is Matt's call, and it has to happen before the PR opens rather than during
+review.
+
+| held out | recorded decision | why | who re-opens |
+|---|---|---|---|
+| #14 — retrofit `matrix_io.py` into the five remaining raw-matrix consumers | not in this PR | all five are already label-safe, so it buys assertion coverage rather than a bug fix, at the cost of five touched files a reviewer must evaluate for regression | Matt |
+| #48 — the Snakefile spells out six filenames `spaces/layout.py` owns | not in this PR | the duplication is within one file and visible; the cross-module drift that failed silently is fixed and guarded. Its counts were corrected in the row itself — do not re-derive them here | Matt |
+| #18 — frozen config dataclasses wrap mutable dicts | not in this PR | configs are built once from YAML; deep-freezing is noisy for the risk | Matt |
+| #19 — `ProteinCartography.spaces` ships but is not importable as a package path | not in this PR | it matches the repo's existing flat-import convention, so it is not a regression; fixing it changes every module's import style | Matt |
+| pydantic migration | permitted, unstarted | `config_schema.py` still uses hand-rolled frozen dataclasses. Permitted since 2026-08-17; migrating mid-PR would rewrite the file a reviewer is reading | Matt |
+| function / pocket / developability blocks | not built | would fill the flavours plate whose unimplemented string is "no function-call block provider is registered". Not demo-blocking and not on any output path | Matt |
+| mocking the cluster-mode integration test | not done | that test polls the **live public Foldseek server**, so its duration is not under this repository's control. Mocking it is real work and belongs with the env-drift PR | Matt |
+| the pre-rebase tag and backup branches | **DO NOT DELETE** | none is an ancestor of HEAD, so nothing garbage-collects them safely and nothing else records the pre-rebase state | Matt |
+
+### B. Upstream's, not this branch's
+
+These are pre-existing defects in files this branch does not own. They are
+listed so a reviewer can see they were noticed deliberately rather than missed,
+and so nobody re-proposes them as work for this PR. **Ownership and ordering
+are undecided as of 2026-08-21 and the decision is Matt's** — this branch is
+forbidden from pushing to Arcadia-Science or opening a PR there, so none of
+these can move without it.
+
+| held out | what it is | note |
+|---|---|---|
+| #3 | README links two scripts that do not exist | line numbers corrected in the row |
+| #4 | `run_foldseek_clustering` creates `temp` before `results` with non-recursive `os.mkdir` | masked today because snakemake pre-creates output dirs |
+| #5 | `str.rstrip(".pdb")` strips a character set, not a suffix | latent; safe for uppercase accessions |
+| #6 | `aggregate_features.py` uses `DataFrame.add` where a row append is intended | changing it changes output |
+| #7 | `calculate_concordance.py` writes CSV on the empty path and TSV on the success path | inconsistency in an error path |
+| #8 | the wordwrap post-pass assigns a 1-tuple to `apply` via a trailing comma | the rule is inert; line numbers corrected in the row |
+| #12 | `leiden_clustering.py` emits an unpadded label on the `N<3` path | cosmetic, degenerate path |
+| #45, second half | `foldseek_apiquery.py` polls `while elapsed < TIMEOUT` but fails on `if elapsed > TIMEOUT`, so `elapsed == TIMEOUT` falls through and the download proceeds with no error | **the strongest standalone PR on this list.** Its file pointer in the row is stale — the mocks live under `tests/`, not at the top level |
+| #57 | the three slowest tests are not this branch's, and `make test` runs them every time | A branch marking them slow is **prepared and pushed to the fork only, and opened nowhere.** Whether it opens against upstream is upstream's call, not this PR's, because it changes what upstream's default `make test` runs |
+
+**#53 is deliberately absent from both tables.** It reads as upstream-owned, but
+this branch fixed it; the row itself now records that. Listing it here would
+re-publish a claim this branch has already falsified.
