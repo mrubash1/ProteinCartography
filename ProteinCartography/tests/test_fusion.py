@@ -46,6 +46,56 @@ from fusion_cohort import (
     separation,
 )
 
+#: Two phrases that identify `fusion.py`'s dominance and non-convergence
+#: warnings.
+#:
+#: Tests below look for each in a result's ``warnings`` list -- some require
+#: one, some require its absence. **The absence ones do not fail when the
+#: wording changes**: reword a warning and ``not any(marker in w ...)`` stops
+#: matching anything, so it passes for the rest of the branch's life while
+#: checking nothing. That is a check that turns itself off, which is worse than
+#: no check.
+#:
+#: ``DOMINANCE_MARKER`` is the reason this guard is not merely tidying. The
+#: other five absence assertions of this shape in the suite happen to be pinned
+#: by a sibling test that requires a LONGER phrase containing the same words, so
+#: a rewording goes red somewhere. This one is not: the positive test at
+#: ``test_a_dominant_block_is_named_in_a_warning`` requires "of the fused
+#: geometry", which does not contain the word "threshold", so nothing in the
+#: suite notices if the dominance warning stops using it.
+#:
+#: Every assertion reads these constants, and
+#: :func:`assert_the_fusion_markers_are_current` asks `fusion.py` for the
+#: warnings it actually emits. One probe pair covers both markers, so there is
+#: one guard rather than two near-identical ones.
+DOMINANCE_MARKER = "threshold"
+NOT_CONVERGED_MARKER = "not converged"
+
+
+def assert_the_fusion_markers_are_current() -> tuple[str, str]:
+    """Fail unless `fusion.py` still emits warnings containing both markers.
+
+    The probes are the smallest inputs that produce them: two blocks with one
+    weighted far above the other, and a graph fusion cut off at one iteration.
+    Anything else -- no warning at all, or a reworded one -- means the negative
+    assertions in this file can no longer match, and this says so instead of
+    letting them quietly pass.
+    """
+    blocks = fusion_cohort().blocks
+    heavy = FusionInput(WIDE_BLOCK, blocks[WIDE_BLOCK], weight=50.0)
+    light = FusionInput(NARROW_BLOCK, blocks[NARROW_BLOCK])
+    dominant = fuse_late([heavy, light])
+    unconverged = fuse_graph([FusionInput(WIDE_BLOCK, blocks[WIDE_BLOCK]), light], iterations=1)
+    for marker, result in ((DOMINANCE_MARKER, dominant), (NOT_CONVERGED_MARKER, unconverged)):
+        matching = [w for w in result.warnings if marker in w]
+        assert len(matching) == 1, (
+            f"fusion.py no longer emits exactly one warning containing {marker!r}; it "
+            f"emitted {result.warnings!r}. Until this marker is updated, the assertions "
+            "in this file that require the warning to be ABSENT match nothing and pass "
+            "whatever the fusion does."
+        )
+    return DOMINANCE_MARKER, NOT_CONVERGED_MARKER
+
 
 @pytest.fixture(scope="module")
 def cohort():
@@ -488,7 +538,7 @@ def test_a_dominant_block_is_named_in_a_warning(wide, narrow):
 def test_no_dominance_warning_when_the_blocks_are_balanced(wide, narrow):
     result = fuse_late([wide, narrow])
     assert result.dominant is None
-    assert not any("threshold" in w for w in result.warnings)
+    assert not any(DOMINANCE_MARKER in w for w in result.warnings)
     assert max(result.realized_shares.values()) < DOMINANCE_THRESHOLD
 
 
@@ -566,13 +616,13 @@ def test_the_iterates_stay_row_stochastic():
 def test_graph_converges_and_says_so(graph_wide_narrow):
     result = graph_wide_narrow
     assert result.params_used["final_delta"] < 1e-6
-    assert not any("not converged" in w for w in result.warnings)
+    assert not any(NOT_CONVERGED_MARKER in w for w in result.warnings)
 
 
 def test_graph_warns_when_it_has_not_converged(wide, narrow):
     result = fuse_graph([wide, narrow], iterations=1)
     assert result.params_used["final_delta"] > 1e-6
-    assert any("had not converged" in w for w in result.warnings)
+    assert any(f"had {NOT_CONVERGED_MARKER}" in w for w in result.warnings)
 
 
 def test_graph_finds_both_partitions(graph_wide_narrow, fold, chemistry):
@@ -787,3 +837,32 @@ def test_a_block_with_real_but_small_variation_is_still_accepted():
     values = 1000.0 + rng.normal(0.0, 0.01, size=(40, 4))
     result = fuse("late", [FusionInput("small", values), FusionInput("real", np.eye(40))], {})
     assert len(result.contributions) == 2
+
+
+def test_the_fusion_markers_still_match_what_fusion_emits():
+    """The guard behind the absence checks, run where it cannot be skipped.
+
+    Not marked slow and needing nothing beyond numpy, so it executes in the
+    bare environment -- the one the absence assertions also run in.
+    """
+    assert assert_the_fusion_markers_are_current() == (
+        DOMINANCE_MARKER,
+        NOT_CONVERGED_MARKER,
+    )
+
+
+def test_the_fusion_guard_fails_when_a_warning_is_reworded(monkeypatch):
+    """A guard that cannot fail is decoration.
+
+    Rewords only the dominance marker, which also proves the guard is not
+    satisfied by the convergence one still matching.
+    """
+    import fusion
+
+    monkeypatch.setattr(
+        fusion,
+        "_dominance_warning",
+        lambda contributions: ["one block carries most of the fused geometry"],
+    )
+    with pytest.raises(AssertionError, match="no longer emits"):
+        assert_the_fusion_markers_are_current()

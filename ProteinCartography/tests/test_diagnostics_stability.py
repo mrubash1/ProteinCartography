@@ -22,6 +22,50 @@ from diagnostics.stability import (
 )
 from stability_cohort import DIFFUSE, GAPPED, TIED, chance_jaccard, stability_cohort
 
+#: Two phrases that identify `diagnostics/stability.py`'s vacuity warnings --
+#: the one for a neighborhood that is the whole cohort, and the one for a
+#: neighborhood that is most of it.
+#:
+#: Tests below look for each in a result's ``warnings`` list -- some require
+#: one, some require its absence. The requiring ones fail loudly if the wording
+#: changes. **The absence ones do not**: reword a warning and
+#: ``not any(marker in note ...)`` stops matching anything, so it passes for the
+#: rest of the branch's life while checking nothing. That is a check that turns
+#: itself off, which is worse than no check.
+#:
+#: Every assertion reads these constants, so they cannot drift apart, and
+#: :func:`assert_the_vacuity_markers_are_current` asks `stability.py` for the
+#: warnings it actually emits and fails if either phrase is no longer in them.
+#: One probe pair covers both markers, so there is one guard rather than two
+#: near-identical ones.
+BY_CONSTRUCTION_MARKER = "by construction"
+MOST_OF_THE_COHORT_MARKER = "most of the cohort"
+
+
+def assert_the_vacuity_markers_are_current() -> tuple[str, str]:
+    """Fail unless `stability.py` still emits warnings containing both markers.
+
+    The probes are the two smallest cohorts that produce them: eleven proteins
+    at k=15, where k clamps to 8 of a 9-protein replicate and the Jaccard is
+    1.0 whatever the noise, and thirty at k=15, where the neighborhood is over
+    half the subsample without being all of it. Anything else -- no warning at
+    all, or a reworded one -- means the negative assertions in this file can no
+    longer match, and this says so instead of letting them quietly pass.
+    """
+    cohort = stability_cohort(k=2)
+    whole = neighborhood_stability("probe", cohort.distances()[:11, :11], cohort.protids[:11], k=15)
+    most = neighborhood_stability("probe", cohort.distances()[:30, :30], cohort.protids[:30], k=15)
+    for marker, result in ((BY_CONSTRUCTION_MARKER, whole), (MOST_OF_THE_COHORT_MARKER, most)):
+        matching = [note for note in result.warnings() if marker in note]
+        assert len(matching) == 1, (
+            f"stability.py no longer emits exactly one warning containing {marker!r}; it "
+            f"emitted {result.warnings()!r}. Until this marker is updated, the assertions "
+            "in this file that require the warning to be ABSENT match nothing and pass "
+            "whatever the diagnostic does."
+        )
+    return BY_CONSTRUCTION_MARKER, MOST_OF_THE_COHORT_MARKER
+
+
 COHORT = stability_cohort()
 DISTANCES = COHORT.distances()
 K = COHORT.k
@@ -311,7 +355,7 @@ def test_a_neighborhood_that_is_the_whole_subsample_says_so():
     assert result.subsample_size == 9
     assert result.neighborhood_fraction == 1.0
     assert not result.informative
-    assert any("Jaccard is 1.0 by construction" in note for note in result.warnings())
+    assert any(f"Jaccard is 1.0 {BY_CONSTRUCTION_MARKER}" in note for note in result.warnings())
 
 
 def test_a_neighborhood_over_half_the_subsample_is_flagged_without_being_refused():
@@ -322,8 +366,8 @@ def test_a_neighborhood_over_half_the_subsample_is_flagged_without_being_refused
     assert result.k == 15
     assert 0.5 <= result.neighborhood_fraction < 1.0
     assert not result.informative
-    assert any("most of the cohort" in note for note in result.warnings())
-    assert not any("by construction" in note for note in result.warnings())
+    assert any(MOST_OF_THE_COHORT_MARKER in note for note in result.warnings())
+    assert not any(BY_CONSTRUCTION_MARKER in note for note in result.warnings())
 
 
 def test_a_local_neighborhood_is_reported_as_informative():
@@ -331,7 +375,7 @@ def test_a_local_neighborhood_is_reported_as_informative():
     result = run()
     assert result.informative
     assert result.neighborhood_fraction < 0.1
-    assert not any("most of the cohort" in note for note in result.warnings())
+    assert not any(MOST_OF_THE_COHORT_MARKER in note for note in result.warnings())
 
 
 # --- Gate D --------------------------------------------------------------------
@@ -404,3 +448,32 @@ def test_a_real_spread_is_still_informative():
 
     assert result.noise_sigma > 0
     assert result.informative is True
+
+
+def test_the_vacuity_markers_still_match_what_stability_emits():
+    """The guard behind the absence checks, run where it cannot be skipped.
+
+    Not marked slow and needing nothing beyond numpy, so it executes in the
+    bare environment -- the one the absence assertions also run in.
+    """
+    assert assert_the_vacuity_markers_are_current() == (
+        BY_CONSTRUCTION_MARKER,
+        MOST_OF_THE_COHORT_MARKER,
+    )
+
+
+def test_the_vacuity_guard_fails_when_a_warning_is_reworded(monkeypatch):
+    """A guard that cannot fail is decoration.
+
+    Rewords only the first of the two markers, which also proves the guard is
+    not satisfied by the other one still matching.
+    """
+    from diagnostics import stability
+
+    monkeypatch.setattr(
+        stability.NeighborhoodStability,
+        "warnings",
+        lambda self: ["the score is 1.0 by definition", "most of the cohort"],
+    )
+    with pytest.raises(AssertionError, match="no longer emits"):
+        assert_the_vacuity_markers_are_current()

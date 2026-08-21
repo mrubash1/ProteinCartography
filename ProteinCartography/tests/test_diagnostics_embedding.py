@@ -31,6 +31,49 @@ from embedding_cohort import (
     embedding_cohort,
 )
 
+#: A phrase that identifies `diagnostics/embedding.py`'s k-clamp warning.
+#:
+#: Two tests below look for this in a report's ``warnings`` list -- one requires
+#: it, one requires its absence. The requiring one fails loudly if the wording
+#: changes. **The absence one does not**: reword the warning and
+#: ``not any(K_CLAMP_MARKER in note ...)`` stops matching anything, so it passes
+#: for the rest of the branch's life while checking nothing. That is a check
+#: that turns itself off, which is worse than no check.
+#:
+#: Both assertions read this constant, so they cannot drift apart, and
+#: :func:`assert_the_k_clamp_marker_is_current` asks `embedding.py` for the
+#: warning it actually emits and fails if the phrase is no longer in it.
+K_CLAMP_MARKER = "k was reduced"
+
+
+def assert_the_k_clamp_marker_is_current() -> str:
+    """Fail unless `embedding.py` still emits a warning containing the marker.
+
+    A k larger than the cohort admits is the one case the warning exists for,
+    so the probe is the smallest cohort that produces it. Anything else -- no
+    warning at all, or a reworded one -- means the negative assertion in this
+    file can no longer match, and this says so instead of letting it quietly
+    pass.
+    """
+    small = embedding_cohort(n=12)
+    probe = faithfulness(
+        "probe",
+        "pca_umap",
+        _distances(small.high),
+        _distances(small.case(FOLD).low),
+        small.protids,
+        k=DEFAULT_K,
+    )
+    matching = [note for note in probe.warnings() if K_CLAMP_MARKER in note]
+    assert len(matching) == 1, (
+        f"embedding.py no longer emits exactly one warning containing {K_CLAMP_MARKER!r}; "
+        f"it emitted {probe.warnings()!r}. Until this marker is updated, the assertion in "
+        "this file that requires the warning to be ABSENT matches nothing and passes "
+        "whatever the diagnostic does."
+    )
+    return K_CLAMP_MARKER
+
+
 CASES = (ISOMETRIC, FOLD, SPLIT, SHUFFLE)
 KS = (5, 10, 20)
 
@@ -347,7 +390,7 @@ def test_the_clamp_is_reported_rather_than_silent():
     high = _distances(small.high)
     low = _distances(small.case(FOLD).low)
     report = faithfulness("s", "pca_umap", high, low, small.protids, k=DEFAULT_K)
-    assert any("k was reduced from 15 to 7" in note for note in report.warnings())
+    assert any(f"{K_CLAMP_MARKER} from 15 to 7" in note for note in report.warnings())
     assert report.to_dict()["k_requested"] == DEFAULT_K
     assert report.to_dict()["k"] == 7
 
@@ -359,7 +402,7 @@ def test_a_k_that_already_fits_is_not_reported_as_clamped():
     low = _distances(small.case(ISOMETRIC).low)
     report = faithfulness("s", "pca_umap", high, low, small.protids, k=3)
     assert report.k == report.k_requested == 3
-    assert not any("k was reduced" in note for note in report.warnings())
+    assert not any(K_CLAMP_MARKER in note for note in report.warnings())
 
 
 @pytest.mark.parametrize("n,expected", [(3, 1), (11, 6), (12, 7), (240, 159)])
@@ -416,3 +459,23 @@ def test_require_finite_passes_a_clean_matrix_through_unchanged():
 
     matrix = np.arange(16, dtype=np.float64).reshape(4, 4)
     assert np.array_equal(require_finite(matrix, "test"), matrix)
+
+
+def test_the_k_clamp_marker_still_matches_what_embedding_emits():
+    """The guard behind the absence check, run where it cannot be skipped.
+
+    Not marked slow and needing no sklearn, so it executes in the bare
+    environment -- the one the absence assertion also runs in.
+    """
+    assert assert_the_k_clamp_marker_is_current() == K_CLAMP_MARKER
+
+
+def test_the_k_clamp_guard_fails_when_the_warning_is_reworded(monkeypatch):
+    """A guard that cannot fail is decoration."""
+    from diagnostics import embedding
+
+    monkeypatch.setattr(
+        embedding.EmbeddingFaithfulness, "warnings", lambda self: ["k was clamped to 7"]
+    )
+    with pytest.raises(AssertionError, match="no longer emits"):
+        assert_the_k_clamp_marker_is_current()

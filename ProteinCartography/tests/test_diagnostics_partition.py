@@ -29,6 +29,41 @@ from diagnostics.partition import (
 )
 from fusion_cohort import NARROW_BLOCK, NOISE_BLOCK, WIDE_BLOCK, fusion_cohort
 
+#: A phrase that identifies `diagnostics/partition.py`'s missing-control warning.
+#:
+#: Two tests below look for this in a report's ``warnings`` list -- one requires
+#: it, one requires its absence. The requiring one fails loudly if the wording
+#: changes. **The absence one does not**: reword the warning and
+#: ``not any(SKIPPED_CONTROL_MARKER in n ...)`` stops matching anything, so it
+#: passes for the rest of the branch's life while checking nothing. That is a
+#: check that turns itself off, which is worse than no check.
+#:
+#: Both assertions read this constant, so they cannot drift apart, and
+#: :func:`assert_the_skipped_control_marker_is_current` asks `partition.py` for
+#: the warning it actually emits and fails if the phrase is no longer in it.
+SKIPPED_CONTROL_MARKER = "requested and not produced"
+
+
+def assert_the_skipped_control_marker_is_current() -> str:
+    """Fail unless `partition.py` still emits a warning containing the marker.
+
+    A control that was asked for and did not run is the one case the warning
+    exists for, so the probe is the smallest report that carries one. Anything
+    else -- no warning at all, or a reworded one -- means the negative
+    assertion in this file can no longer match, and this says so instead of
+    letting it quietly pass.
+    """
+    probe = negative_controls("probe", WIDE, FOLD, skipped={"random_distances": "one cluster"})
+    matching = [n for n in probe.warnings() if SKIPPED_CONTROL_MARKER in n]
+    assert len(matching) == 1, (
+        f"partition.py no longer emits exactly one warning containing "
+        f"{SKIPPED_CONTROL_MARKER!r}; it emitted {probe.warnings()!r}. Until this marker "
+        "is updated, the assertion in this file that requires the warning to be ABSENT "
+        "matches nothing and passes whatever the diagnostic does."
+    )
+    return SKIPPED_CONTROL_MARKER
+
+
 COHORT = fusion_cohort()
 FOLD = COHORT.partitions["fold"].labels
 CHEMISTRY = COHORT.partitions["chemistry"].labels
@@ -328,12 +363,12 @@ def test_a_requested_control_that_could_not_run_is_named_in_the_report():
         "wide", WIDE, FOLD, skipped={"random_distances": "the random matrix gave one cluster"}
     )
     assert report.to_dict()["skipped"] == {"random_distances": "the random matrix gave one cluster"}
-    assert any("requested and not produced" in note for note in report.warnings())
+    assert any(SKIPPED_CONTROL_MARKER in note for note in report.warnings())
 
 
 def test_no_skipped_controls_means_no_such_warning():
     assert not any(
-        "requested and not produced" in n for n in negative_controls("w", WIDE, FOLD).warnings()
+        SKIPPED_CONTROL_MARKER in n for n in negative_controls("w", WIDE, FOLD).warnings()
     )
 
 
@@ -346,3 +381,23 @@ def test_the_silhouette_refuses_a_nan_distance():
     distances[4, 9] = np.nan
     with pytest.raises(EmbeddingDiagnosticError, match="NaN or infinite"):
         silhouette(distances, FOLD)
+
+
+def test_the_skipped_control_marker_still_matches_what_partition_emits():
+    """The guard behind the absence check, run where it cannot be skipped.
+
+    Not marked slow and needing no sklearn, so it executes in the bare
+    environment -- the one the absence assertion also runs in.
+    """
+    assert assert_the_skipped_control_marker_is_current() == SKIPPED_CONTROL_MARKER
+
+
+def test_the_skipped_control_guard_fails_when_the_warning_is_reworded(monkeypatch):
+    """A guard that cannot fail is decoration."""
+    from diagnostics import partition
+
+    monkeypatch.setattr(
+        partition.NegativeControlReport, "warnings", lambda self: ["a control did not run"]
+    )
+    with pytest.raises(AssertionError, match="no longer emits"):
+        assert_the_skipped_control_marker_is_current()
