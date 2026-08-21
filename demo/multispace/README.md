@@ -7,7 +7,19 @@ seven ways, compared pairwise, and diagnosed.
 snakemake --configfile demo/multispace/config.yml --use-conda --cores 8
 ```
 
-Offline, about two minutes after the conda environments exist, 36 rules.
+**Not offline.** About a minute after the conda environments exist (62 s
+measured on an 8-core laptop), the run makes **11 live requests to
+`ted.cathdb.info`** — one per input protein, through the domain query gate.
+`demo/multispace/config.yml` never sets `domain_map`, and the default is
+`"auto"` (`config_utils.py:143`), so in cluster mode the gate is handed every
+`.pdb` in `input_dir`. You can see the requests afterwards in
+`output/domain_path/ted_cache/`: eleven `.ted.json` files, of which ten came
+back with domains.
+
+**Two different counts, and they are not the same measurement.** The dry run
+(`snakemake -n`) reports **37 rules** — that is a count of rules in the DAG. The
+run itself executes **80 steps**, because several rules run once per protein or
+per space. A previous version of this line said "36 rules", which was neither.
 
 **Everything the legacy pipeline produces is still produced, byte for byte.**
 The `blocks:` and `spaces:` keys are additive. Delete them and this config is
