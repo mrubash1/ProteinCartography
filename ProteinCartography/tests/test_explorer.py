@@ -2827,3 +2827,34 @@ def test_the_full_selection_is_offered_even_though_the_code_line_truncates():
     assert (
         "navigator.clipboard.writeText(" not in _TEMPLATE
     ), "a clipboard write is back; it is focus-gated and fails silently unfocused"
+
+
+def test_no_metricity_figure_reaches_the_payload(built):
+    """A decided refusal, pinned so it cannot drift back in.
+
+    FOLLOWUPS #59 measured that roughly forty points of any metricity figure are
+    manufactured by the `1 - S` transform: on data Euclidean by construction it
+    scores 41.8-43.4% where `sqrt(2(1-S))` scores ~1e-15. A panel reporting it
+    would be reporting its own convention with a cohort-shaped wobble on top,
+    and a reader could not tell that from the picture. So no such panel is
+    built, and no figure travels to the page where someone could quote it.
+
+    Asserted over the WHOLE serialized payload rather than over a key list,
+    because the point is that the number reaches no surface at all -- a key-name
+    check would pass while the value rode along inside a nested diagnostics blob.
+    """
+    import json
+
+    blob = json.dumps(built.to_dict())
+
+    # Not vacuous: a payload that serialized to almost nothing would satisfy the
+    # loop below for the wrong reason. This fixture is a real run.
+    assert len(blob) > 5000, f"payload is only {len(blob)} chars; the guard would be vacuous"
+
+    for term in ("metricity", "negative_mass", "negative_eigen"):
+        assert term not in blob, f"{term!r} reached the payload; #59 says it must not"
+
+    # And the detector bites: the same check against a payload carrying the
+    # figure must fail. A guard never seen to fail is not a guard.
+    planted = json.dumps({**built.to_dict(), "derived": {"metricity": 0.446}})
+    assert "metricity" in planted

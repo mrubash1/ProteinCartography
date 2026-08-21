@@ -74,15 +74,35 @@ of those assertions are mutually inconsistent to dominate the spectrum.
 
 **The metric alone is still not a constant.** Those dense cores span 36% to 65%,
 and the widest gap is between two runs of the *same query* — the smaller cores
-span more divergence and score 15–25 points higher. Add the 44.6% of the dense
-160-protein actin cohort and the honest summary is that every cohort measured
-lands between 36% and 65%, against under `1e-9` for a genuinely Euclidean
-matrix. So `1 - TM` is robustly non-Euclidean, and the particular value is a
-property of the cohort rather than of the metric.
+span more divergence and score 15–25 points higher.
 
-**Therefore: read the fraction against the censoring rate recorded beside it,
-and never compare two figures from different cohorts.** The decomposition is not
-computed automatically because choosing a dense core needs a rule and every
+**But the floor these figures were being read against was the wrong one, and
+correcting it removes most of the result.** This page compared them to "under
+`1e-9` for a genuinely Euclidean matrix". That is the floor for an *already
+metric* distance matrix — a shape this pipeline never constructs. What it
+constructs is `1 - TM`, and by Schoenberg's criterion it is `sqrt(2(1 - S))`,
+not `1 - S`, that is Euclidean for a PSD similarity with unit diagonal.
+Measured on data Euclidean **by construction** (cosine similarities of random
+unit vectors), `1 - S` scores **41.8% / 42.5% / 43.3% / 43.4%** at
+n = 100/200/400/600, where `sqrt(2(1 - S))` scores ~1e-15.
+
+So roughly forty points of every figure above are the transform rather than the
+data. The 44.6% of the dense 160-protein actin cohort sits barely above that
+floor, and several of the cohorts quoted here — including the 36.5% low end —
+score **below** what exactly-Euclidean data scores in the same convention. The
+earlier conclusion that "`1 - TM` is robustly non-Euclidean" does not follow
+from these numbers and has been withdrawn.
+
+**Therefore: do not quote a metricity figure, and never compare two of them.**
+Not across cohorts, not across runs of the same query, and not against zero. The
+statistic is not so much wrong as unreadable in this convention, which is why no
+panel reports it (`docs/FOLLOWUPS.md` #59).
+
+Two consequences follow for anyone tempted to rehabilitate it. Reading the
+fraction against the censoring rate recorded beside it does **not** rescue the
+comparison: censoring and the transform both inflate it, and neither is
+separated out. And the dense-core decomposition that would separate them is not
+computed automatically, because choosing a dense core needs a rule and every
 obvious rule is a threshold (`docs/FOLLOWUPS.md` #51).
 
 ---
