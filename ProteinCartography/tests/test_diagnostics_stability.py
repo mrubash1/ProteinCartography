@@ -359,3 +359,48 @@ def test_jaccard_rows_refuses_a_repeated_index():
 
 def test_jaccard_rows_still_accepts_the_same_set_in_different_orders():
     assert np.all(jaccard_rows(np.array([[3, 1, 2]]), np.array([[2, 3, 1]])) == 1.0)
+
+
+def test_zero_noise_is_not_informative_however_perfect_the_score():
+    """A diagnostic that perturbs nothing calls everything stable.
+
+    `noise_sigma` is scaled to the median pairwise distance. A space where most
+    pairs are exact duplicates has a median of 0, so sigma is 0, so the
+    replicate ordering equals the reference ordering and every Jaccard is 1.0
+    BY CONSTRUCTION -- the sampling loop relies on exactly that for its
+    tie-break. Perfect stability from a statistic that measured nothing is the
+    failure this module's docstring names first.
+
+    Measured on real data: the `families` space scores 0.119 with 328 coin
+    flips at n=367 and exactly 1.000 with zero at n=2703, because 53.7% of its
+    pairs are identical there.
+    """
+    import numpy as np
+    from diagnostics.stability import neighborhood_stability
+
+    # Every protein identical: median pairwise distance 0 -> sigma 0.
+    n = 60
+    distances = np.zeros((n, n), dtype=float)
+    protids = [f"p{i}" for i in range(n)]
+    result = neighborhood_stability("dup", distances, protids, k=5)
+
+    assert result.noise_sigma == 0.0, "the fixture does not reproduce the zero-noise case"
+    assert result.mean_stability == 1.0, "expected the by-construction 1.0"
+    assert (
+        result.informative is False
+    ), "a score of 1.0 from an unperturbed statistic is being reported as informative"
+    assert any("measures nothing" in w for w in result.warnings()), result.warnings()
+
+
+def test_a_real_spread_is_still_informative():
+    """The guard must not fire on a space that simply has distinct distances."""
+    import numpy as np
+    from diagnostics.stability import neighborhood_stability
+
+    rng = np.random.default_rng(0)
+    points = rng.normal(size=(60, 4))
+    distances = np.linalg.norm(points[:, None, :] - points[None, :, :], axis=-1)
+    result = neighborhood_stability("spread", distances, [f"p{i}" for i in range(60)], k=5)
+
+    assert result.noise_sigma > 0
+    assert result.informative is True

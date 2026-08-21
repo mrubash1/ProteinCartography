@@ -228,7 +228,39 @@ class NeighborhoodStability:
 
     @property
     def informative(self) -> bool:
-        """False when k leaves the statistic no room to discriminate."""
+        """False when the statistic had no room to discriminate.
+
+        TWO WAYS THAT HAPPENS, and until this was written only the first was
+        checked.
+
+        **k is most of the cohort**, so every protein's neighbours are all the
+        others -- `neighborhood_fraction` against `VACUOUS_FRACTION`.
+
+        **Noise was asked for and none arrived.** `noise_sigma` is scaled to the
+        matrix's MEDIAN pairwise distance, so a space where a majority of pairs
+        are exact duplicates has a median of 0, a sigma of 0, and a
+        perturbation that changes nothing. The condition is `noise > 0 and not
+        noise_sigma > 0` and not `sigma == 0` alone: a caller who passes
+        `noise=0.0` has deliberately asked for the unperturbed control, and
+        `test_a_fully_stable_space_produces_no_warnings` pins that it stays
+        silent. The defect is the SILENT collapse, not the zero itself.
+
+        With no perturbation `neighbor_ordering` returns the same argsort for
+        the replicate as for the reference, and every Jaccard
+        is exactly 1.0 BY CONSTRUCTION -- which the loop above deliberately
+        relies on for its tie-break, and which is meaningless as a measurement.
+
+        Measured, and this is not hypothetical: the `families` space scores
+        0.119 with 328 coin flips on a 367-protein cohort and **exactly 1.000
+        with zero coin flips** on the 2703-protein one, because 53.7% of its
+        pairs are identical there (132 distinct domain architectures over 2703
+        proteins) and the median distance falls to 0. Same space, same block,
+        more data -- and the score inverts. The module docstring names this
+        failure at the top: "A diagnostic that perturbs nothing calls that
+        stable."
+        """
+        if self.noise > 0 and not self.noise_sigma > 0:
+            return False
         return self.neighborhood_fraction < VACUOUS_FRACTION
 
     def coin_flips(self) -> list:
@@ -289,6 +321,15 @@ class NeighborhoodStability:
                 f"k={self.k} and a replicate holds {self.subsample_size} proteins, so every "
                 "protein's k nearest are all the others and the Jaccard is 1.0 by "
                 "construction. This section measures nothing on a cohort this small."
+            )
+        elif self.noise > 0 and not self.noise_sigma > 0:
+            notes.append(
+                "the score is 1.0 by construction and measures nothing: the noise "
+                "term is scaled to the median pairwise distance, and this space's "
+                "median distance is 0, so nothing was perturbed. That happens when "
+                "a majority of pairs are exact duplicates -- a domain-annotation "
+                "space where most proteins share an architecture, or a similarity "
+                "matrix read without its censoring mask."
             )
         elif not self.informative:
             notes.append(
