@@ -740,10 +740,19 @@ def test_six_panels_are_blocked_on_one_missing_input_not_six():
     """
     from explorer.panels import CATALOGUE
 
-    tree_blocked = [s.panel_id for s in CATALOGUE if "reconciled gene/species tree" in s.requires]
-    assert (
-        len(tree_blocked) >= 5
-    ), f"expected the phylogeny to block most empty panels, blocks {tree_blocked}"
+    tree_blocked = {s.panel_id for s in CATALOGUE if "reconciled gene/species tree" in s.requires}
+    # An exact set, not `len >= 5`. A threshold cannot notice a panel quietly
+    # joining or leaving the group, which is the only thing this test exists to
+    # see. The substring stays the selector so a reword of `_NO_TREE` still
+    # reddens this rather than silently emptying the set.
+    assert tree_blocked == {
+        "divergence",
+        "innovation_clades",
+        "innovation_map",
+        "ancestral_path",
+        "tanglegram",
+        "phylomorphospace",
+    }, f"the tree-blocked set has moved: {sorted(tree_blocked)}"
 
 
 def test_the_page_builds_a_sheet_bar_and_can_render_an_awaiting_panel():
@@ -2858,3 +2867,77 @@ def test_no_metricity_figure_reaches_the_payload(built):
     # figure must fail. A guard never seen to fail is not a guard.
     planted = json.dumps({**built.to_dict(), "derived": {"metricity": 0.446}})
     assert "metricity" in planted
+
+
+def _producible_keys():
+    """What `build_payload` can actually put into `available`, read from source.
+
+    Parsed rather than retyped, so the check reads the code instead of a copy of
+    it. `explorer/payload.py` has no exported vocabulary yet -- PC-009 phase 2
+    would add one -- and until it does, this is the honest way to ask.
+    """
+    import pathlib
+    import re
+
+    source = pathlib.Path(__file__).resolve().parents[1] / "explorer" / "payload.py"
+    return set(re.findall(r'available\.add\("([^"]+)"\)', source.read_text()))
+
+
+def test_the_seventh_empty_panel_needs_a_third_dataset_not_the_tree():
+    """`tree_space` is not part of the phylogeny group, and the count says so.
+
+    Summary lines on this branch have repeatedly said "ten panels blocked on the
+    two data-contract datasets". It is 8 + 1 + 1: six panels want a reconciled
+    tree, two want a perturbation scan, `tree_space` wants a CORPUS of
+    per-family trees, and `identity_vs_tm` wants neither -- one foldseek pass
+    per cohort emitting fident, which is compute rather than a decision.
+    """
+    from explorer.panels import CATALOGUE
+
+    tree_space = next(s for s in CATALOGUE if s.panel_id == "tree_space")
+    assert tree_space.needs == ("tree_corpus",)
+
+    tree_blocked = {s.panel_id for s in CATALOGUE if "reconciled gene/species tree" in s.requires}
+    assert "tree_space" not in tree_blocked, (
+        "tree_space is being counted with the tree-blocked panels; it needs a "
+        "corpus across families, not this cohort's one tree"
+    )
+
+
+def test_exactly_nine_declared_inputs_are_ones_this_pipeline_cannot_produce():
+    """The count claim, pinned where it can fail.
+
+    If anything ever starts producing `patristic`, the claim that nine inputs
+    are unsatisfiable becomes false. It should fail HERE, next to the list, and
+    not on a page where a reader would have to notice a panel that stopped
+    refusing.
+    """
+    from explorer.panels import CATALOGUE
+
+    declared = {n for s in CATALOGUE for n in s.needs}
+    unsatisfiable = declared - _producible_keys()
+    assert unsatisfiable == {
+        "ancestors",
+        "clades",
+        "gene_tree",
+        "identity",
+        "metric_embedding",
+        "patristic",
+        "perturbation",
+        "species_tree",
+        "tree_corpus",
+    }, f"the unsatisfiable set has moved: {sorted(unsatisfiable)}"
+
+
+def test_one_produced_key_is_declared_by_no_panel_at_all():
+    """The asymmetry in the other direction, which nothing else looks at.
+
+    `overlays` is put into `available` and appears in no panel's `needs`. That
+    is correct today -- overlays are a colour-by control rather than a panel
+    input -- but it is the shape that would hide a panel silently losing its
+    declaration, so it is stated rather than left as a coincidence.
+    """
+    from explorer.panels import CATALOGUE
+
+    declared = {n for s in CATALOGUE for n in s.needs}
+    assert _producible_keys() - declared == {"overlays"}
