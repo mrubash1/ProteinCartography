@@ -526,6 +526,13 @@ PANEL_DESCRIPTIONS = {
         paragraphs=[
             "The source's 3.01: \"Before asking what a map means, ask whether "
             'it would look the same if you ran it again."',
+            "The same number reads two ways, and which one is right depends on "
+            "what you came here to do. If you are characterising a family, a "
+            "protein whose neighbourhood is indeterminate is a warning: its "
+            "placement is not evidence and should not carry an argument. If you "
+            "are choosing what to look at next, that same protein is the "
+            "interesting one -- it sits where the measurements disagree, which "
+            "is where a new observation can still change the answer.",
         ],
         hazards=[
             "The stability this pipeline computes judges the SPACE, not the "

@@ -2973,3 +2973,28 @@ def test_no_panel_names_the_fident_aggregator_as_the_route_to_an_identity_table(
         "the refusal no longer says the identity is read off a structural "
         "superposition, which is the reason it is not an independent axis"
     )
+
+
+def test_the_stability_foldout_says_the_number_reads_two_ways(built):
+    """The one idea worth keeping from the refused orientation sheet (#70).
+
+    It lives beside the number it describes rather than on a sheet a reader
+    would have to find first. Asserted on the RENDERED html, not on the
+    constant, because a paragraph that never reaches the page is the same as
+    one nobody wrote.
+
+    The hazard count is asserted too: this is a PARAGRAPH, not a hazard. Moving
+    it into `hazards` would change the fold-out's summary line from "What this
+    shows" to "and N thing(s) it cannot be read for", which would tell a reader
+    the opposite of what the sentence says.
+    """
+    from explorer.descriptions import PANEL_DESCRIPTIONS
+    from explorer.template import render
+
+    html = render(built.to_dict(), "", "t")
+    assert "where the measurements disagree" in html
+    assert "indeterminate is a warning" in html
+
+    assert (
+        len(PANEL_DESCRIPTIONS["stability_map"]["hazards"]) == 1
+    ), "the two-ways sentence belongs in paragraphs, not hazards"
