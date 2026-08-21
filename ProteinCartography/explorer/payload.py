@@ -524,6 +524,10 @@ class ExplorerPayload:
     #: What the per-query cap removed, from `matrix_io.summarize_censoring`.
     #: Carries its zero for an uncensored matrix rather than being empty.
     censoring: dict = field(default_factory=dict)
+    #: Where the colour-by vocabulary came from and what it could not use. See
+    #: `_overlays_from_features` -- both ways the list comes back short are
+    #: otherwise invisible to a reader.
+    overlay_source: dict = field(default_factory=dict)
     #: The judgement lines the page draws, read from the modules that enforce
     #: them rather than retyped into the template.
     thresholds: dict = field(default_factory=dict)
@@ -534,6 +538,7 @@ class ExplorerPayload:
             "spaces": [space.to_dict() for space in self.spaces],
             "comparisons": self.comparisons,
             "overlays": self.overlays,
+            "overlay_source": self.overlay_source,
             "provenance": self.provenance,
             "panels": self.panels,
             "sheets": self.sheets,
@@ -546,22 +551,53 @@ class ExplorerPayload:
         }
 
 
-def _overlays_from_features(path: str, protids: list) -> dict:
+#: The largest number of categories that is still a legend rather than a smear.
+#: Named because the overlay report has to quote it when it says why a column was
+#: dropped, and a second copy of the number would eventually disagree.
+MAX_OVERLAY_LEVELS = 24
+
+
+def _overlays_from_features(path: str, protids: list) -> tuple:
     """Columns from `aggregated_features.tsv` a reader may color by.
 
     Reused rather than reinvented: the vocabulary is whatever the legacy table
     already carries, which is what ADR 0005 means by consuming `plotting_rules`
     unchanged. Columns are kept only if they are usable as a color -- numeric,
     or categorical with few enough levels to be a legend rather than a smear.
+
+    Returns ``(overlays, report)``. THE REPORT IS THE POINT OF THE SECOND
+    RETURN VALUE. Both ways this function can come back short are invisible to
+    a reader otherwise:
+
+    * the table is not there at all -- which is how a full production run,
+      whose `final_results/` was never written, offered four overlays instead
+      of thirteen and said nothing;
+    * a column IS there and is not usable as a colour. `PDB` has 7 levels on a
+      367-protein cohort and 132 on a 2703-protein one, so the same column is
+      offered on one and dropped on the other, correctly, and silently.
+
+    `_features_table`'s own docstring already records this failure happening
+    once: a wrong path "silently produced an explorer with no overlays at all,
+    which looks exactly like a run whose features table was empty". The path
+    was fixed then. The silence was not, until now.
     """
+    report = {
+        "path": path,
+        "found": os.path.exists(path),
+        "n_columns": 0,
+        "n_kept": 0,
+        "dropped": [],
+    }
     if not os.path.exists(path):
-        return {}
+        return {}, report
     import pandas as pd
 
     frame = pd.read_csv(path, sep="\t")
     if "protid" not in frame.columns:
-        return {}
+        report["dropped"].append({"column": "(whole table)", "why": "it has no protid column"})
+        return {}, report
     frame = frame.set_index("protid").reindex(protids)
+    report["n_columns"] = int(len(frame.columns))
     overlays = {}
     for column in frame.columns:
         values = frame[column]
@@ -572,12 +608,41 @@ def _overlays_from_features(path: str, protids: list) -> dict:
             }
         else:
             levels = values.dropna().astype(str).unique()
-            if 1 < len(levels) <= 24:
+            if 1 < len(levels) <= MAX_OVERLAY_LEVELS:
                 overlays[column] = {
                     "kind": "categorical",
                     "values": [None if pd.isna(v) else str(v) for v in values],
                 }
-    return overlays
+            elif len(levels) > MAX_OVERLAY_LEVELS:
+                report["dropped"].append(
+                    {
+                        "column": str(column),
+                        "levels": int(len(levels)),
+                        "why": (
+                            f"{len(levels)} categories, over the {MAX_OVERLAY_LEVELS} "
+                            "a legend can carry"
+                        ),
+                    }
+                )
+            elif len(levels) == 1:
+                report["dropped"].append(
+                    {
+                        "column": str(column),
+                        "levels": 1,
+                        "why": "every protein has the same value",
+                    }
+                )
+            else:
+                report["dropped"].append({"column": str(column), "why": "no protein has a value"})
+    report["n_kept"] = len(overlays)
+    # Nearest-miss first. A run's table is mostly identifiers -- Entry, Sequence,
+    # AlphaFoldDB -- which nobody would colour by and which would bury the two
+    # entries a reader might actually want back. On chymo at full n the head of
+    # this list is Fragment, Pfam (131) and PDB (132); the tail is Sequence at
+    # 2677. Ordering by level count puts the recoverable ones where they will be
+    # read, and the template shows the head and counts the rest.
+    report["dropped"].sort(key=lambda d: (d.get("levels", 0), d["column"]))
+    return overlays, report
 
 
 #: A feature block may expose its columns as overlays only if it has few enough
@@ -767,7 +832,7 @@ def build_payload(config, output_dir: str, analysis_name: str = "analysis") -> E
         index_order = index_order or protids
 
     comparisons = _read_comparisons(layout.summary_path(output_dir))
-    overlays = _overlays_from_features(
+    overlays, overlay_report = _overlays_from_features(
         _features_table(output_dir, analysis_name), index_order or []
     )
     # The blocks' own columns, added after the feature table so a descriptor
@@ -817,6 +882,7 @@ def build_payload(config, output_dir: str, analysis_name: str = "analysis") -> E
         spaces=spaces,
         comparisons=comparisons,
         overlays=overlays,
+        overlay_source=overlay_report,
         provenance=provenance,
         panels=panels.catalogue_for(available),
         sheets=panels.sheet_titles(),

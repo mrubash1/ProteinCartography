@@ -3930,3 +3930,73 @@ def test_a_withheld_heatmap_is_a_third_state_and_not_awaiting_a_matrix():
     assert body.index("matrix.refused") < body.index(
         "decodeMatrix"
     ), "the withheld branch is after the decode, so the wrong refusal renders"
+
+
+# ==========================================================================
+# Why the colour-by list is short. Matt, 2026-08-21, on the full-cohort page:
+# "why do we only have the 4 things in the 2.5k groups?" The answer was a
+# missing file, and the page said nothing.
+# ==========================================================================
+
+
+def test_the_overlay_builder_reports_what_it_could_not_use(tmp_path):
+    """Two different silences, one report.
+
+    A missing table and an unusable column both shorten the dropdown, and a
+    reader cannot tell them apart -- or even notice -- from the dropdown alone.
+    """
+    from explorer.payload import _overlays_from_features
+
+    overlays, report = _overlays_from_features(str(tmp_path / "nope.tsv"), ["a", "b"])
+    assert overlays == {}
+    assert report["found"] is False
+    assert report["path"].endswith("nope.tsv"), "the path that was missed is not reported"
+
+    table = tmp_path / "t.tsv"
+    table.write_text(
+        "protid\tgood\tsame\tmany\n" + "\n".join(f"p{i}\t{i % 3}\tX\tv{i}" for i in range(40)),
+        encoding="utf-8",
+    )
+    protids = [f"p{i}" for i in range(40)]
+    overlays, report = _overlays_from_features(str(table), protids)
+    assert report["found"] is True
+    assert report["n_columns"] == 3
+    dropped = {d["column"]: d["why"] for d in report["dropped"]}
+    assert "same" in dropped and "same value" in dropped["same"]
+    assert "many" in dropped and "categories" in dropped["many"]
+    assert report["n_kept"] == len(overlays)
+
+
+def test_the_levels_ceiling_is_named_once_and_quoted_from_there():
+    """A second copy of 24 would eventually disagree with the filter."""
+    import inspect
+
+    from explorer import payload as payload_module
+
+    assert payload_module.MAX_OVERLAY_LEVELS == 24
+    source = inspect.getsource(payload_module._overlays_from_features)
+    assert source.count("24") == 0, "the ceiling is typed as a literal somewhere"
+
+
+def test_the_page_says_why_the_colour_by_list_is_short():
+    """The dropdown cannot explain its own length."""
+    from explorer.template import render
+
+    html = render({"spaces": []}, plotly_js="", title="t")
+    assert "function overlaySourceCell()" in html
+    assert '["colour-by vocabulary", overlaySourceCell(), "aggregate_features"]' in html
+    body = html[html.index("function overlaySourceCell()") :][:1600]
+    assert "no aggregated features table" in body
+    assert (
+        "not usable, nearest first:" in body
+    ), "the dropped list is not ordered by how close each column came to being usable"
+
+
+def test_the_overlay_source_is_read_from_the_active_cohort():
+    """On a multi-cohort page some cohorts have the table and some do not."""
+    from explorer.template import render
+
+    html = render({"spaces": []}, plotly_js="", title="t")
+    body = html[html.index("function overlaySourceCell()") :][:900]
+    assert "active.overlay_source" in body
+    assert "PAYLOAD.overlay_source" not in html

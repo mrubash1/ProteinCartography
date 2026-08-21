@@ -2258,6 +2258,52 @@ function sweepNote(space) {
   );
 }
 
+// Why the COLOUR BY list is the length it is.
+//
+// It can come back short two ways and NEITHER is visible from the dropdown: the
+// aggregated features table is missing entirely, or a column is present and is
+// not usable as a colour. On a 367-protein cohort `PDB` has 7 categories and is
+// offered; on a 2703-protein one it has 132 and is dropped, correctly, and
+// silently. A reader comparing two cohorts sees a shorter list and no reason.
+//
+// Read from the ACTIVE cohort. On a multi-cohort page some cohorts have the
+// table and some do not, so the top-level payload would answer for the wrong one.
+function overlaySourceCell() {
+  const source = active.overlay_source || {};
+  const offered = Object.keys(active.overlays || {}).length;
+  if (!source.path) {
+    return `${fmtValue(offered)} to colour by`;
+  }
+  if (!source.found) {
+    return (
+      `${fmtValue(offered)} to colour by` +
+      `<span class="sweep">no aggregated features table, so every column it would ` +
+      `have carried is absent — looked for ${escapeHtml(source.path)}</span>`
+    );
+  }
+  const dropped = source.dropped || [];
+  return (
+    `${fmtValue(source.n_kept)} of ${fmtValue(source.n_columns)} columns are usable ` +
+    `as a colour` +
+    (offered > source.n_kept
+      ? `<span class="sweep">plus ${fmtValue(offered - source.n_kept)} from the ` +
+        `blocks' own descriptors</span>`
+      : "") +
+    (dropped.length
+      ? `<span class="sweep">not usable, nearest first: ` +
+        dropped
+          .slice(0, 5)
+          .map((d) => `${escapeHtml(d.column)} (${escapeHtml(d.why)})`)
+          .join(" · ") +
+        (dropped.length > 5
+          ? ` · and ${fmtValue(dropped.length - 5)} more, every one with more ` +
+            "categories than these"
+          : "") +
+        "</span>"
+      : "")
+  );
+}
+
 function faithCell(space, field) {
   const entries = (space.diagnostics || {}).faithfulness || [];
   if (!entries.length) {
@@ -2289,6 +2335,7 @@ REPORT_FILLERS.cohort = () => {
         : reportMissing("no uniprot_features.tsv was read for this run"),
       "protein_features/uniprot_features.tsv",
     ],
+    ["colour-by vocabulary", overlaySourceCell(), "aggregate_features"],
   ];
   Object.entries(p.manifests || {}).forEach(([space, m]) => {
     rows.push([
