@@ -12,6 +12,7 @@ reported success.
 
 import copy
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -553,3 +554,198 @@ def test_the_refseq_mapping_appears_exactly_when_significance_reads_it(tmp_path)
         "`aggregate_hit_significance` reads the RefSeq mapping, so significance "
         "selection must declare it."
     )
+
+
+# ==========================================================================
+# The checkpoint-output class, rather than the two filenames that happened to
+# hit it. A checkpoint output that no job in the plan asks for is never a
+# reason to re-run the checkpoint, so on a pre-existing output tree the
+# checkpoint is left alone, `checkpoints.<name>.get()` raises, and everything
+# that function contributes silently disappears from the DAG (FOLLOWUPS #47).
+#
+# The supply side comes from snakemake's own parse -- `rule.is_checkpoint` over
+# the built workflow -- so a fourth checkpoint is covered the day it is added.
+# The demand side has two routes and needs both:
+#
+#   * another rule naming the path in its `input`, which the workflow gives us;
+#   * a `checkpoints.<name>.get(...).output.<attr>` reference inside an input
+#     function, which the workflow CANNOT give us because it lives in a Python
+#     body that has not run. That half is a source scan, and it is a scan
+#     rather than a hand-written table so that a fourth consumer is covered
+#     too -- but it is a scan, and this comment is where that is admitted.
+#
+# NOT USED: `snakemake --detailed-summary`. Its `input-file(s)` column is
+# populated only for files that already exist; on a fresh tree 1 of 39 rows
+# carries inputs and the rest are "-", so it cannot answer the demand question
+# this check is about.
+# ==========================================================================
+
+_CHECKPOINT_GET_CONSUMER_RE = re.compile(r"checkpoints\.(\w+)\.get\([^)]*\)\.output\.(\w+)")
+
+#: Both Snakefiles, because `Snakefile` includes the domain one and two of the
+#: three checkpoints live there.
+_SNAKEFILES = ("Snakefile", "Snakefile_domain")
+
+
+def _checkpoint_get_consumers() -> set:
+    """(checkpoint, output attribute) pairs consumed through `.get()`."""
+    pairs = set()
+    for name in _SNAKEFILES:
+        pairs |= set(_CHECKPOINT_GET_CONSUMER_RE.findall((REPO_ROOT / name).read_text()))
+    return pairs
+
+
+def _demand_from_input_functions(workflow) -> set:
+    """Paths named by an input FUNCTION rather than by a literal.
+
+    The third demand route, and the one that is easy to miss: `diagnose_space`
+    reads the cohort report through `cohort=get_cohort_report_input`, a
+    callable, so `rule.input` holds the function and not the path. Without this
+    the check calls a consumed output an orphan -- which it did, on the first
+    run, against the very file GE.2 was about.
+
+    Called with empty wildcards, which is enough for the functions that do not
+    branch on one. The rest raise -- `IncompleteCheckpointException` for
+    anything that reaches through a checkpoint, `AttributeError` for anything
+    that needs a wildcard -- and are skipped here because the `.get()` scan
+    already covers the checkpoint-dependent ones.
+    """
+    from snakemake.io import Wildcards
+
+    resolved = set()
+    for rule in workflow.rules:
+        for item in rule.input:
+            if not callable(item):
+                continue
+            try:
+                produced = item(Wildcards(fromdict={}))
+            except Exception:
+                continue
+            if isinstance(produced, (str, Path)):
+                values = [produced]
+            else:
+                try:
+                    values = list(produced or [])
+                except TypeError:
+                    continue
+            resolved.update(str(value) for value in values if isinstance(value, (str, Path)))
+    return resolved
+
+
+def _checkpoint_orphans(config_path):
+    """Checkpoint outputs that are in the plan and that nothing in it asks for.
+
+    Returns a list of ``"<rule>.<attr> -> <path>"`` strings, empty when every
+    planned checkpoint output has a consumer.
+
+    LIMIT, stated rather than implied: `--summary` on a fresh tree resolves the
+    DAG only as far as the first unresolved checkpoint, so this covers
+    CHECKPOINT outputs and says nothing about jobs that appear only after a
+    checkpoint has run. It is not general DAG coverage.
+    """
+    from snakemake.workflow import Workflow
+
+    planned = _planned_outputs(config_path)
+    config = json.loads(Path(config_path).read_text())
+    workflow = Workflow(
+        snakefile=str(REPO_ROOT / "Snakefile"), overwrite_config=config, use_conda=True
+    )
+    workflow.include(str(REPO_ROOT / "Snakefile"), overwrite_default_target=True)
+
+    demanded = {item for rule in workflow.rules for item in rule.input if isinstance(item, str)}
+    demanded |= _demand_from_input_functions(workflow)
+    through_get = _checkpoint_get_consumers()
+
+    orphans = []
+    for rule in workflow.rules:
+        if not getattr(rule, "is_checkpoint", False):
+            continue
+        by_attr = dict(zip(rule.output.keys(), [str(path) for path in rule.output]))
+        for path in (str(item) for item in rule.output):
+            if path not in planned:
+                continue
+            attr = next((name for name, value in by_attr.items() if value == path), None)
+            if path in demanded or (rule.name, attr) in through_get:
+                continue
+            orphans.append(f"{rule.name}.{attr} -> {path}")
+    return orphans
+
+
+_ORPHAN_MESSAGE = (
+    "these checkpoint outputs are planned and no job asks for them. An unconsumed "
+    "checkpoint output is never a reason to re-run the checkpoint, so on a pre-existing "
+    "output tree `checkpoints.<name>.get()` raises and every job the input function "
+    "would have contributed vanishes from the DAG without an error"
+)
+
+
+@pytest.mark.skipif(shutil.which("snakemake") is None, reason="needs snakemake")
+def test_no_checkpoint_declares_an_output_the_legacy_plan_ignores(tmp_path):
+    orphans = _checkpoint_orphans(_write_config(tmp_path, "legacy.json", {}))
+    assert orphans == [], f"{orphans}: {_ORPHAN_MESSAGE}"
+
+
+@pytest.mark.skipif(shutil.which("snakemake") is None, reason="needs snakemake")
+def test_no_checkpoint_declares_an_output_the_spaces_plan_ignores(tmp_path):
+    """The config that turns `cohort_report.json` on. It is declared here
+    because `diagnose_space` reads it, which is the fix GE.2 landed."""
+    spaces = {
+        "blocks": {"tmscore": {"provider": "tmscore", "representation": "profile"}},
+        "spaces": {"legacy": {"blocks": ["tmscore"], "strategy": "none", "reducers": ["pca"]}},
+    }
+    orphans = _checkpoint_orphans(_write_config(tmp_path, "spaces.json", spaces))
+    assert orphans == [], f"{orphans}: {_ORPHAN_MESSAGE}"
+
+
+@pytest.mark.skipif(shutil.which("snakemake") is None, reason="needs snakemake")
+def test_no_checkpoint_declares_an_output_the_significance_plan_ignores(tmp_path):
+    """Significance adds an input to the checkpoint rather than an output, so
+    this config is here to prove the check is not fooled by the rule changing
+    shape underneath it."""
+    significance = {
+        "blocks": {"tmscore": {"provider": "tmscore", "representation": "profile"}},
+        "spaces": {"legacy": {"blocks": ["tmscore"], "strategy": "none", "reducers": ["pca"]}},
+        "cohort": {"selection": "significance", "significance_rule": {"measure": "evalue"}},
+    }
+    orphans = _checkpoint_orphans(_write_config(tmp_path, "significance.json", significance))
+    assert orphans == [], f"{orphans}: {_ORPHAN_MESSAGE}"
+
+
+@pytest.mark.skipif(shutil.which("snakemake") is None, reason="needs snakemake")
+def test_no_checkpoint_declares_an_output_the_cluster_plan_ignores(tmp_path):
+    """Cluster mode does not run `download_pdbs` at all -- the user supplies
+    the structures -- so this covers the branch where the checkpoint's outputs
+    are absent from the plan rather than present and consumed."""
+    body = {
+        "mode": "cluster",
+        "analysis_name": "cluster-mode-demo",
+        "input_dir": "demo/cluster-mode/input",
+        "output_dir": str(tmp_path / "out") + "/",
+        "plotting_modes": ["pca_umap"],
+        "features_file": "uniprot_features.tsv",
+        "key_protids": ["P60709"],
+    }
+    path = tmp_path / "cluster.json"
+    path.write_text(json.dumps(body))
+    orphans = _checkpoint_orphans(path)
+    assert orphans == [], f"{orphans}: {_ORPHAN_MESSAGE}"
+
+
+@pytest.mark.skipif(shutil.which("snakemake") is None, reason="needs snakemake")
+def test_the_orphan_check_finds_a_checkpoint_output_nobody_reads(tmp_path, monkeypatch):
+    """A check that has never been seen to fail is not a check.
+
+    `download_pdbs.protein_structures_dir` reaches the plan through exactly one
+    route -- `checkpoints.download_pdbs.get(...).output.protein_structures_dir`
+    inside `get_pdb_filepaths`. Removing that route is the whole of the GE.2
+    state: a planned checkpoint output with no consumer. So the probe empties
+    the `.get()` scan and requires the check to report it.
+    """
+    import sys
+
+    config_path = _write_config(tmp_path, "legacy.json", {})
+    assert _checkpoint_orphans(config_path) == [], "the tree must be clean before the probe"
+
+    monkeypatch.setattr(sys.modules[__name__], "_checkpoint_get_consumers", set)
+    orphans = _checkpoint_orphans(config_path)
+    assert any(o.startswith("download_pdbs.protein_structures_dir") for o in orphans), orphans
