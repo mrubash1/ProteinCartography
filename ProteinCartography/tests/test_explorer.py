@@ -3464,3 +3464,101 @@ def test_the_censoring_all_clear_is_recognised_as_one():
     listed = html[html.index("const ALL_CLEAR_PHRASES = [") :][:400]
     assert "No censoring problems detected" in listed
     assert "the layout is faithful at k=" in listed
+
+
+# ==========================================================================
+# The axes caption and the Layout dropdown. Commit 128 gave the sentence its own
+# node and tagged it with the reducer that produced it; this is the half that
+# makes the node move.
+# ==========================================================================
+
+
+def _two_reducer_space(space_id, reducers):
+    return {
+        "space_id": space_id,
+        "verdict": {"level": "ok", "headline": "ok", "reasons": []},
+        "protids": ["a", "b"],
+        "readable": [True, True],
+        "clusters": {},
+        "diagnostics": {},
+        "embeddings": {reducer: [[0.0, 0.0], [1.0, 1.0]] for reducer in reducers},
+        "description": {
+            "paragraphs": [f"Axes: {reducer} over N components." for reducer in reducers],
+            "axes_by_reducer": {
+                reducer: f"Axes: {reducer} over N components." for reducer in reducers
+            },
+        },
+    }
+
+
+def test_every_reducers_axes_sentence_reaches_the_page_not_only_the_opening_one():
+    """The JS can only switch to text the page already carries.
+
+    The node is built with one sentence. If the payload shipped only that one,
+    the dropdown would have nothing to switch to and the caption would be stuck
+    describing the layout the page happened to open on.
+    """
+    import json
+
+    from explorer.template import render
+
+    document = {"spaces": [_two_reducer_space("s", ["pca_umap", "pca_tsne"])]}
+    html = render(document, plotly_js="", title="t")
+    start = html.index("const PAYLOAD = ") + len("const PAYLOAD = ")
+    payload, _ = json.JSONDecoder().raw_decode(html, start)
+    by_reducer = payload["spaces"][0]["description"]["axes_by_reducer"]
+    assert set(by_reducer) == {"pca_umap", "pca_tsne"}
+    for reducer, text in by_reducer.items():
+        assert reducer in text
+
+
+def test_the_caption_reports_the_layout_drawn_and_not_the_one_selected():
+    """`traceFor` falls back to the first embedding when the selection is absent.
+
+    So a space without `pca_tsne` goes on showing its `pca_umap` picture while
+    the dropdown reads pca_tsne. A caption that named the selection would
+    describe a reduction that is not on screen — and unlike the typed caption
+    this replaced, it would look verified.
+    """
+    from explorer.template import render
+
+    html = render({"spaces": []}, plotly_js="", title="t")
+    assert "function drawnReducer(space)" in html
+    block = html[html.index("function drawnReducer(space)") :][:420]
+    assert "embeddings[state.reducer] ? state.reducer" in block
+    assert "Object.keys(embeddings)[0]" in block
+    refresh = html[html.index("function refreshAxes(space)") :][:900]
+    assert "drawnReducer(space)" in refresh, "the caption is not read off the drawn layout"
+
+
+def test_the_caption_is_rewritten_on_every_draw_not_only_at_build():
+    """The grid is built once and re-rendered on every interaction."""
+    from explorer.template import render
+
+    html = render({"spaces": []}, plotly_js="", title="t")
+    body = html[html.index("function draw()") : html.index("// --- sheets")]
+    assert "refreshAxes(space)" in body, "draw() does not refresh the caption"
+    assert 'grid.dataset.built = "1"' in body
+    assert (
+        "refreshAxes" not in body[: body.index('grid.dataset.built = "1"')]
+    ), "the refresh is inside the build-once branch, so it would run only once"
+
+
+def test_the_panel_is_found_by_name_and_never_by_position():
+    """Matching on index breaks the moment a space is filtered or reordered."""
+    from explorer.template import render
+
+    html = render({"spaces": []}, plotly_js="", title="t")
+    assert "panel.dataset.space = space.space_id;" in html
+    refresh = html[html.index("function refreshAxes(space)") :][:900]
+    assert "p.dataset.space === space.space_id" in refresh
+
+
+def test_a_layout_with_no_recorded_axes_sentence_refuses_rather_than_going_stale():
+    """Leaving the previous layout's text is a caption about the wrong picture."""
+    from explorer.template import render
+
+    html = render({"spaces": []}, plotly_js="", title="t")
+    refresh = html[html.index("function refreshAxes(space)") :][:900]
+    assert "no axes sentence was recorded for this space" in refresh
+    assert "reportMissing(" in refresh

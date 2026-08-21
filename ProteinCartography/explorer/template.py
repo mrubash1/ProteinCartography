@@ -908,8 +908,8 @@ function explainBlock(description) {
   // it, because it is the one paragraph here that is NOT a property of the
   // space -- switching layout changes it. Identified by matching the composed
   // text rather than by position, so reordering the paragraphs cannot silently
-  // mislabel one. No behaviour change yet: phase 2 updates this node on a
-  // layout switch.
+  // mislabel one. `refreshAxes` rewrites this node on every draw; what is built
+  // here is the opening layout's sentence and the tag that lets it be found.
   const byReducer = d.axes_by_reducer || {};
   const axesOf = (text) =>
     Object.keys(byReducer).find((reducer) => byReducer[reducer] === text) || "";
@@ -936,6 +936,11 @@ function explainBlock(description) {
 function panelShell(space) {
   const panel = document.createElement("div");
   panel.className = `panel level-${space.verdict.level}`;
+  // Named, not positional. `refreshAxes` has to find one space's panel again
+  // after the grid is built, and matching on index would break the moment a
+  // space is filtered, reordered or added -- the same rule this repo applies to
+  // labelled matrices.
+  panel.dataset.space = space.space_id;
   const title = document.createElement("h2");
   title.textContent = space.space_id;
   const verdict = document.createElement("div");
@@ -1070,7 +1075,45 @@ function draw() {
     });
     grid.dataset.built = "1";
   }
-  spaces.forEach((space) => panelFor(space).render(space));
+  spaces.forEach((space) => {
+    panelFor(space).render(space);
+    refreshAxes(space);
+  });
+}
+
+// Which reduction is ON SCREEN for this space, which is not always the one the
+// dropdown says.
+//
+// `traceFor` falls back to the space's first embedding when the selected
+// reducer is absent, so a space that lacks `pca_tsne` keeps its `pca_umap`
+// picture while the selector reads pca_tsne. A caption naming the SELECTION
+// would then describe a reduction that is not being shown -- which is worse
+// than the typed caption this replaced, because it would look verified.
+function drawnReducer(space) {
+  const embeddings = space.embeddings || {};
+  return embeddings[state.reducer] ? state.reducer : Object.keys(embeddings)[0] || "";
+}
+
+// Rewrite the axes sentence to describe the layout now drawn.
+//
+// The panel is built once and re-rendered on every interaction, so this belongs
+// with the re-render rather than with the build. The sentence itself is never
+// composed here: it is read from `axes_by_reducer`, which `payload._reducer_axes`
+// fills from each reducer's own manifest, so the page cannot state a component
+// count the run did not record.
+function refreshAxes(space) {
+  const panel = [...el("grid").children].find((p) => p.dataset.space === space.space_id);
+  if (!panel) return;
+  const node = panel.querySelector("p.axes");
+  if (!node) return;
+  const reducer = drawnReducer(space);
+  const text = ((space.description || {}).axes_by_reducer || {})[reducer];
+  node.dataset.reducer = reducer;
+  // A refusal rather than a stale sentence. Leaving the previous layout's text
+  // in place would be a caption that is confidently about the wrong picture.
+  node.innerHTML = text
+    ? inlineMarkup(text)
+    : reportMissing(`no axes sentence was recorded for this space's ${reducer} layout`);
 }
 
 // --- sheets ---------------------------------------------------------------
