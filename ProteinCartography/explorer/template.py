@@ -1589,6 +1589,19 @@ SHEET_PANELS.heatmap = {
   render() {
     const matrix = active.tm_matrix || {};
     const wrap = document.createElement("div");
+    // THREE STATES, KEPT APART (HTML-PLAN §6). "awaiting a matrix" means none
+    // was found on disk; THIS means one was found, is fine, and is too large to
+    // ship; and drawing is the third. Collapsing the first two would tell a
+    // reader to go and produce a file that already exists.
+    if (matrix.refused) {
+      const box = document.createElement("div");
+      box.className = "refused";
+      box.innerHTML =
+        "<b>the heatmap is withheld for this cohort</b> — " +
+        escapeHtml(matrix.refused.reason || "") + ".";
+      wrap.append(box);
+      return wrap;
+    }
     const n = matrix.n;
     const rows = decodeMatrix(matrix.values, n);
     if (!rows) {

@@ -1157,6 +1157,18 @@ def _structural_space(config, spaces: list) -> str:
 #: a triangle.
 _HEATMAP_LEVELS = 255
 
+#: What the heatmap alone may weigh, base64-encoded: a quarter of the PREFERRED
+#: page budget. The matrix is the only payload key that grows as n**2, so it is
+#: the only one that needs a ceiling of its own.
+TM_MATRIX_MAX_BYTES = PREFERRED_BUDGET_BYTES // 4
+
+#: The largest cohort whose heatmap fits that allowance. n**2 bytes become
+#: 4*ceil(n**2/3) base64 characters, so the bound is sqrt(3/4 * allowance).
+#:
+#: DERIVED, NOT TYPED, because a magic number here would be a second budget
+#: nobody could trace back to the first.
+TM_MATRIX_MAX_PROTEINS = int((TM_MATRIX_MAX_BYTES * 3 / 4) ** 0.5)
+
 
 def _tm_matrix(config, spaces: list, sort_space: str = "") -> dict:
     """The cohort's similarity matrix, cluster-sorted and quantised for display.
@@ -1209,6 +1221,36 @@ def _tm_matrix(config, spaces: list, sort_space: str = "") -> dict:
     if not order:
         return {}
     order.sort(key=lambda protid: (space.clusters.get(protid, "~"), protid))
+
+    # THE HEATMAP IS BOUNDED. THE MAPS ARE NOT, AND MUST NEVER BE.
+    #
+    # This key is the only one that grows as n**2 -- at n=2530 it is 8.17 MB of
+    # a 13.62 MB page, against 0.80 MB for every space's coordinates put
+    # together. So the HEATMAP is refused above the bound and every protein
+    # stays on every map, which is the whole point of drawing a large cohort.
+    #
+    # Refused rather than subsampled, deliberately. A subsampled heatmap is a
+    # picture of a cohort nobody chose, and a reader cannot tell it from the
+    # real one; a refusal that names the bound and the actual n is a fact they
+    # can act on. It is also unreadable long before it is unaffordable: at
+    # n=2530 in a ~700 px panel each cell is a quarter of a pixel.
+    if len(order) > TM_MATRIX_MAX_PROTEINS:
+        return {
+            "refused": {
+                "n": len(order),
+                "max_n": TM_MATRIX_MAX_PROTEINS,
+                "space_id": sort_space,
+                "reason": (
+                    f"this cohort has {len(order)} proteins and the heatmap is "
+                    f"capped at {TM_MATRIX_MAX_PROTEINS}. The matrix is the one "
+                    "payload key that grows as the square of the cohort, so it "
+                    "is dropped rather than shrunk: subsampling it would draw a "
+                    "picture of a cohort nobody chose. Every protein is still "
+                    "on every map above -- only this panel is withheld"
+                ),
+            }
+        }
+
     values = frame.loc[order, order].to_numpy(dtype=float)
 
     finite = values[np.isfinite(values)]

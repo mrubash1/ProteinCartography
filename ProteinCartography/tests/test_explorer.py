@@ -3848,3 +3848,85 @@ def test_the_single_cohort_page_still_carries_its_keys_at_the_top_level():
     assert "document = {" in reducer, "the reduction is not inside the multi-cohort branch"
     html = render({"spaces": []}, plotly_js="", title="t")
     assert "PAYLOAD.cohorts || [Object.assign({}, PAYLOAD, {" in html
+
+
+# ==========================================================================
+# The heatmap's n**2 bound. Matt's rule, 2026-08-21: "make it visible, I want
+# all the points" -- so the MATRIX is bounded and the MAPS never are.
+# ==========================================================================
+
+
+def test_the_heatmap_bound_is_derived_from_the_page_budget_not_typed():
+    """A magic number here would be a second budget nobody could trace."""
+    from explorer.payload import (
+        PREFERRED_BUDGET_BYTES,
+        TM_MATRIX_MAX_BYTES,
+        TM_MATRIX_MAX_PROTEINS,
+    )
+
+    assert TM_MATRIX_MAX_BYTES == PREFERRED_BUDGET_BYTES // 4
+    # n**2 bytes -> 4*ceil(n**2/3) base64 chars, so the bound is sqrt(3/4 * B).
+    n = TM_MATRIX_MAX_PROTEINS
+    assert 4 * ((n * n + 2) // 3) <= TM_MATRIX_MAX_BYTES
+    assert 4 * (((n + 1) ** 2 + 2) // 3) > TM_MATRIX_MAX_BYTES, "the bound is not tight"
+
+
+def test_the_two_shipped_cohorts_are_comfortably_inside_the_bound():
+    """367 and 308 must keep their heatmaps; this is a regression guard on the
+    constant, not a claim about those cohorts."""
+    from explorer.payload import TM_MATRIX_MAX_PROTEINS
+
+    assert TM_MATRIX_MAX_PROTEINS > 400
+    # ...and a full production cohort must be outside it, or the bound does
+    # nothing for the case it was added for.
+    assert TM_MATRIX_MAX_PROTEINS < 2465
+
+
+def test_a_cohort_over_the_bound_refuses_the_heatmap_and_says_why():
+    """The refusal has to carry BOTH numbers.
+
+    "too big" is not actionable; "2530 against a cap of 1400" is. It must also
+    say the maps are unaffected, because a reader who sees one panel withheld
+    has no way to know the others are complete.
+    """
+    import inspect
+
+    from explorer import payload as payload_module
+
+    source = inspect.getsource(payload_module._tm_matrix)
+    assert "TM_MATRIX_MAX_PROTEINS" in source
+    assert '"refused"' in source
+    assert "Every protein is still" in source
+
+
+def test_the_bound_refuses_and_never_subsamples():
+    """A subsampled heatmap is a picture of a cohort nobody chose, and a reader
+    cannot tell it from the real one."""
+    import inspect
+
+    from explorer import payload as payload_module
+
+    source = inspect.getsource(payload_module._tm_matrix)
+    guard = source[source.index("if len(order) > TM_MATRIX_MAX_PROTEINS") :][:900]
+    for forbidden in ("random", "sample", "choice", "::", "[:TM_MATRIX"):
+        assert forbidden not in guard, f"the bound appears to subsample ({forbidden})"
+
+
+def test_a_withheld_heatmap_is_a_third_state_and_not_awaiting_a_matrix():
+    """ "Awaiting" would send a reader to produce a file that already exists.
+
+    The matrix is on disk and is fine; it is the cohort that is too large to
+    ship it. HTML-PLAN §6's rule is that these empty states stay distinct,
+    because collapsing them hides which panels are one step from working.
+    """
+    from explorer.template import render
+
+    html = render({"spaces": []}, plotly_js="", title="t")
+    body = html[html.index("SHEET_PANELS.heatmap") :][:2200]
+    assert "matrix.refused" in body, "the renderer has no withheld branch"
+    assert "the heatmap is withheld for this cohort" in body
+    # ...and it must come BEFORE the decode, or the decode's own "not n x n"
+    # refusal fires first and says something false.
+    assert body.index("matrix.refused") < body.index(
+        "decodeMatrix"
+    ), "the withheld branch is after the decode, so the wrong refusal renders"
