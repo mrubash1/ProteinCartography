@@ -896,7 +896,10 @@ def test_the_sleep_guard_accepts_a_fast_run_and_refuses_a_slow_one(tmp_path):
     _assert_the_foldseek_sleep_was_neutralised(tmp_path)
 
     path.write_text(f"s\th:m:s\n{FOLDSEEK_BENCHMARK_CEILING_SECONDS + 16}\t0:00:31\n")
-    with pytest.raises(RuntimeError, match="mocked Foldseek query slept"):
+    # The wording moved at PC-033 -- the message no longer asserts that the
+    # sleep ran, because it cannot see that -- but the CRITERION is unchanged
+    # and that is what this half is about.
+    with pytest.raises(RuntimeError, match="exceeded the WALL-CLOCK ceiling"):
         _assert_the_foldseek_sleep_was_neutralised(tmp_path)
 
 
@@ -975,3 +978,59 @@ def test_the_sleep_hook_source_is_valid_python():
     from parity import _FOLDSEEK_SLEEP_HOOK
 
     compile(_FOLDSEEK_SLEEP_HOOK, "usercustomize.py", "exec")
+
+
+def test_the_wall_clock_failure_names_the_poll_evidence_rather_than_a_cause(tmp_path):
+    """PC-033. The message used to assert "the usercustomize sleep hook did not
+    take effect", which is one of two explanations and was the wrong one on the
+    night it fired: it sent a reader to debug a hook that was working.
+
+    The ceiling is UNCHANGED -- raising it would be weakening a check to get
+    green. What is checked here is that the message reports what the counter
+    saw and says outright that this measurement cannot separate the two cases.
+    """
+    from parity import _assert_the_foldseek_sleep_was_neutralised
+
+    benchmarks = tmp_path / "benchmarks"
+    benchmarks.mkdir()
+    (benchmarks / "P60709.run_foldseek.txt").write_text("s\th:m:s\n31.4\t0:00:31\n")
+    counter = tmp_path / "foldseek_polls.log"
+    counter.write_text("ProteinCartography/foldseek_apiquery.py 30\n")
+
+    with pytest.raises(RuntimeError) as caught:
+        _assert_the_foldseek_sleep_was_neutralised(tmp_path, counter)
+    message = str(caught.value)
+    assert "WALL-CLOCK ceiling" in message
+    assert "intercepted 1 poll(s)" in message
+    assert "starved machine is the likely explanation" in message
+    assert "CANNOT SEPARATE THEM" in message
+
+
+def test_the_wall_clock_failure_says_the_hook_never_loaded_when_it_did_not(tmp_path):
+    """The other branch of the same message, and the case the old wording
+    assumed was always true."""
+    from parity import _assert_the_foldseek_sleep_was_neutralised
+
+    benchmarks = tmp_path / "benchmarks"
+    benchmarks.mkdir()
+    (benchmarks / "P60709.run_foldseek.txt").write_text("s\th:m:s\n31.4\t0:00:31\n")
+
+    with pytest.raises(RuntimeError) as caught:
+        _assert_the_foldseek_sleep_was_neutralised(tmp_path, tmp_path / "absent.log")
+    message = str(caught.value)
+    assert "the hook did NOT load" in message
+    assert "PYTHONNOUSERSITE" in message
+
+
+def test_the_wall_clock_ceiling_did_not_move(tmp_path):
+    """Pinned, because the tempting fix for a false red is to raise it.
+
+    A CPU-time ceiling was measured and refused instead: over 46 archived
+    `run_foldseek` benchmarks the hook-off rows imply 1.25-4.42 CPU seconds and
+    the hook-on rows 0.97-5.08, which overlap almost entirely, because a
+    sleeping process burns no CPU. Wall time is the only signal that separates
+    them, and 15 s is where it was.
+    """
+    from parity import FOLDSEEK_BENCHMARK_CEILING_SECONDS
+
+    assert FOLDSEEK_BENCHMARK_CEILING_SECONDS == 15.0

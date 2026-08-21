@@ -484,6 +484,16 @@ def foldseek_sleep_user_base() -> Path:
 #: is under two seconds. 15 s is nine times the working figure and half the
 #: failing one: a loaded machine cannot reach it, and one skipped hook cannot
 #: stay under it.
+#:
+#: **This is WALL time, and it stays wall time.** PC-033 proposed CPU time, so
+#: that a starved machine could not be mistaken for a skipped hook. Measured
+#: over 46 archived `run_foldseek` benchmarks, using the `mean_load` column
+#: because snakemake's `cpu_time` column is 0 for every row on this platform:
+#: the 19 SLOW rows (hook off, 31-34 s wall) imply 1.25-4.42 CPU seconds and
+#: the 27 FAST rows (hook on, 1-5 s wall) imply 0.97-5.08. The distributions
+#: OVERLAP ALMOST ENTIRELY, because a sleeping process burns no CPU -- which is
+#: precisely why wall time is the signal here. A CPU ceiling would not be
+#: robust; it would be vacuous.
 FOLDSEEK_BENCHMARK_CEILING_SECONDS = 15.0
 
 
@@ -546,13 +556,41 @@ def _assert_the_foldseek_polls_were_bounded(output_dir: Path, counter_path: Path
         )
 
 
-def _assert_the_foldseek_sleep_was_neutralised(output_dir: Path) -> None:
+def _poll_evidence(counter_path) -> str:
+    """What the poll counter says, as CONTEXT for a wall-clock failure.
+
+    The wall-clock ceiling cannot tell a 30 s sleep from a starved machine, and
+    for one night it asserted the first and sent a reader to debug a hook that
+    was working (PC-033). It no longer names a cause it cannot see; it prints
+    what the counter recorded and lets that decide.
+    """
+    if counter_path is None:
+        return "POLL EVIDENCE: not collected for this call."
+    counter_path = Path(counter_path)
+    if not counter_path.exists():
+        return (
+            f"POLL EVIDENCE: no counter at {counter_path}, so the hook did NOT load "
+            "and the sleep is the likely explanation."
+        )
+    polls = len([line for line in counter_path.read_text().splitlines() if line.strip()])
+    return (
+        f"POLL EVIDENCE: the hook loaded and intercepted {polls} poll(s), so the "
+        "sleep WAS neutralised and a starved machine is the likely explanation."
+    )
+
+
+def _assert_the_foldseek_sleep_was_neutralised(output_dir: Path, counter_path=None) -> None:
     """Fail unless the mocked Foldseek rule really did skip its poll sleep.
 
     The hook above has no way to announce that it did not load, and a suite that
     is 150 s slower than it should be looks exactly like a suite that is slow.
     A comment describing the mechanism would not catch that; reading what the
     run actually recorded does.
+
+    `counter_path` is optional and is used only to explain a failure. The
+    criterion is unchanged and the ceiling is unchanged -- weakening a check to
+    get green is the failure this branch documents repeatedly. What changed is
+    that the message no longer asserts a cause this measurement cannot see.
 
     Missing benchmarks are treated as a failure rather than as "nothing to
     check". Every configuration this harness runs is search mode over the actin
@@ -588,11 +626,17 @@ def _assert_the_foldseek_sleep_was_neutralised(output_dir: Path) -> None:
         )
     if slow:
         raise RuntimeError(
-            "the mocked Foldseek query slept: "
-            f"{', '.join(slow)} (ceiling {FOLDSEEK_BENCHMARK_CEILING_SECONDS} s).\n"
-            "The usercustomize sleep hook did not take effect. Check that the "
-            "rule environment has site.ENABLE_USER_SITE True and that nothing "
-            "sets PYTHONNOUSERSITE."
+            f"run_foldseek exceeded the WALL-CLOCK ceiling: {', '.join(slow)} "
+            f"(ceiling {FOLDSEEK_BENCHMARK_CEILING_SECONDS} s over {measured} "
+            f"benchmark row(s)).\n"
+            f"{_poll_evidence(counter_path)}\n"
+            "TWO EXPLANATIONS REMAIN AND THIS MEASUREMENT CANNOT SEPARATE THEM: the "
+            "30 s poll sleep ran, or the machine was starved and the mocked work took "
+            "the wall clock without taking the CPU. Read the poll evidence above "
+            "first -- if the hook loaded and intercepted about one poll per query, "
+            "the sleep did NOT run and the machine was busy. If it did not load, "
+            "check that the rule environment has site.ENABLE_USER_SITE True and that "
+            "nothing sets PYTHONNOUSERSITE."
         )
 
 
@@ -684,7 +728,7 @@ def run_pipeline(
             f"--- stdout tail ---\n{proc.stdout[-3000:]}\n"
             f"--- stderr tail ---\n{proc.stderr[-5000:]}"
         )
-    _assert_the_foldseek_sleep_was_neutralised(output_dir)
+    _assert_the_foldseek_sleep_was_neutralised(output_dir, poll_counter)
     _assert_the_foldseek_polls_were_bounded(output_dir, poll_counter)
     return output_dir
 
