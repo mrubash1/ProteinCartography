@@ -124,6 +124,11 @@ button.on { background: var(--ink); color: #fff; border-color: var(--ink); }
    Deliberately NOT the `.awaiting` hatch: nothing is missing here, so the card
    must not be given the visual language of a refusal. */
 .elsewhere { padding: 12px 14px; font-size: 12px; color: var(--muted); }
+/* The line that decided a count, under the column header that prints it. Not
+   bold and not the label's size -- it qualifies the heading, it is not a second
+   heading. */
+.cutoff { display: block; font-weight: 400; font-size: 10.5px; color: var(--muted);
+  text-transform: none; letter-spacing: 0; margin-top: 2px; }
 .scroll-x { overflow-x: auto; }
 table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
 th, td { text-align: left; padding: 5px 9px; border-bottom: 1px solid var(--line); }
@@ -336,6 +341,21 @@ const PAYLOAD = __PAYLOAD__;
 // enforce, and then the picture and the verdict disagree.
 const THRESHOLDS = PAYLOAD.thresholds || {};
 const COIN_FLIP = THRESHOLDS.coin_flip;
+
+// The cutoff that decides a position is not readable, in words, for the header
+// of every count it decided. Read from the payload and never retyped:
+// `payload._thresholds()` ships `distorted` for exactly this, and until now it
+// reached the browser and nothing read it -- the page printed "positions not
+// readable: 306 of 367" with the line that produced 306 stated nowhere.
+//
+// Returns "" rather than a partial sentence when the payload has no thresholds,
+// so a page built by an older writer loses the note instead of gaining
+// "at or below undefined".
+function distortedCutoffNote() {
+  return THRESHOLDS.distorted === undefined
+    ? ""
+    : `trustworthiness or continuity at or below ${THRESHOLDS.distorted}`;
+}
 
 const state = { overlay: "__none__", reducer: null, disagreement: false,
                 selected: new Set(), sheet: "maps" };
@@ -1847,6 +1867,7 @@ const GEOMETRY_COLUMNS = [
   { label: "continuity", cell: (s) => faithCell(s, "continuity_mean") },
   {
     label: "positions not readable",
+    note: distortedCutoffNote(),
     cell: (s) => {
       const readable = s.readable || [];
       const bad = readable.filter((r) => r === false).length;
@@ -1998,7 +2019,14 @@ REPORT_FILLERS.coverage = () => {
 REPORT_FILLERS.geometry = () => {
   const box = document.createElement("div");
   box.className = "scroll-x";
-  const head = GEOMETRY_COLUMNS.map((c) => `<th>${escapeHtml(c.label)}</th>`).join("");
+  // A column may carry the cutoff that produced its numbers. Rendered under the
+  // label rather than beside it: this table already has ten columns, and a
+  // header that widens one of them squeezes the rest.
+  const head = GEOMETRY_COLUMNS.map(
+    (c) => `<th>${escapeHtml(c.label)}` +
+      (c.note ? `<span class="cutoff">${escapeHtml(c.note)}</span>` : "") +
+      "</th>"
+  ).join("");
   const body = spaces
     .map((space) => {
       const cells = GEOMETRY_COLUMNS.map((c) => `<td>${c.cell(space)}</td>`);
@@ -2309,7 +2337,8 @@ function renderInspector() {
     `${chosen.length > 12 ? ", …" : ""}</code></p>` +
     egress +
     `<table><thead><tr><th>space</th><th>clusters they fall in</th>` +
-    `<th>positions not readable</th></tr></thead><tbody>${rows.join("")}</tbody></table>` +
+    `<th>positions not readable<span class="cutoff">${escapeHtml(distortedCutoffNote())}` +
+    `</span></th></tr></thead><tbody>${rows.join("")}</tbody></table>` +
     `<ul class="egress-links">${links.join("")}</ul>`;
 }
 

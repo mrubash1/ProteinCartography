@@ -3094,3 +3094,57 @@ def test_the_pointer_card_is_not_counted_as_an_empty_panel():
     card = html[html.index("elsewhere.forEach((panel)") :][:400]
     assert '"elsewhere"' in card
     assert "awaitingBlock" not in card
+
+
+def test_the_cutoff_that_decides_a_position_is_unreadable_is_read_and_printed():
+    """A count whose threshold is nowhere on the page cannot be checked.
+
+    `payload._thresholds()` ships `distorted` (0.70) precisely so the page can
+    state the line it enforces without retyping it, and the template took only
+    `coin_flip` -- so "positions not readable: 306 of 367" appeared twice on the
+    page with the rule that produced 306 stated nowhere.
+
+    This repo's recorded failure mode is that a value written to a manifest is
+    not thereby honored (FOLLOWUPS #29, #32), so the assertion is that the
+    template CONSUMES the key, not that it mentions it.
+    """
+    from explorer.template import render
+
+    html = render({"spaces": []}, plotly_js="", title="t")
+    assert "THRESHOLDS.distorted" in html, "the cutoff never reaches the page"
+    assert "distortedCutoffNote()" in html, "nothing calls the note builder"
+    assert (
+        "trustworthiness or continuity at or below ${THRESHOLDS.distorted}" in html
+    ), "the note no longer interpolates the payload value, so it is retyped"
+
+
+def test_the_cutoff_note_is_dropped_rather_than_printed_half_written():
+    """An older page carries no `thresholds` key at all.
+
+    The note must then be absent, not "at or below undefined" -- a page saying
+    that is worse than one saying nothing, because it looks like a measurement.
+    """
+    from explorer.template import render
+
+    html = render({"spaces": []}, plotly_js="", title="t")
+    body = html[html.index("function distortedCutoffNote") :][:420]
+    assert "THRESHOLDS.distorted === undefined" in body
+    assert 'return THRESHOLDS.distorted === undefined\n    ? ""' in body.replace("\r", "")
+
+
+def test_both_places_that_print_the_unreadable_count_carry_the_cutoff():
+    """The count appears twice: the geometry table and the inspector.
+
+    One helper feeds both, so the two can never state different lines, and a
+    reader who never opens the diagnostics report still sees the cutoff beside
+    the count in the panel they are actually using.
+    """
+    from explorer.template import render
+
+    html = render({"spaces": []}, plotly_js="", title="t")
+    calls = html.count("distortedCutoffNote()") - html.count("function distortedCutoffNote()")
+    assert calls == 2, f"expected exactly the two count sites to call the note, found {calls}"
+    inspector = html[html.index("positions not readable<span") :][:220]
+    assert "distortedCutoffNote()" in inspector
+    geometry = html[html.index('label: "positions not readable"') :][:200]
+    assert "note: distortedCutoffNote()" in geometry
