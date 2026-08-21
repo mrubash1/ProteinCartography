@@ -214,24 +214,12 @@ class StabilityCohort:
         )
 
 
-def chance_jaccard(pool: int, k: int) -> float:
-    """Expected Jaccard of two independent uniform ``k``-subsets of ``pool``.
-
-    The level a neighborhood carrying no information scores. Two such subsets
-    share ``k^2 / pool`` elements in expectation, and the union of two
-    ``k``-sets sharing ``m`` is ``2k - m``, so the ratio follows. It is the
-    expectation of a ratio approximated by the ratio of expectations, which is
-    why ``tests/test_stability_cohort.py`` allows 0.02 against the measurement
-    rather than asserting equality.
-
-    Args:
-        pool: candidates available, excluding the protein itself.
-        k: neighborhood size.
-    """
-    if pool < k or k < 1:
-        raise ValueError(f"need 1 <= k <= pool, got k={k}, pool={pool}")
-    shared = k * k / pool
-    return float(shared / (2 * k - shared))
+# Re-exported, not redefined. Two copies of "what chance is" would eventually
+# disagree, and the page now prints this number beside a verdict -- so the
+# fixture and the banner have to be the same arithmetic. The tests that pin it
+# (`test_diagnostics_stability`, `test_stability_cohort`) keep importing it from
+# here and now pin the library's copy.
+from diagnostics.stability import chance_jaccard  # noqa: E402,F401
 
 
 def _unit(vector: np.ndarray) -> np.ndarray:

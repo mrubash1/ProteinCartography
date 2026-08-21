@@ -153,6 +153,58 @@ class SpacePayload:
         }
 
 
+def _chance_clause(stability: dict, n_proteins: int) -> str:
+    """What a neighbourhood carrying NO information would have scored here.
+
+    THE FIRST USE OF `n_proteins`. The parameter has been in this signature
+    since it was written and nothing read it, which is the #29/#32 shape one
+    more time -- an argument threaded through and never consumed.
+
+    A stability number without this is a number with no denominator, and this
+    repository has already retracted one figure for exactly that. 0.119 is not
+    interpretable until you know what zero information scores: chance depends on
+    k AND on how many candidates a replicate offers, so the SAME 0.119 is
+    catastrophic on a big cohort and unremarkable on a small one.
+
+    The pool is the subsample's, not the cohort's, because that is what a
+    replicate actually chooses among -- `subsample_size` when the diagnostic
+    recorded it, and `round(subsample_fraction * n_proteins) - 1` when it did
+    not, which is `largest_stable_k`'s own arithmetic.
+
+    Returns "" rather than a partial sentence whenever the inputs are not there
+    or are out of `chance_jaccard`'s domain. A verdict that lost its chance
+    clause is a verdict; a verdict carrying "so this is NaNx chance" is worse
+    than one carrying nothing.
+    """
+    from diagnostics.stability import DEFAULT_SUBSAMPLE_FRACTION, chance_jaccard
+
+    k = stability.get("k")
+    mean = stability.get("stability_mean")
+    if not isinstance(k, int) or k < 1:
+        return ""
+    pool = stability.get("subsample_size")
+    if isinstance(pool, int) and pool > 0:
+        pool -= 1
+    else:
+        fraction = stability.get("subsample_fraction") or DEFAULT_SUBSAMPLE_FRACTION
+        pool = int(round(fraction * (n_proteins or 0))) - 1
+    if pool < k:
+        return ""
+    try:
+        chance = chance_jaccard(pool, k)
+    except ValueError:
+        return ""
+    if not chance:
+        return ""
+    clause = (
+        f". At n={n_proteins} with k={k} of {pool} candidates a replicate offers, "
+        f"chance is {chance:.3f}"
+    )
+    if isinstance(mean, (int, float)) and mean is not None:
+        clause += f", so this is {mean / chance:.0f}x chance"
+    return clause
+
+
 def space_verdict(diagnostics, n_proteins: int) -> dict:
     """What this space may be read for, as flags a template can render.
 
@@ -173,13 +225,14 @@ def space_verdict(diagnostics, n_proteins: int) -> dict:
         }
 
     stability = (diagnostics.get("stability") or [{}])[0]
+    against_chance = _chance_clause(stability, n_proteins)
     if stability and not stability.get("informative", True):
         level = "unreadable"
         reasons.append(
             f"stability is not informative: k={stability.get('k')} of "
             f"{max(1, stability.get('subsample_size', 1)) - 1} candidates a replicate "
             "offers, so every protein's neighbours are most of the cohort and the "
-            "score is 1.0 by construction"
+            "score is 1.0 by construction" + against_chance
         )
     elif stability and stability.get("stability_mean", 1.0) <= COIN_FLIP_THRESHOLD:
         level = "unreadable"
@@ -190,7 +243,7 @@ def space_verdict(diagnostics, n_proteins: int) -> dict:
             # puts the two on one screen -- one number printed twice at two
             # precisions reads as two measurements that disagree.
             f"mean neighbourhood stability is {stability['stability_mean']:.3f}, at or "
-            "below the coin-flip level"
+            "below the coin-flip level" + against_chance
         )
 
     # A report with sections but NO faithfulness section is a report where

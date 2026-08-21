@@ -3614,3 +3614,95 @@ def test_the_grid_really_is_hidden_on_every_sheet_but_maps():
     html = render({"spaces": []}, plotly_js="", title="t")
     assert 'const isMaps = sheetId === "maps";' in html
     assert 'el("grid").style.display = isMaps ? "" : "none";' in html
+
+
+# ==========================================================================
+# The chance level. A stability number is not interpretable until you know what
+# ZERO information would have scored, and chance depends on k and on how many
+# candidates a replicate offers -- so the same 0.119 means different things on
+# different cohorts. This repo has already retracted a figure for having no
+# stated denominator.
+# ==========================================================================
+
+
+def _stability(**overrides):
+    entry = {
+        "k": 15,
+        "stability_mean": 0.119,
+        "subsample_size": 276,
+        "subsample_fraction": 0.75,
+        "informative": True,
+    }
+    entry.update(overrides)
+    return {"stability": [entry]}
+
+
+def test_the_verdict_finally_reads_the_n_proteins_it_has_always_been_given():
+    """`space_verdict(diagnostics, n_proteins)` never read the second argument.
+
+    It has been in the signature since the function was written and nothing
+    consumed it -- the same shape as FOLLOWUPS #29 and #32, an argument threaded
+    through and never honored. Asserted on the REASON text and not the level,
+    because the level is deliberately unchanged by this phase.
+    """
+    from explorer.payload import space_verdict
+
+    small = space_verdict(_stability(subsample_size=None), n_proteins=100)
+    large = space_verdict(_stability(subsample_size=None), n_proteins=2465)
+    small_reason = next(r for r in small["reasons"] if "coin-flip" in r)
+    large_reason = next(r for r in large["reasons"] if "coin-flip" in r)
+    assert small_reason != large_reason, "n_proteins still changes nothing"
+    assert "n=100" in small_reason and "n=2465" in large_reason
+    assert small["level"] == large["level"], "this phase must not move a band"
+
+
+def test_the_chance_in_the_banner_is_the_librarys_chance():
+    """The page and the library cannot be allowed to drift.
+
+    `chance_jaccard` now lives in `diagnostics.stability` and the test fixture
+    re-exports it, so there is exactly one definition. This asserts the banner
+    prints that one.
+    """
+    from diagnostics.stability import chance_jaccard
+    from explorer.payload import space_verdict
+
+    verdict = space_verdict(_stability(), n_proteins=367)
+    reason = next(r for r in verdict["reasons"] if "coin-flip" in r)
+    expected = chance_jaccard(275, 15)
+    assert f"chance is {expected:.3f}" in reason, reason
+    assert f"{0.119 / expected:.0f}x chance" in reason
+
+
+def test_the_fixtures_chance_is_the_librarys_and_not_a_second_copy():
+    """Two definitions of chance would eventually disagree."""
+    from diagnostics.stability import chance_jaccard as library
+    from stability_cohort import chance_jaccard as fixture
+
+    assert fixture is library
+
+
+def test_the_pool_is_the_subsamples_and_not_the_cohorts():
+    """A replicate chooses among the SUBSAMPLE's candidates, not the cohort's.
+
+    Using the cohort would understate chance on every run, because
+    `subsample_fraction` is 0.75 by default -- and understating chance makes
+    every stability number look better than it is.
+    """
+    from explorer.payload import space_verdict
+
+    verdict = space_verdict(_stability(subsample_size=276), n_proteins=367)
+    reason = next(r for r in verdict["reasons"] if "coin-flip" in r)
+    assert "k=15 of 275 candidates" in reason, reason
+    assert "of 366 candidates" not in reason, "the pool is the whole cohort's"
+
+
+def test_a_verdict_with_no_usable_chance_loses_the_clause_rather_than_printing_nan():
+    """A verdict carrying "so this is NaNx chance" is worse than one carrying none."""
+    from explorer.payload import space_verdict
+
+    verdict = space_verdict(
+        _stability(k=None, subsample_size=None, subsample_fraction=None), n_proteins=0
+    )
+    for reason in verdict["reasons"]:
+        assert "chance" not in reason
+        assert "nan" not in reason.lower()

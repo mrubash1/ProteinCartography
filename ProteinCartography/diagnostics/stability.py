@@ -62,6 +62,7 @@ __all__ = [
     "VACUOUS_FRACTION",
     "NeighborhoodStability",
     "StabilityError",
+    "chance_jaccard",
     "jaccard_rows",
     "largest_stable_k",
     "neighborhood_stability",
@@ -98,6 +99,30 @@ VACUOUS_FRACTION = 0.5
 
 class StabilityError(ValueError):
     """Raised when the cohort cannot support the requested measurement."""
+
+
+def chance_jaccard(pool: int, k: int) -> float:
+    """Expected Jaccard of two independent uniform ``k``-subsets of ``pool``.
+
+    The level a neighborhood carrying no information scores. Two such subsets
+    share ``k^2 / pool`` elements in expectation, and the union of two
+    ``k``-sets sharing ``m`` is ``2k - m``, so the ratio follows. It is the
+    expectation of a ratio approximated by the ratio of expectations, which is
+    why ``tests/test_stability_cohort.py`` allows 0.02 against the measurement
+    rather than asserting equality.
+
+    Lifted here from ``tests/stability_cohort`` so the page and the library
+    cannot hold two definitions of chance. That module re-exports this one, so
+    the tests that pin it keep pinning the same code.
+
+    Args:
+        pool: candidates available, excluding the protein itself.
+        k: neighborhood size.
+    """
+    if pool < k or k < 1:
+        raise ValueError(f"need 1 <= k <= pool, got k={k}, pool={pool}")
+    shared = k * k / pool
+    return float(shared / (2 * k - shared))
 
 
 def largest_stable_k(n: int, subsample_fraction: float) -> int:
