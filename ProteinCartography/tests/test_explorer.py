@@ -3562,3 +3562,55 @@ def test_a_layout_with_no_recorded_axes_sentence_refuses_rather_than_going_stale
     refresh = html[html.index("function refreshAxes(space)") :][:900]
     assert "no axes sentence was recorded for this space" in refresh
     assert "reportMissing(" in refresh
+
+
+def test_the_stability_note_states_where_the_reference_neighbourhood_comes_from():
+    """It said the subsample is compared with "its neighbourhood in the full one".
+
+    `diagnostics/stability.py` says the opposite, in bold, and says why it
+    matters: **the reference is recomputed inside each subsample**, not taken
+    from the full cohort. That is what makes resampling a genuine null -- both
+    sides lose the same proteins and promote the same replacement -- and it is
+    the reason a replicate with no noise scores exactly 1.0. A reader who
+    believed the note would expect a no-noise replicate to score BELOW 1.0 and
+    would read every number on the sheet against the wrong baseline.
+    """
+    from explorer.template import render
+
+    html = render({"spaces": []}, plotly_js="", title="t")
+    assert "in the full one" not in html, "the note still describes a full-cohort reference"
+    note = html[html.index("SHEET_PANELS.stability") :][:2400]
+    assert "in that same subsample" in note
+    assert "exactly 1.0" in note, "the consequence that makes the correction checkable is gone"
+
+
+def test_the_stability_note_names_faithfulness_rather_than_pointing_off_screen():
+    """ "the panel banners above" was wrong twice over.
+
+    They are not above: `renderSheet` hides `#grid` on every sheet but `maps`,
+    so on this sheet the banners are not rendered at all. And their first two
+    reasons come from this very statistic, so a reader sent there to check the
+    drawing would be sent back to the number they were already looking at. The
+    measurements that actually judge the drawing are trustworthiness and
+    continuity, and the note now names them and where to find them.
+    """
+    from explorer.template import render
+
+    html = render({"spaces": []}, plotly_js="", title="t")
+    note = html[html.index("SHEET_PANELS.stability") :][:2400]
+    assert "panel banners above" not in note
+    assert "trustworthiness and continuity" in note
+    assert "diagnostics report" in note, "the reader is not told where to look"
+
+
+def test_the_grid_really_is_hidden_on_every_sheet_but_maps():
+    """The claim the note's correction rests on, pinned.
+
+    If the grid were ever shown on another sheet, "the panel banners above"
+    would stop being wrong and this correction would need revisiting.
+    """
+    from explorer.template import render
+
+    html = render({"spaces": []}, plotly_js="", title="t")
+    assert 'const isMaps = sheetId === "maps";' in html
+    assert 'el("grid").style.display = isMaps ? "" : "none";' in html

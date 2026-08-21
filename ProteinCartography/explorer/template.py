@@ -1363,8 +1363,16 @@ SHEET_PANELS.censoring = {
 //
 // This judges the SPACE, not the layout. A protein can have perfectly
 // determinate neighbours in the high-dimensional space and still be drawn in
-// the wrong place by the reducer; that second question is faithfulness, and it
-// is the one the panel banners answer. The two are kept apart here in words.
+// the wrong place by the reducer; that second question is faithfulness --
+// trustworthiness and continuity -- and the sheet note points at those by name.
+//
+// It used to point at "the panel banners above", which was wrong twice. The
+// banners are not above: `renderSheet` sets `el("grid").style.display = "none"`
+// on every sheet but `maps`, so on this sheet they are not on screen at all.
+// And their first two reasons are themselves derived from THIS statistic
+// (`space_verdict` reads the stability section first), so a reader sent there
+// to check the layout would be sent back to the number they were already
+// reading.
 SHEET_PANELS.stability = {
   isEmpty() {
     return !spaces.some((space) => space.stability && Object.keys(space.stability).length);
@@ -1375,12 +1383,17 @@ SHEET_PANELS.stability = {
     note.className = "table-note";
     note.innerHTML =
       "Each protein's neighbourhood is recomputed on repeated subsamples of the " +
-      "cohort and compared with its neighbourhood in the full one; the value is " +
-      "the mean overlap. <b>At or below " + fmtValue(COIN_FLIP) + " a protein's " +
-      "neighbours are a coin flip</b> and nothing about who it sits near is " +
-      "evidence. This judges the <b>space</b>, not the drawing of it — a protein " +
-      "with determinate neighbours can still be placed badly by the reducer, " +
-      "which is what the panel banners above answer.";
+      "cohort and compared with its neighbourhood <b>in that same subsample</b>; " +
+      "the value is the mean overlap. The reference is recomputed inside each " +
+      "draw rather than taken from the full cohort, which is what makes a " +
+      "replicate with no added noise score exactly 1.0 and every departure " +
+      "attributable to the noise term alone. <b>At or below " +
+      fmtValue(COIN_FLIP) + " a protein's neighbours are a coin flip</b> and " +
+      "nothing about who it sits near is evidence. This judges the <b>space</b>, " +
+      "not the drawing of it — a protein with determinate neighbours can still " +
+      "be placed badly by the reducer, and the measurements that catch that are " +
+      "<b>trustworthiness and continuity</b>, in the geometry table of the " +
+      "diagnostics report.";
     wrap.append(note);
     const rows = spaces
       .filter((space) => space.stability && Object.keys(space.stability).length)
