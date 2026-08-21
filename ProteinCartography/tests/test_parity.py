@@ -906,3 +906,72 @@ def test_the_sleep_guard_refuses_a_missing_benchmark(tmp_path):
     (tmp_path / "benchmarks").mkdir()
     with pytest.raises(RuntimeError, match="no benchmarks"):
         _assert_the_foldseek_sleep_was_neutralised(tmp_path)
+
+
+# ==========================================================================
+# The poll counter. Short-circuiting the 30 s Foldseek sleep also removed the
+# only evidence a spinning loop left behind: with the sleep free, sixty polls
+# and one poll both take about 1.6 s (FOLLOWUPS #45). These run without a
+# pipeline, which is the point -- the hook only executes inside a snakemake
+# child, so the bare environment can exercise the assertion and not the hook.
+# ==========================================================================
+
+
+def test_the_poll_counter_accepts_about_one_poll_per_query(tmp_path):
+    """The working figure, measured rather than assumed: the mocked ticket
+    answers COMPLETE on the first GET, so a real run records exactly one line
+    per query protein."""
+    from parity import _assert_the_foldseek_polls_were_bounded
+
+    benchmarks = tmp_path / "benchmarks"
+    benchmarks.mkdir()
+    (benchmarks / "P60709.run_foldseek.txt").write_text("s\th:m:s\n1.3253\t0:00:01\n")
+    counter = tmp_path / "foldseek_polls.log"
+    counter.write_text("ProteinCartography/foldseek_apiquery.py 30\n")
+    _assert_the_foldseek_polls_were_bounded(tmp_path, counter)
+
+
+def test_the_poll_counter_refuses_a_loop_that_spun(tmp_path):
+    """Sixty polls is what a never-completing ticket costs: the 1800 s timeout
+    over the 30 s public-server interval. The wall-clock ceiling cannot see it,
+    which is why this exists."""
+    from parity import FOLDSEEK_POLLS_PER_QUERY_CEILING, _assert_the_foldseek_polls_were_bounded
+
+    benchmarks = tmp_path / "benchmarks"
+    benchmarks.mkdir()
+    (benchmarks / "P60709.run_foldseek.txt").write_text("s\th:m:s\n1.0448\t0:00:01\n")
+    counter = tmp_path / "foldseek_polls.log"
+    counter.write_text("ProteinCartography/foldseek_apiquery.py 30\n" * 60)
+    assert 60 > FOLDSEEK_POLLS_PER_QUERY_CEILING
+    with pytest.raises(RuntimeError, match="turned over 60 times"):
+        _assert_the_foldseek_polls_were_bounded(tmp_path, counter)
+
+
+def test_a_missing_poll_counter_raises_rather_than_passes(tmp_path):
+    """The self-disabling case, refused explicitly.
+
+    An absent file cannot be told from a loop that never slept, and a check
+    that treats "no evidence" as "no problem" is satisfied by silence -- the
+    same shape as an absence assertion whose phrase has drifted out of date.
+    """
+    from parity import _assert_the_foldseek_polls_were_bounded
+
+    benchmarks = tmp_path / "benchmarks"
+    benchmarks.mkdir()
+    (benchmarks / "P60709.run_foldseek.txt").write_text("s\th:m:s\n1.3253\t0:00:01\n")
+    with pytest.raises(RuntimeError, match="no Foldseek poll counter"):
+        _assert_the_foldseek_polls_were_bounded(tmp_path, tmp_path / "absent.log")
+
+
+def test_the_sleep_hook_source_is_valid_python():
+    """The hook is a source string written to disk and imported by a child.
+
+    A syntax error in it is not a test failure anywhere: `usercustomize` simply
+    does not load, every run silently costs its 30 s of poll sleep back, and
+    only a full pipeline run notices. That happened while this counter was
+    being added -- a `\\n` inside the enclosing triple-quoted literal became a
+    real newline and left the child with an unterminated string.
+    """
+    from parity import _FOLDSEEK_SLEEP_HOOK
+
+    compile(_FOLDSEEK_SLEEP_HOOK, "usercustomize.py", "exec")

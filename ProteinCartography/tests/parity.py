@@ -407,7 +407,13 @@ _FOLDSEEK_SLEEP_HOOK = '''\
 Written by ProteinCartography/tests/parity.py, and imported by CPython at
 interpreter start-up in any process whose PYTHONUSERBASE points at the tree this
 file lives in. Nothing imports it explicitly.
+
+Each interception is also RECORDED, one line per call, in the file named by
+PC_FOLDSEEK_POLL_COUNTER. Short-circuiting the sleep made a spinning poll loop
+free, and free is invisible: the wall-clock guard on the other side of this
+cannot tell one poll from sixty once neither costs anything. The count can.
 """
+import os
 import sys
 import time
 
@@ -420,6 +426,20 @@ def _sleep(seconds):
     # loop may be short-circuited. `foldseek_apiquery.py` sleeps solely to wait
     # for a server ticket, which under mocks is already answered.
     if sys.argv and str(sys.argv[0]).endswith("foldseek_apiquery.py"):
+        # Read at call time too, so one hook serves runs with different
+        # counters -- `mutation_check.py` makes twelve run_pipeline calls in
+        # one process and up to four proceed at once.
+        counter = os.environ.get("PC_FOLDSEEK_POLL_COUNTER")
+        if counter:
+            # Append-only, one short line. A failure to write leaves the file
+            # absent or short, and the assertion treats both as a failure
+            # rather than as nothing to check -- so swallowing the error here
+            # cannot turn the guard off.
+            try:
+                with open(counter, "a") as handle:
+                    handle.write(str(sys.argv[0]) + " " + str(seconds) + chr(10))
+            except OSError:
+                pass
         return _real_sleep(0)
     return _real_sleep(seconds)
 
@@ -465,6 +485,65 @@ def foldseek_sleep_user_base() -> Path:
 #: failing one: a loaded machine cannot reach it, and one skipped hook cannot
 #: stay under it.
 FOLDSEEK_BENCHMARK_CEILING_SECONDS = 15.0
+
+
+#: The environment variable naming the per-run poll counter. Per-run rather
+#: than shared: four `run_pipeline` calls proceed at once at `--cores 8`, two of
+#: them out of the baseline checkout, and one run's polls landing in another
+#: run's counter would fail an assertion about a pipeline that behaved.
+FOLDSEEK_POLL_COUNTER_VAR = "PC_FOLDSEEK_POLL_COUNTER"
+
+#: How many intercepted sleeps one query protein may cost.
+#:
+#: The mocked ticket answers COMPLETE on the first `GET`, so `foldseek_apiquery`
+#: sleeps exactly ONCE per query and the working figure is 1. A ticket that
+#: never completes costs 60 -- `FOLDSEEK_SERVER_TIMEOUT` 1800 s divided by the
+#: 30 s public-server poll interval. 5 is five times the working figure and a
+#: twelfth of the failing one, which is the same shape of margin
+#: `FOLDSEEK_BENCHMARK_CEILING_SECONDS` carries: a retry or a second database
+#: cannot reach it, and a spinning loop cannot stay under it.
+FOLDSEEK_POLLS_PER_QUERY_CEILING = 5
+
+
+def _assert_the_foldseek_polls_were_bounded(output_dir: Path, counter_path: Path) -> None:
+    """Fail unless the mocked Foldseek poll loop turned over about once per query.
+
+    The other half of the guard below, and the half it cannot do. Neutralising
+    the 30 s sleep also removed the only evidence a spinning loop ever left:
+    with the sleep free, sixty polls and one poll both take about 1.6 s, so the
+    wall-clock ceiling reads them as identical (FOLLOWUPS #45). Counting the
+    interceptions separates them.
+
+    A MISSING COUNTER RAISES rather than passes. "The hook never loaded" and
+    "the loop never slept" are indistinguishable from an absent file, and a
+    check that cannot tell those apart is satisfied by silence -- the same
+    self-disabling shape as an absence assertion whose phrase has drifted.
+    """
+    counter_path = Path(counter_path)
+    if not counter_path.exists():
+        raise RuntimeError(
+            f"no Foldseek poll counter at {counter_path}, so there is no evidence about "
+            "how many times the poll loop turned over. An absent counter cannot be told "
+            f"from a loop that never slept: check that {FOLDSEEK_POLL_COUNTER_VAR} "
+            "reached the rule environment and that the usercustomize hook loaded"
+        )
+    polls = len([line for line in counter_path.read_text().splitlines() if line.strip()])
+    queries = len(sorted((Path(output_dir) / "benchmarks").glob("*.run_foldseek.txt")))
+    if not queries:
+        raise RuntimeError(
+            f"{polls} Foldseek poll(s) recorded but no benchmarks/*.run_foldseek.txt under "
+            f"{output_dir}, so the count has no denominator"
+        )
+    ceiling = FOLDSEEK_POLLS_PER_QUERY_CEILING * queries
+    if polls > ceiling:
+        raise RuntimeError(
+            f"the mocked Foldseek poll loop turned over {polls} times across {queries} "
+            f"query protein(s), above the ceiling of {ceiling} "
+            f"({FOLDSEEK_POLLS_PER_QUERY_CEILING} per query). The ticket is answered "
+            "COMPLETE on the first GET, so this means the loop is spinning -- which "
+            "costs no wall clock now that the sleep is short-circuited, and is therefore "
+            "invisible to the benchmark ceiling"
+        )
 
 
 def _assert_the_foldseek_sleep_was_neutralised(output_dir: Path) -> None:
@@ -575,6 +654,11 @@ def run_pipeline(
     # hook outright, and conda activation scripts are known to set it.
     env["PYTHONUSERBASE"] = str(foldseek_sleep_user_base())
     env.pop("PYTHONNOUSERSITE", None)
+    # Inside this run's workdir, not inside the shared user base: the user base
+    # is one directory for every run in the process, and four runs proceed at
+    # once.
+    poll_counter = workdir / "foldseek_polls.log"
+    env[FOLDSEEK_POLL_COUNTER_VAR] = str(poll_counter)
 
     cmd = [
         sys.executable,
@@ -601,6 +685,7 @@ def run_pipeline(
             f"--- stderr tail ---\n{proc.stderr[-5000:]}"
         )
     _assert_the_foldseek_sleep_was_neutralised(output_dir)
+    _assert_the_foldseek_polls_were_bounded(output_dir, poll_counter)
     return output_dir
 
 
