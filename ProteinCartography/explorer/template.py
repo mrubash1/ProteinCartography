@@ -1875,6 +1875,56 @@ REPORT_FILLERS.cohort = () => {
   return reportRows(rows);
 };
 
+REPORT_FILLERS.coverage = () => {
+  // The section this fills used to REFUSE, on the grounds that "no payload key
+  // carries it". `active.censoring.summary` has carried it since the censoring
+  // panel landed, so the refusal was false on a page that drew the number two
+  // sheets away. The verdict wording below is deliberately the censoring
+  // panel's own three states rather than a second phrasing: two sheets
+  // disagreeing about whether a cohort was capped is the defect this section
+  // exists to prevent.
+  const summary = (active.censoring || {}).summary || {};
+  if (!summary.n_cells) {
+    return reportUnknownSection({ section_id: "coverage" });
+  }
+  const measured = summary.n_cells - summary.n_censored;
+  let verdict;
+  if (summary.cap_detected) {
+    verdict =
+      `a per-query cap is detected: ${fmtValue(summary.rows_at_max)} of ` +
+      `${fmtValue(summary.n_rows)} rows report exactly ` +
+      `${fmtValue(summary.inferred_cap)} partners while the columns do not pile up`;
+  } else if (summary.n_censored > 0) {
+    verdict =
+      "cells are missing, but not in a per-query cap's pattern — the missingness " +
+      "is a property of the whole matrix rather than of each query";
+  } else {
+    verdict = "nothing was censored: this cohort's matrix is exhaustive";
+  }
+  const rows = [
+    [
+      "cells measured",
+      `${fmtValue(measured)} of ${fmtValue(summary.n_cells)}`,
+      "matrix_io.summarize_censoring",
+    ],
+    [
+      "censoring rate",
+      `${(100 * summary.censoring_rate).toFixed(1)}%`,
+      "n_censored / n_cells",
+    ],
+    ["cap verdict", escapeHtml(verdict), "ADR 0009"],
+    [
+      "per-space retention at each k",
+      reportMissing(
+        "the per-space censoring sections are not plumbed into the payload yet, " +
+        "so this row reports the cohort's matrix and not each space's own retention"
+      ),
+      "PC-003 phase 2",
+    ],
+  ];
+  return reportRows(rows);
+};
+
 REPORT_FILLERS.geometry = () => {
   const box = document.createElement("div");
   box.className = "scroll-x";

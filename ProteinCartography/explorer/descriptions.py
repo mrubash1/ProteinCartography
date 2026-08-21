@@ -446,10 +446,14 @@ PANEL_DESCRIPTIONS = {
             "not of the protein. It correlates with length, which is why it is "
             "overlay-only and may never enter a geometry (ADR 0003).",
             "This panel reports the matrix this cohort was actually built "
-            "from. It does not compare a capped run against an exhaustive one "
-            "-- that needs two reductions and a co-registration, and drawing "
-            "two independent UMAP layouts side by side without one would "
-            "invite exactly the misreading 6.04 warns about.",
+            "from. Where a run declares a capped twin it ALSO carries the "
+            "comparison against it -- but as numbers, never as a displacement. "
+            "Drawing the two layouts side by side is refused on measurement: a "
+            "map's censored twin scores 0.968 Procrustes disparity against it, "
+            "worse than an entirely different modality, and about thirty times "
+            "the reducer's own seed noise. So censoring replaces the frame "
+            "rather than moving points, and arrows between the two would invite "
+            "exactly the misreading 6.04 warns about (FOLLOWUPS #63).",
         ],
         sources=["matrix_io.py:530", "docs/adr/0009", "docs/adr/0003"],
     ),

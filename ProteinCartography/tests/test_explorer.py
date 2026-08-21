@@ -1275,19 +1275,45 @@ def test_the_report_panel_carries_its_sections_into_the_payload():
 def test_every_refused_report_section_names_what_would_fill_it():
     """A refusal a reader cannot act on is a blank with extra words.
 
-    Two of the five sections are refusals here: this pipeline reads no
-    retrieval stage and builds no phylogeny. Each has to name the input, and
-    naming it is what turns the refusal into a question someone can answer.
+    ONE of the five sections is a refusal: this pipeline builds no phylogeny.
+    `coverage` used to be the second and should never have been -- its refusal
+    said "no payload key carries it" while `active.censoring.summary` carried
+    it, and the censoring panel drew the number two sheets away.
     """
     from explorer.panels import REPORT_SECTIONS
 
     refused = [s for s in REPORT_SECTIONS if s.get("refused")]
-    assert {s["section_id"] for s in refused} == {"coverage", "rate"}
+    assert {s["section_id"] for s in refused} == {"rate"}
     for section in refused:
         assert section[
             "fills_in"
         ], f"{section['section_id']} refuses without saying what would fill it"
         assert len(section["refused"]) > 80, "a one-line refusal names no input"
+
+
+def test_no_report_section_refuses_on_a_key_the_payload_actually_supplies():
+    """The `coverage` defect as an invariant rather than as one fixed instance.
+
+    A refusal is a claim about what this run does not have. When the payload
+    does have it, the claim is false ON THE PAGE, and no test that pins a set
+    of section ids would notice -- the set stays the same shape while the
+    sentence inside it rots. So this asserts the relationship instead: nothing
+    may refuse while naming a payload key that `build_payload` advertises.
+    """
+    from explorer.panels import REPORT_SECTIONS
+
+    # section_id -> the payload key that would fill it. Kept here rather than on
+    # the section so the mapping is a test's opinion about the pipeline, not
+    # something the shipped catalogue asserts about itself.
+    FILLED_BY = {"coverage": "censoring", "geometry": "diagnostics", "map": "spaces"}
+    supplied = {"censoring", "diagnostics", "spaces", "matrix", "records"}
+    for section in REPORT_SECTIONS:
+        key = FILLED_BY.get(section["section_id"])
+        if key and key in supplied:
+            assert not section.get("refused"), (
+                f"{section['section_id']} refuses, but build_payload supplies "
+                f"{key!r} -- the refusal is false on any page that has it"
+            )
 
 
 def test_the_template_renders_the_report_in_payload_order_not_by_lookup():

@@ -594,14 +594,10 @@ REPORT_SECTIONS = (
         "section_id": "coverage",
         "title": "2. Retrieval coverage",
         "lead": "How much of the all-vs-all comparison was actually measured.",
-        "refused": (
-            "the explorer does not read the retrieval stage. The per-query cap's "
-            "censored fraction is computed and written to the tmscore block's "
-            "manifest, and no payload key carries it -- so this section refuses "
-            "rather than report a coverage of 100%"
-        ),
         "fills_in": (
-            "the censoring panel's input: both matrices for one cohort, plumbed " "into the payload"
+            "already filled for any cohort whose structural space has a matrix; "
+            "the per-space retention still needs each space's own censoring "
+            "section plumbed into the payload"
         ),
     },
     {
