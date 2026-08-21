@@ -45,7 +45,26 @@ __all__ = [
 #: Only these keys of a diagnostics report travel to the browser. The report
 #: also carries per-protein tables that would multiply the file size for
 #: something no panel draws.
-SUMMARY_SECTIONS = ("redundancy", "negative_controls", "resolution_sweep", "partition")
+SUMMARY_SECTIONS = (
+    "redundancy",
+    "negative_controls",
+    "resolution_sweep",
+    "partition",
+    "censoring",
+)
+
+#: Keys stripped out of a `censoring` entry before it travels. The section is
+#: the one diagnostic written PER SPACE about the matrix a space was built from,
+#: and it is the only one carrying a table rather than a summary:
+#: `cross_cluster_table` is one row per ORDERED cluster pair, so it grows as the
+#: square of the cluster count -- 49 rows at k=7, 64 at k=8, 36 at k=6 on the
+#: two shipped cohorts -- and no panel draws it. Its reduction,
+#: `cross_cluster_edge_retention`, is what the page reads, and it is six numbers.
+#:
+#: Named per key rather than by an allow-list on purpose: a NEW key added to the
+#: censoring diagnostic should reach the browser by default and be noticed, not
+#: be silently dropped by a list nobody updated.
+CENSORING_DROPPED_KEYS = ("cross_cluster_table",)
 
 
 def read_embedding(path: str) -> tuple:
@@ -637,6 +656,13 @@ def build_payload(config, output_dir: str, analysis_name: str = "analysis") -> E
             continue
         diagnostics = _read_json(os.path.join(directory, layout.DIAGNOSTICS_FILENAME)) or {}
         summary = {k: diagnostics[k] for k in SUMMARY_SECTIONS if k in diagnostics}
+        # The same shape as the faithfulness trim below: keep the section, drop
+        # the one key inside it that is a table rather than a summary.
+        if summary.get("censoring"):
+            summary["censoring"] = [
+                {k: v for k, v in entry.items() if k not in CENSORING_DROPPED_KEYS}
+                for entry in summary["censoring"]
+            ]
         summary["stability"] = diagnostics.get("stability")
         summary["faithfulness"] = [
             {

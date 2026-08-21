@@ -3181,7 +3181,10 @@ def test_a_diagnostic_sentence_reaches_the_rendered_page():
 
     html = render({"spaces": []}, plotly_js="", title="t")
     assert "function diagnosticsBlock(space)" in html
-    assert "entry.warnings" in html, "nothing reads a section's warnings"
+    # Read under BOTH names a diagnostic module uses -- see
+    # test_the_censoring_sections_prose_is_read_under_its_own_key.
+    assert '"warnings"' in html, "nothing reads a section's warnings"
+    assert "entry[prose]" in html, "nothing reads a section's prose at all"
     shell = html[html.index("function panelShell(space)") : html.index("PANELS.scatter = {")]
     assert "diagnosticsBlock(space)" in shell, "the space panel never calls it"
 
@@ -3330,3 +3333,134 @@ def test_a_space_with_no_sweep_adds_nothing_to_its_cluster_count():
     html = render({"spaces": []}, plotly_js="", title="t")
     block = html[html.index("function sweepNote(space)") :][:1400]
     assert 'if (!steps.length) return "";' in block
+
+
+# ==========================================================================
+# The per-space censoring section. Distinct from the cohort-level `censoring`
+# key, which `_censoring` builds from ONE matrix -- the resolved structural
+# space's. This one is written per space by `diagnose_space` about the matrix
+# that space was actually built from, which is how actin_B's `structure_capped`
+# can report 82.5% censoring on a cohort whose top-level summary says 0.0.
+# ==========================================================================
+
+
+def test_each_spaces_own_censoring_section_reaches_the_browser():
+    """Before this it did not travel at all, and the report said so.
+
+    `SUMMARY_SECTIONS` named four sections and this was not one of them, so the
+    coverage table printed "per-space retention at each k: not in this payload".
+    """
+    from explorer.payload import SUMMARY_SECTIONS
+
+    assert "censoring" in SUMMARY_SECTIONS
+
+
+def test_the_cluster_pair_table_is_dropped_and_its_reduction_is_kept():
+    """`cross_cluster_table` is one row per ORDERED cluster pair.
+
+    It grows as the square of the cluster count -- 49 rows at k=7 on chymo_A1's
+    structure space, 64 at k=8 and 36 at k=6 on actin_B -- and no panel draws
+    it. `cross_cluster_edge_retention` is its reduction and is six numbers.
+
+    The drop is keyed by NAME, not by an allow-list: a new key added to the
+    censoring diagnostic should arrive and be noticed rather than be dropped
+    silently by a list nobody updated.
+    """
+    from explorer.payload import CENSORING_DROPPED_KEYS
+
+    assert CENSORING_DROPPED_KEYS == ("cross_cluster_table",)
+    assert "cross_cluster_edge_retention" not in CENSORING_DROPPED_KEYS
+
+
+def test_the_coverage_row_reports_retention_instead_of_refusing_to():
+    """The refusal said the sections were not plumbed into the payload.
+
+    That was true when it was written and is false now, which is the shape this
+    branch keeps catching: a refusal that outlives its reason reads as a
+    limitation of the method rather than of one commit.
+    """
+    from explorer.template import render
+
+    html = render({"spaces": []}, plotly_js="", title="t")
+    assert "not plumbed into the payload yet" not in html, "the stale refusal survives"
+    assert "PC-003 phase 2" not in html, "the page still cites the ticket as its excuse"
+    assert "retentionSummaryCell()" in html
+
+
+def test_retention_is_never_shown_without_the_cluster_count_it_was_measured_at():
+    """A retention figure at k=6 and one at k=10 are not comparable.
+
+    actin_B's capped twin reports at k=6 and its fused_late at k=8 in the same
+    table, so the count is not decoration here -- it is what stops the column
+    from being read as a ranking.
+    """
+    from explorer.template import render
+
+    html = render({"spaces": []}, plotly_js="", title="t")
+    cell = html[html.index("function retentionCell(space)") :][:2200]
+    assert "retention.n_clusters" in cell
+    summary = html[html.index("function retentionSummaryCell()") :][:900]
+    assert "retention.n_clusters" in summary
+
+
+def test_the_ratio_refuses_rather_than_printing_nan():
+    """`between_over_within` divides by the within figure.
+
+    A space with no measured within-cluster pair yields Infinity or NaN, and
+    "NaN" printed beside two real fractions reads as a measurement that failed
+    rather than one that could not be formed.
+    """
+    from explorer.template import render
+
+    html = render({"spaces": []}, plotly_js="", title="t")
+    cell = html[html.index("function retentionCell(space)") :][:2200]
+    assert "Number.isFinite(within)" in cell
+    assert "no ratio: nothing was measured within a cluster" in cell
+
+
+def test_the_per_space_censoring_is_named_apart_from_the_cohorts():
+    """`active.censoring` is the cohort's; `spaceCensoring` is one space's.
+
+    On actin_B they disagree completely -- 0.0% against 82.5% -- because the
+    cohort summary is built from the resolved structural space's matrix and the
+    capped twin is built from another. A call site that took one for the other
+    would print a true number about the wrong thing.
+    """
+    from explorer.template import render
+
+    html = render({"spaces": []}, plotly_js="", title="t")
+    assert "function spaceCensoring(space)" in html
+    block = html[html.index("function spaceCensoring(space)") :][:200]
+    assert "active.censoring" not in block
+
+
+def test_the_censoring_sections_prose_is_read_under_its_own_key():
+    """Four modules write `warnings`; censoring writes `interpretation`.
+
+    Reading only the first name would silently drop every sentence censoring
+    writes -- including the only ones on either shipped cohort that describe a
+    matrix that really was censored.
+    """
+    from explorer.template import render
+
+    html = render({"spaces": []}, plotly_js="", title="t")
+    assert 'const PROSE_KEYS = ["warnings", "interpretation"];' in html
+    block = html[html.index("function diagnosticsBlock(space)") :][:2400]
+    assert "PROSE_KEYS.forEach" in block
+    assert "entry[prose]" in block
+
+
+def test_the_censoring_all_clear_is_recognised_as_one():
+    """ "No censoring problems detected in this matrix." is not a warning.
+
+    It fires on every exhaustive matrix, which is every space carrying this
+    section on both cohorts except the capped twin. Left unrecognised it would
+    be filed and coloured as a hazard.
+    """
+    from explorer.template import render
+
+    html = render({"spaces": []}, plotly_js="", title="t")
+    assert "const ALL_CLEAR_PHRASES = [" in html
+    listed = html[html.index("const ALL_CLEAR_PHRASES = [") :][:400]
+    assert "No censoring problems detected" in listed
+    assert "the layout is faithful at k=" in listed

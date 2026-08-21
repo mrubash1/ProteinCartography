@@ -798,7 +798,14 @@ const DIAGNOSTIC_SECTIONS = [
   ["resolution_sweep", "resolution sweep"],
   ["partition", "partition"],
   ["negative_controls", "negative controls"],
+  ["censoring", "what was never measured"],
 ];
+
+//: Four diagnostic modules put their prose under `warnings`. The censoring
+//: module puts the same thing under `interpretation`, and reading only the first
+//: name would have silently dropped every sentence it writes -- including the
+//: only ones on either shipped cohort that describe real censoring.
+const PROSE_KEYS = ["warnings", "interpretation"];
 
 //: `embedding.warnings()` appends this when NOTHING fired. It is an all-clear,
 //: not a warning, and it is present on 4 of the 11 space/cohort combinations
@@ -806,7 +813,19 @@ const DIAGNOSTIC_SECTIONS = [
 //: itself on more than a third of the page. Two consequences, both deliberate:
 //: the disclosure is titled by what it CONTAINS, and an all-clear is marked so
 //: it is not styled as a hazard.
-const ALL_CLEAR = "the layout is faithful at k=";
+const ALL_CLEAR_PHRASES = [
+  // `embedding.warnings()` when nothing fired.
+  "the layout is faithful at k=",
+  // `censoring`'s own, on every exhaustive matrix.
+  "No censoring problems detected",
+];
+
+// One predicate for both call sites -- the count in the summary and the class on
+// the line. Two `indexOf` chains would eventually disagree about what an
+// all-clear is, and the summary would then count a sentence it did not mark.
+function isAllClear(text) {
+  return ALL_CLEAR_PHRASES.some((phrase) => String(text).indexOf(phrase) !== -1);
+}
 
 // Every sentence the run's diagnostics wrote about ONE space, in one collapsed
 // disclosure under that space's panel.
@@ -831,11 +850,13 @@ function diagnosticsBlock(space) {
     const lines = [];
     entries.forEach((entry) => {
       if (!entry || typeof entry !== "object") return;
-      (entry.warnings || []).forEach((text) => lines.push(String(text)));
+      PROSE_KEYS.forEach((prose) => {
+        (entry[prose] || []).forEach((text) => lines.push(String(text)));
+      });
     });
     if (!lines.length) return;
     total += lines.length;
-    cleared += lines.filter((t) => t.indexOf(ALL_CLEAR) !== -1).length;
+    cleared += lines.filter(isAllClear).length;
     groups.push({ label, lines });
   });
   if (!total) return null;
@@ -857,7 +878,7 @@ function diagnosticsBlock(space) {
     const list = document.createElement("ul");
     lines.forEach((text) => {
       const item = document.createElement("li");
-      if (text.indexOf(ALL_CLEAR) !== -1) item.className = "cleared";
+      if (isAllClear(text)) item.className = "cleared";
       item.textContent = text;
       list.append(item);
     });
@@ -1982,6 +2003,11 @@ const GEOMETRY_COLUMNS = [
     },
   },
   {
+    label: "between/within retention",
+    note: "measured pairs, at this space's own k",
+    cell: (s) => retentionCell(s),
+  },
+  {
     label: "control margin",
     cell: (s) => {
       const controls = (s.diagnostics || {}).negative_controls || {};
@@ -2040,6 +2066,104 @@ function firstOf(space, key) {
 // judgement the diagnostics already wrote in words, and it is one click away in
 // the fold-out on the space's own panel; restating it here would be the same
 // sentence at two places with nothing keeping them in step.
+// A space's OWN censoring section, which is not the cohort's.
+//
+// `active.censoring` is built from ONE matrix -- the resolved structural space's
+// -- and describes the cohort. This one is written per space by
+// `diagnose_space`, about the matrix that space was actually built from, and the
+// two can disagree completely: on actin_B the cohort summary says 0.0% censored
+// while `structure_capped` says 82.5%, because that space is built from the
+// capped twin. Named apart from `active.censoring` deliberately, so no call site
+// can quietly take one for the other.
+function spaceCensoring(space) {
+  return firstOf(space, "censoring");
+}
+
+// Retention within clusters against retention between them, at that space's own
+// cluster count.
+//
+// The number this exists for: censoring falls hardest on between-cluster pairs,
+// because those carry the weakest scores and drop off a top-N list first. So
+// clusters look CRISPER as censoring worsens while their arrangement relative to
+// one another decays -- the map gets more convincing and less true at once, and
+// that is invisible in the map itself. On actin_B's capped twin the ratio is
+// 0.359: between-cluster pairs survive at barely a third the rate of
+// within-cluster ones.
+//
+// The cluster count travels with it because a retention figure at k=6 and one at
+// k=10 are not comparable, which is this repo's standing rule in the one place a
+// reader could otherwise forget it.
+function retentionCell(space) {
+  const censoring = spaceCensoring(space);
+  // Three different absences, and the page's own rule is that a number which
+  // CANNOT exist here reads differently from one the payload merely does not
+  // carry (`withheldWord` against `reportMissing`). `diagnose_space` writes this
+  // section only for a block whose features ARE the similarity matrix -- rows
+  // and columns the same protids in the same order -- so a space with no
+  // section was never built from a matrix and has no pair that could have gone
+  // unmeasured. That is not missing data; it is a question that does not apply.
+  if (!censoring) {
+    return withheldWord(
+      "no matrix",
+      "this space is not built from a similarity-matrix block, so no pair of " +
+        "proteins could have been left unmeasured and there is nothing for a " +
+        "per-query cap to have removed"
+    );
+  }
+  if (censoring.skipped) return reportMissing(censoring.skipped);
+  const retention = censoring.cross_cluster_edge_retention;
+  if (!retention) {
+    return reportMissing(
+      "this space carries a censoring section but no cross-cluster retention, " +
+      "which needs the space's clusters as well as its matrix"
+    );
+  }
+  const within = retention.within_retention;
+  const between = retention.between_retention;
+  // Refuse rather than print NaN. `between_over_within` divides by the within
+  // figure, so a space with no measured within-cluster pair yields Infinity or
+  // NaN -- and a ratio printed as "NaN" beside two real fractions reads as a
+  // measurement that failed rather than one that could not be formed.
+  if (!Number.isFinite(within) || !Number.isFinite(between) || !within) {
+    return (
+      `${fmtValue(between)} between / ${fmtValue(within)} within` +
+      `<span class="sweep">no ratio: nothing was measured within a cluster, ` +
+      `so there is no denominator</span>`
+    );
+  }
+  return (
+    `${fmtValue(retention.between_over_within)}` +
+    `<span class="sweep">${fmtValue(between)} between / ${fmtValue(within)} ` +
+    `within, at k=${fmtValue(retention.n_clusters)}</span>`
+  );
+}
+
+// One line for the coverage table: which spaces carry their own censoring
+// section, and what each one's retention ratio is. The row it replaces refused,
+// and said the sections were not plumbed into the payload -- which was true when
+// it was written and is not now.
+function retentionSummaryCell() {
+  const measured = (spaces || []).filter(
+    (space) => (spaceCensoring(space) || {}).cross_cluster_edge_retention
+  );
+  if (!measured.length) {
+    return withheldWord(
+      "no matrix space",
+      "no space in this cohort is built from a similarity-matrix block, so " +
+        "there is no retention to report"
+    );
+  }
+  return measured
+    .map((space) => {
+      const retention = spaceCensoring(space).cross_cluster_edge_retention || {};
+      const ratio = Number.isFinite(retention.between_over_within)
+        ? fmtValue(retention.between_over_within)
+        : "no ratio";
+      return `${escapeHtml(space.space_id)} ${ratio} at k=${fmtValue(retention.n_clusters)}`;
+    })
+    .join("<br>");
+}
+
 function sweepNote(space) {
   const sweep = (space.diagnostics || {}).resolution_sweep || {};
   const steps = sweep.steps || [];
@@ -2147,11 +2271,8 @@ REPORT_FILLERS.coverage = () => {
     ["cap verdict", escapeHtml(verdict), "ADR 0009"],
     [
       "per-space retention at each k",
-      reportMissing(
-        "the per-space censoring sections are not plumbed into the payload yet, " +
-        "so this row reports the cohort's matrix and not each space's own retention"
-      ),
-      "PC-003 phase 2",
+      retentionSummaryCell(),
+      "diagnostics.censoring per space",
     ],
   ];
   return reportRows(rows);
