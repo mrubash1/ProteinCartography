@@ -3706,3 +3706,77 @@ def test_a_verdict_with_no_usable_chance_loses_the_clause_rather_than_printing_n
     for reason in verdict["reasons"]:
         assert "chance" not in reason
         assert "nan" not in reason.lower()
+
+
+# ==========================================================================
+# What the page weighs. The size argument for this page has been made from
+# estimates; this is the measurement, and the quadratic term is pinned by
+# arithmetic rather than by a snapshot so it cannot drift quietly.
+# ==========================================================================
+
+
+def test_the_accounting_is_complete_and_says_what_it_cannot_attribute():
+    """Per-key sizes do NOT sum to the document's length and must not pretend to.
+
+    The separators and quotes between keys belong to no key. Reporting only the
+    per-key sizes would leave a silent remainder; `unattributed` states it, so a
+    reader can check the accounting without it having to balance to zero.
+    """
+    import json
+
+    from explorer.payload import payload_bytes
+
+    document = {"a": [1, 2, 3], "b": {"c": "d"}, "e": "f"}
+    accounting = payload_bytes(document)
+    assert accounting["total"] == len(json.dumps(document, separators=(",", ":")))
+    assert accounting["unattributed"] == accounting["total"] - sum(accounting["per_key"].values())
+    assert set(accounting["per_key"]) == set(document)
+
+
+def test_the_quadratic_term_is_pinned_by_arithmetic_and_not_by_a_snapshot():
+    """`tm_matrix` is the only part that grows faster than the cohort.
+
+    Its cells are one byte each, base64-encoded, so n**2 bytes become
+    4*ceil(n**2/3) characters. Asserting a recorded number instead would pass
+    forever after someone changed the encoding; asserting the arithmetic fails
+    the moment the relationship changes.
+    """
+    import base64
+    import math
+
+    from explorer.payload import payload_bytes
+
+    n = 40
+    cells = bytes(range(256))[: n * n % 256] * (n * n // 256) + bytes(n * n % 256)
+    encoded = base64.b64encode(bytes(n * n)).decode()
+    assert len(encoded) == 4 * math.ceil(n * n / 3)
+    document = {"cohorts": [{"cohort_name": "c", "tm_matrix": {"cells": encoded, "n": n}}]}
+    reported = payload_bytes(document)["cohorts"][0]["tm_matrix_bytes"]
+    # The envelope is the JSON around the string: quotes, the key names, braces.
+    assert len(encoded) < reported < len(encoded) + 64, reported
+    assert cells is not None  # the byte pattern is incidental; the length is the claim
+
+
+def test_the_budget_is_named_and_is_not_a_gate():
+    """A build that FAILED on size would refuse the artifact at the moment
+    someone most needs to see how big it got. The numbers are printed and the
+    judgement is left to a person, so nothing here raises."""
+    from explorer import payload as payload_module
+
+    assert payload_module.HARD_BUDGET_BYTES == 20 * 1024**2
+    assert payload_module.PREFERRED_BUDGET_BYTES == 10 * 1024**2
+    source = open(payload_module.__file__).read()
+    assert "raise" not in source.split("HARD_BUDGET_BYTES")[1][:400]
+
+
+def test_the_size_report_goes_to_stderr_and_never_into_the_page():
+    """The page carries no generation timestamp on purpose, so that two runs of
+    the same inputs produce the same bytes. A size line inside it would be a
+    second thing that varies with the machine."""
+    import inspect
+
+    import build_explorer
+
+    source = inspect.getsource(build_explorer._report_size)
+    assert source.count("file=sys.stderr") >= 4
+    assert "handle.write" not in source

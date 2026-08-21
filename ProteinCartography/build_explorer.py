@@ -84,6 +84,43 @@ def is_available() -> tuple:
     return True, "plotly is importable"
 
 
+def _report_size(document, html, plotly_js):
+    """Print what the page weighs, per part, against the recorded budget.
+
+    To STDERR and never to the file: the page carries no generation timestamp on
+    purpose, so that two runs of the same inputs produce the same bytes, and a
+    size line inside it would be a second thing that varies with the machine.
+
+    Nothing here fails a build. The budget is a number to be looked at, not a
+    gate -- refusing to produce the artifact is the wrong response to it being
+    large, since seeing how large is the reason someone asked.
+    """
+    from explorer.payload import HARD_BUDGET_BYTES, PREFERRED_BUDGET_BYTES, payload_bytes
+
+    def mb(value):
+        return f"{value / 1024**2:.2f} MB"
+
+    accounting = payload_bytes(document)
+    page = len(html.encode("utf-8"))
+    print(
+        f"[build_explorer] page {mb(page)} = plotly {mb(len(plotly_js))} "
+        f"+ payload {mb(accounting['total'])} + template",
+        file=sys.stderr,
+    )
+    for key, value in sorted(accounting["per_key"].items(), key=lambda kv: -kv[1])[:6]:
+        print(f"[build_explorer]   payload.{key}: {mb(value)}", file=sys.stderr)
+    for cohort in accounting["cohorts"]:
+        print(
+            f"[build_explorer]   cohort {cohort['cohort_name']}: {mb(cohort['bytes'])}"
+            f", of which tm_matrix {mb(cohort['tm_matrix_bytes'])}"
+            f" (n={cohort['n_proteins']})",
+            file=sys.stderr,
+        )
+    for name, limit in (("preferred", PREFERRED_BUDGET_BYTES), ("hard", HARD_BUDGET_BYTES)):
+        side = "under" if page <= limit else "OVER"
+        print(f"[build_explorer]   {side} the {name} budget of {mb(limit)}", file=sys.stderr)
+
+
 def main() -> int:
     args = parse_args()
     available, explanation = is_available()
@@ -135,7 +172,9 @@ def main() -> int:
     if len(cohorts) > 1:
         document["cohorts"] = cohorts
 
-    html = render(document, get_plotlyjs(), title)
+    plotly_js = get_plotlyjs()
+    html = render(document, plotly_js, title)
+    _report_size(document, html, plotly_js)
     os.makedirs(os.path.dirname(os.path.abspath(args.output)) or ".", exist_ok=True)
     with open(args.output, "w") as handle:
         handle.write(html)

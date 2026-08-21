@@ -37,10 +37,24 @@ from spaces import layout
 __all__ = [
     "SpacePayload",
     "ExplorerPayload",
+    "HARD_BUDGET_BYTES",
+    "PREFERRED_BUDGET_BYTES",
     "build_payload",
+    "payload_bytes",
     "read_embedding",
     "space_verdict",
 ]
+
+#: What the page is allowed to weigh. Matt's budget, recorded in POST-PLAN: a
+#: hard ceiling of 20 MB and a preferred ceiling of 10 MB for the whole file,
+#: Plotly included.
+#:
+#: Named here rather than asserted anywhere, deliberately. A build that FAILS on
+#: size would refuse to produce the artifact a reader needs at exactly the moment
+#: the reader most needs to see how big it got; `build_explorer` prints which
+#: side of each line the page landed on and leaves the judgement to a person.
+HARD_BUDGET_BYTES = 20 * 1024**2
+PREFERRED_BUDGET_BYTES = 10 * 1024**2
 
 #: Only these keys of a diagnostics report travel to the browser. The report
 #: also carries per-protein tables that would multiply the file size for
@@ -1024,6 +1038,53 @@ def _pipeline(config, spaces: list) -> dict:
     if not blocks and not rows:
         return {}
     return {"blocks": blocks, "rows": rows}
+
+
+def payload_bytes(document: dict) -> dict:
+    """Compact-JSON size of a payload, per top-level key and per cohort.
+
+    Written because the page's size argument has been made from estimates. The
+    quadratic term -- `tm_matrix`, which is n**2 bytes base64-encoded, so
+    4*ceil(n**2/3) characters -- is the only part that grows faster than the
+    cohort, and it is the part an estimate gets wrong soonest.
+
+    Sizes are `len(json.dumps(value, separators=(",", ":")))` per key. They do
+    NOT sum to the length of the whole document: the separators and quotes
+    between keys belong to no key. `total` is the real serialized length and
+    `unattributed` is the difference, stated rather than hidden, so a reader can
+    see the accounting is complete without it having to balance to zero.
+
+    Returns a plain dict so `build_explorer` can print it and a test can assert
+    on it, with no dependency on how either chooses to format it.
+    """
+    import json
+
+    def size(value) -> int:
+        return len(json.dumps(value, separators=(",", ":"), default=str))
+
+    per_key = {key: size(value) for key, value in document.items()}
+    total = size(document)
+    cohorts = []
+    for cohort in document.get("cohorts") or []:
+        cohorts.append(
+            {
+                "cohort_name": cohort.get("cohort_name"),
+                "bytes": size(cohort),
+                "tm_matrix_bytes": size(cohort.get("tm_matrix") or {}),
+                "n_proteins": len(
+                    (cohort.get("provenance") or {}).get("n_proteins", "")
+                    if isinstance((cohort.get("provenance") or {}).get("n_proteins"), str)
+                    else ""
+                )
+                or (cohort.get("provenance") or {}).get("n_proteins"),
+            }
+        )
+    return {
+        "total": total,
+        "per_key": per_key,
+        "unattributed": total - sum(per_key.values()),
+        "cohorts": cohorts,
+    }
 
 
 def _thresholds() -> dict:
