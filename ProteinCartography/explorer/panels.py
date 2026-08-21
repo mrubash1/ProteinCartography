@@ -562,8 +562,11 @@ def _discordance() -> dict:
             for seen, cause, test, effect in DISCORDANCE_PATTERNS
         ],
         "note": (
-            "The middle column is the one that matters: it is the test that "
-            "separates a cause from its lookalike. Two of the seven resolve in "
+            "The `how to tell it apart` column is the one that matters: it is "
+            "the test that separates a cause from its lookalike, and it is "
+            "third of four here rather than in the middle -- this table adds "
+            "the effect column the source's three did not have. Two of the "
+            "seven resolve in "
             "opposite directions on which tree to trust, so a cause read without "
             "its test is a conclusion chosen rather than measured. Nothing in "
             "this pipeline produces a gene tree, so none of these can be detected "

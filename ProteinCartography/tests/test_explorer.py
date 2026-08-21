@@ -1616,7 +1616,7 @@ def test_the_cards_renderer_reads_the_plates_and_answers_the_blank_count():
 
 
 def test_all_seven_discordance_patterns_carry_a_test_that_separates_them():
-    """The middle column is the panel.
+    """The test column is the panel.
 
     Two patterns -- sequence saturation and structural noise -- resolve in
     OPPOSITE directions on which tree to trust, and both present as "the two
@@ -2998,3 +2998,99 @@ def test_the_stability_foldout_says_the_number_reads_two_ways(built):
     assert (
         len(PANEL_DESCRIPTIONS["stability_map"]["hazards"]) == 1
     ), "the two-ways sentence belongs in paragraphs, not hazards"
+
+
+#: Spelled numbers the inventory's question could plausibly need. The map is
+#: deliberately small: a count outside it fails loudly rather than silently
+#: skipping the assertion, which is how a guard ends up checking nothing.
+INVENTORY_COUNT_WORDS = {
+    6: "Six",
+    7: "Seven",
+    8: "Eight",
+    9: "Nine",
+    10: "Ten",
+    11: "Eleven",
+    12: "Twelve",
+}
+
+
+def test_the_inventorys_hand_typed_count_is_pinned_to_the_guard_it_reads():
+    """The rows are read from the guard; the word "Eight" above them is typed.
+
+    Both existing tests over this panel assert the SET of signals matches
+    `NOT_FUSABLE_PROVIDERS`, and both keep passing if a ninth signal is added
+    to the guard -- while the question above the table goes on saying eight.
+    A panel that miscounts its own rows reads as a check and is not one.
+    """
+    from config_schema import NOT_FUSABLE_PROVIDERS
+    from explorer.panels import CATALOGUE
+
+    entry = next(p for p in CATALOGUE if p.panel_id == "signal_inventory")
+    count = len(set(NOT_FUSABLE_PROVIDERS.values()))
+    word = INVENTORY_COUNT_WORDS.get(count)
+    assert word, f"the guard names {count} signals and this test has no word for it"
+    assert entry.question.startswith(f"{word} quantities"), (
+        f"the guard now names {count} signals, so the question should open "
+        f"{word!r} -- it opens {entry.question[:24]!r}"
+    )
+    assert len(entry.content["rows"]) == count
+
+
+def test_a_panel_drawn_on_another_sheet_says_where_it_went():
+    """`contributions` was catalogued on mechanics and appeared on no sheet.
+
+    `BUILT_ELSEWHERE` stops the mechanics body from drawing it as a card --
+    correctly, because it is already drawn as the `contribution:` strip inside
+    every fused map. The effect was that the mechanics sheet counted a panel it
+    never showed and never said where it had gone.
+
+    Asserted against CODE, not against the comment that explains it: a bare
+    `DRAWN_AT` also matches the prose above the constant.
+    """
+    from explorer.template import render
+
+    html = render({"spaces": []}, plotly_js="", title="t")
+    assert "const DRAWN_AT = {" in html, "the pointer table is not in the page"
+    assert "DRAWN_AT[p.panel_id]" in html, "the sheet body does not select pointers"
+    assert "DRAWN_AT[panel.panel_id]" in html, "the pointer text is never read"
+    assert "contributions:" in html[html.index("const DRAWN_AT = {") :][:600]
+
+
+def test_the_pointer_is_keyed_on_panel_id_and_never_on_panel_type():
+    """`panel_type` is shared; `panel_id` is not.
+
+    `BUILT_ELSEWHERE` is keyed on the type on purpose -- it asks "does an older
+    renderer already draw this kind". The pointer asks a different question,
+    "where did THIS panel go", and a second panel of type `contributions` would
+    inherit a false answer if the pointer were keyed the same way.
+    """
+    from explorer.template import render
+
+    html = render({"spaces": []}, plotly_js="", title="t")
+    assert "DRAWN_AT[p.panel_type]" not in html
+    assert "DRAWN_AT[panel.panel_type]" not in html
+    assert (
+        "p.drawable && DRAWN_AT[p.panel_id]" in html
+    ), "the sheet body no longer selects pointer panels by panel_id"
+
+
+def test_the_pointer_card_is_not_counted_as_an_empty_panel():
+    """Nothing is missing on a pointer card, so it must not read as a refusal.
+
+    The `(N empty)` counter filters on `BUILT_ELSEWHERE` before counting, and
+    the pointer deliberately does not change that filter -- so the mechanics
+    tab's count is the same number before and after this card exists. It also
+    must not borrow the `.awaiting` hatch, which is the page's visual language
+    for an input that is absent.
+    """
+    from explorer.template import render
+
+    html = render({"spaces": []}, plotly_js="", title="t")
+    counter = html[html.index("const blank = sheetPanels") - 700 :][:900]
+    assert "!BUILT_ELSEWHERE.has(p.panel_type)" in counter, (
+        "the empty counter stopped excluding panels drawn elsewhere, so the "
+        "pointer card would now be counted as blank"
+    )
+    card = html[html.index("elsewhere.forEach((panel)") :][:400]
+    assert '"elsewhere"' in card
+    assert "awaitingBlock" not in card

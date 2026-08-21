@@ -120,6 +120,10 @@ button.on { background: var(--ink); color: #fff; border-color: var(--ink); }
   background: repeating-linear-gradient(45deg, #fcfcfd, #fcfcfd 9px, #f6f7f9 9px, #f6f7f9 18px); }
 /* The table must scroll inside its own box. Letting it size the page made the
    whole document scroll sideways on a narrow window. */
+/* A panel catalogued on one sheet and drawn on another says where it went.
+   Deliberately NOT the `.awaiting` hatch: nothing is missing here, so the card
+   must not be given the visual language of a refusal. */
+.elsewhere { padding: 12px 14px; font-size: 12px; color: var(--muted); }
 .scroll-x { overflow-x: auto; }
 table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
 th, td { text-align: left; padding: 5px 9px; border-bottom: 1px solid var(--line); }
@@ -710,6 +714,25 @@ const PANELS = {};
 //: Panel kinds drawn by a renderer that predates the catalogue, so the sheet
 //: body must not also draw them as cards.
 const BUILT_ELSEWHERE = new Set(["space_grid", "comparisons", "contributions"]);
+
+//: Where a panel the line above filters out is ACTUALLY drawn, keyed on
+//: panel_id. `contributions` is catalogued on the mechanics sheet, filtered out
+//: of that sheet's body, and drawn only inside the maps sheet -- so a reader on
+//: mechanics was told the panel exists (it counts toward the sheet's panel
+//: total) and never told where it went. It is excluded from the `(N empty)`
+//: counter and stays excluded: nothing is missing, so it must not be counted as
+//: blank.
+//:
+//: Keyed on panel_id and NOT on panel_type, deliberately. A future panel reusing
+//: the type would otherwise inherit a pointer to a place it is not drawn.
+//: `space_grid` and `comparisons` need no entry -- each is drawn on the sheet
+//: the reader is already looking at.
+const DRAWN_AT = {
+  contributions:
+    "Drawn on the maps sheet, as the contribution: strip under every fused " +
+    "map — each block's realized share is shown beside the map it apportions, " +
+    "rather than in a table away from it.",
+};
 
 // --- the fold-out --------------------------------------------------------
 // What a panel is plotting, in words, from `explorer/descriptions.py`. The
@@ -2093,7 +2116,14 @@ function renderSheet(sheetId) {
   const wanted = (active.panels || []).filter(
     (p) => p.sheet === sheetId && !BUILT_ELSEWHERE.has(p.panel_type)
   );
-  if (!wanted.length) {
+  // A panel drawn on another sheet still belongs in this one's catalogue --
+  // pointed at, not drawn twice. Only when it is drawable: a pointer to a strip
+  // no cohort renders would be a false statement, and the panel then stays
+  // hidden exactly as it was before this existed.
+  const elsewhere = (active.panels || []).filter(
+    (p) => p.sheet === sheetId && p.drawable && DRAWN_AT[p.panel_id]
+  );
+  if (!wanted.length && !elsewhere.length) {
     body.style.display = "none";
     return;
   }
@@ -2108,6 +2138,14 @@ function renderSheet(sheetId) {
     if (!panel.drawable) card.append(awaitingBlock(panel));
     else if (renderer) card.append(renderer.render(panel));
     else card.append(drawablePlaceholder(panel));
+    holder.append(card);
+  });
+  elsewhere.forEach((panel) => {
+    const card = panelCard(panel);
+    const note = document.createElement("div");
+    note.className = "elsewhere";
+    note.textContent = DRAWN_AT[panel.panel_id];
+    card.append(note);
     holder.append(card);
   });
   body.append(holder);
