@@ -2941,3 +2941,35 @@ def test_one_produced_key_is_declared_by_no_panel_at_all():
 
     declared = {n for s in CATALOGUE for n in s.needs}
     assert _producible_keys() - declared == {"overlays"}
+
+
+def test_no_panel_names_the_fident_aggregator_as_the_route_to_an_identity_table():
+    """`aggregate_foldseek_fraction_seq_identity.py` cannot serve these cohorts.
+
+    Two panels' prose used to name it as the route, and the second one got there
+    by way of a correction: PC-018 rewrote `fills_in` to stop pointing at a
+    document, and carried the broken route into the replacement. So this pins
+    the claim rather than the wording.
+
+    Why it cannot serve them: the script keeps only targets matching
+    `-F1-model` and pulls the protid out with `re.findall("AF-(.*)-F1-model")`,
+    while a cohort's own all-vs-all names targets like `A0A068F598.pdb` -- so
+    the filter drops every row. Its input is the Foldseek WEB API rather than a
+    local pass, `key_protids` is empty for both shipped cohorts, and its output
+    is a wide per-key-protid feature table rather than the pairwise table a
+    scatter needs.
+    """
+    from explorer.panels import CATALOGUE
+
+    for spec in CATALOGUE:
+        for field in ("requires", "fills_in"):
+            assert "aggregate_foldseek_fraction_seq_identity" not in getattr(spec, field), (
+                f"{spec.panel_id}.{field} names a route that cannot produce an "
+                "identity table for either shipped cohort"
+            )
+
+    identity = next(s for s in CATALOGUE if s.panel_id == "identity_vs_tm")
+    assert "superposition" in identity.requires, (
+        "the refusal no longer says the identity is read off a structural "
+        "superposition, which is the reason it is not an independent axis"
+    )

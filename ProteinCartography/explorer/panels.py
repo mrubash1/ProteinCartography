@@ -878,13 +878,17 @@ CATALOGUE = (
         question="Can this family carry a tree at all?",
         needs=("identity",),
         requires=(
-            "a sequence-identity table. This is the cheapest gap on the page: "
-            "aggregate_foldseek_fraction_seq_identity.py already exists and "
-            "foldseek emits fident, so it is one search pass per cohort"
+            "a pairwise sequence-identity table, which this cohort's build did "
+            "not keep: the exhaustive pass ran but its --format-output asked "
+            "for TM only, and the alignment databases it would be re-read from "
+            "were not retained. Note also that the identity foldseek emits is "
+            "read off a structural superposition, so it is not an independent "
+            "axis to plot structure against"
         ),
         fills_in=(
-            "one foldseek pass per cohort emitting fident, aggregated by "
-            "aggregate_foldseek_fraction_seq_identity.py, which already exists"
+            "re-running the exhaustive pass per cohort with fident added to "
+            "--format-output; the 3Di+AA alignment stage that produces it took "
+            "11.5 s and 9.2 s on these two cohorts"
         ),
     ),
     PanelSpec(
