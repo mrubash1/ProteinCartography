@@ -2271,17 +2271,35 @@ function sweepNote(space) {
 function overlaySourceCell() {
   const source = active.overlay_source || {};
   const offered = Object.keys(active.overlays || {}).length;
+  const dropped = source.dropped || [];
   if (!source.path) {
     return `${fmtValue(offered)} to colour by`;
   }
-  if (!source.found) {
+  // Three sources, and the difference is not cosmetic. "assembled" means the
+  // run has no aggregated features table and the vocabulary was rebuilt from
+  // the base tables -- which recovers the clusters and the UniProt columns but
+  // NOT anything `assess_pdbs` produces. Saying "no table, so the columns are
+  // absent" would be false there, and saying nothing would let a reader think
+  // pdb_confidence simply was not usable.
+  if (source.source === "none") {
     return (
       `${fmtValue(offered)} to colour by` +
-      `<span class="sweep">no aggregated features table, so every column it would ` +
-      `have carried is absent — looked for ${escapeHtml(source.path)}</span>`
+      `<span class="sweep">this run has no features table at all — looked for ` +
+      `${escapeHtml(source.path)}</span>`
     );
   }
-  const dropped = source.dropped || [];
+  if (source.source === "assembled") {
+    const from = (source.assembled_from || []).map(escapeHtml).join(" + ");
+    return (
+      `${fmtValue(source.n_kept)} of ${fmtValue(source.n_columns)} columns are usable ` +
+      `as a colour` +
+      `<span class="sweep">assembled from ${from}, because this run wrote no ` +
+      `aggregated features table. Anything <code>assess_pdbs</code> produces — ` +
+      `pdb_confidence, pdb_origin, pdb_chains — cannot be recovered this way and ` +
+      `is absent rather than unusable.</span>` +
+      droppedNote(dropped)
+    );
+  }
   return (
     `${fmtValue(source.n_kept)} of ${fmtValue(source.n_columns)} columns are usable ` +
     `as a colour` +
@@ -2289,18 +2307,28 @@ function overlaySourceCell() {
       ? `<span class="sweep">plus ${fmtValue(offered - source.n_kept)} from the ` +
         `blocks' own descriptors</span>`
       : "") +
-    (dropped.length
-      ? `<span class="sweep">not usable, nearest first: ` +
-        dropped
-          .slice(0, 5)
-          .map((d) => `${escapeHtml(d.column)} (${escapeHtml(d.why)})`)
-          .join(" · ") +
-        (dropped.length > 5
-          ? ` · and ${fmtValue(dropped.length - 5)} more, every one with more ` +
-            "categories than these"
-          : "") +
-        "</span>"
-      : "")
+    droppedNote(dropped)
+  );
+}
+
+// The columns that were there and could not be a colour, NEAREST MISS FIRST.
+// A run's table is mostly identifiers -- Entry, Sequence, AlphaFoldDB, thousands
+// of categories each -- which nobody would colour by and which would bury the
+// two entries a reader might actually want back. Sorted, the head is the
+// recoverable end: on chymo at full n it is Fragment, Pfam (131) and PDB (132).
+function droppedNote(dropped) {
+  if (!dropped.length) return "";
+  return (
+    `<span class="sweep">not usable, nearest first: ` +
+    dropped
+      .slice(0, 5)
+      .map((d) => `${escapeHtml(d.column)} (${escapeHtml(d.why)})`)
+      .join(" · ") +
+    (dropped.length > 5
+      ? ` · and ${fmtValue(dropped.length - 5)} more, every one with more ` +
+        "categories than these"
+      : "") +
+    "</span>"
   );
 }
 

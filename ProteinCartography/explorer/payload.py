@@ -557,8 +557,62 @@ class ExplorerPayload:
 MAX_OVERLAY_LEVELS = 24
 
 
-def _overlays_from_features(path: str, protids: list) -> tuple:
-    """Columns from `aggregated_features.tsv` a reader may color by.
+def _colour_frame(output_dir: str, analysis_name: str) -> tuple:
+    """The table the colour-by vocabulary is read from, and where it came from.
+
+    PREFERS `final_results/{analysis_name}_aggregated_features.tsv`, which is
+    what `aggregate_features` writes and what this used to read exclusively.
+
+    FALLS BACK to the base UniProt table joined to the Leiden clusters. That is
+    the subset of `aggregate_features`' job that colouring actually needs, and
+    both files are ones the explorer ALREADY reads -- `protein_features/
+    uniprot_features.tsv` for `records`, and that plus
+    `foldseek_clustering_results/leiden_features.tsv` for hover. Reading them
+    here as well is consistent with what the module already does, not a new
+    dependency.
+
+    THE FALLBACK IS THE COMMON CASE, NOT THE EXOTIC ONE. Every full production
+    run in this project's archive lacks the aggregated table -- none of them
+    wrote a `final_results/` directory at all. Without this, a 2530-protein
+    cohort offered four colours instead of thirteen and could not be coloured
+    by cluster, which is the first thing anyone asks a map to do.
+
+    What the fallback does NOT recover: `pdb_confidence`, `pdb_origin` and
+    `pdb_chains`, which come from `assess_pdbs`. Those stay missing and the
+    report says the table was assembled without them.
+    """
+    import pandas as pd
+
+    aggregated = _features_table(output_dir, analysis_name)
+    if os.path.exists(aggregated):
+        return pd.read_csv(aggregated, sep="\t"), {
+            "path": aggregated,
+            "found": True,
+            "source": "aggregate_features",
+        }
+
+    base = os.path.join(output_dir, "protein_features", "uniprot_features.tsv")
+    if not os.path.exists(base):
+        return None, {"path": aggregated, "found": False, "source": "none"}
+
+    frame = pd.read_csv(base, sep="\t")
+    joined = ["protein_features/uniprot_features.tsv"]
+    leiden = os.path.join(output_dir, "foldseek_clustering_results", "leiden_features.tsv")
+    if os.path.exists(leiden) and "protid" in frame.columns:
+        clusters = pd.read_csv(leiden, sep="\t")
+        if "protid" in clusters.columns:
+            frame = frame.merge(clusters, on="protid", how="left")
+            joined.append("foldseek_clustering_results/leiden_features.tsv")
+    return frame, {
+        "path": aggregated,
+        "found": False,
+        "source": "assembled",
+        "assembled_from": joined,
+    }
+
+
+def _overlays_from_features(frame, protids: list, seed: dict) -> tuple:
+    """Columns a reader may color by, from whatever table `_colour_frame` found.
 
     Reused rather than reinvented: the vocabulary is whatever the legacy table
     already carries, which is what ADR 0005 means by consuming `plotting_rules`
@@ -581,18 +635,12 @@ def _overlays_from_features(path: str, protids: list) -> tuple:
     which looks exactly like a run whose features table was empty". The path
     was fixed then. The silence was not, until now.
     """
-    report = {
-        "path": path,
-        "found": os.path.exists(path),
-        "n_columns": 0,
-        "n_kept": 0,
-        "dropped": [],
-    }
-    if not os.path.exists(path):
-        return {}, report
     import pandas as pd
 
-    frame = pd.read_csv(path, sep="\t")
+    report = dict(seed)
+    report.update({"n_columns": 0, "n_kept": 0, "dropped": []})
+    if frame is None:
+        return {}, report
     if "protid" not in frame.columns:
         report["dropped"].append({"column": "(whole table)", "why": "it has no protid column"})
         return {}, report
@@ -832,9 +880,8 @@ def build_payload(config, output_dir: str, analysis_name: str = "analysis") -> E
         index_order = index_order or protids
 
     comparisons = _read_comparisons(layout.summary_path(output_dir))
-    overlays, overlay_report = _overlays_from_features(
-        _features_table(output_dir, analysis_name), index_order or []
-    )
+    colour_frame, colour_seed = _colour_frame(output_dir, analysis_name)
+    overlays, overlay_report = _overlays_from_features(colour_frame, index_order or [], colour_seed)
     # The blocks' own columns, added after the feature table so a descriptor
     # never silently displaces a same-named column the table already had.
     for name, overlay in _block_column_overlays(output_dir, config, index_order or []).items():

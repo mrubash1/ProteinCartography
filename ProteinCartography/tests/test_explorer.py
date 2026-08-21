@@ -3945,9 +3945,11 @@ def test_the_overlay_builder_reports_what_it_could_not_use(tmp_path):
     A missing table and an unusable column both shorten the dropdown, and a
     reader cannot tell them apart -- or even notice -- from the dropdown alone.
     """
+    import pandas as pd
     from explorer.payload import _overlays_from_features
 
-    overlays, report = _overlays_from_features(str(tmp_path / "nope.tsv"), ["a", "b"])
+    seed = {"path": str(tmp_path / "nope.tsv"), "found": False, "source": "none"}
+    overlays, report = _overlays_from_features(None, ["a", "b"], seed)
     assert overlays == {}
     assert report["found"] is False
     assert report["path"].endswith("nope.tsv"), "the path that was missed is not reported"
@@ -3958,7 +3960,10 @@ def test_the_overlay_builder_reports_what_it_could_not_use(tmp_path):
         encoding="utf-8",
     )
     protids = [f"p{i}" for i in range(40)]
-    overlays, report = _overlays_from_features(str(table), protids)
+    frame = pd.read_csv(table, sep="\t")
+    overlays, report = _overlays_from_features(
+        frame, protids, {"path": str(table), "found": True, "source": "aggregate_features"}
+    )
     assert report["found"] is True
     assert report["n_columns"] == 3
     dropped = {d["column"]: d["why"] for d in report["dropped"]}
@@ -3987,8 +3992,10 @@ def test_the_page_says_why_the_colour_by_list_is_short():
     assert '["colour-by vocabulary", overlaySourceCell(), "aggregate_features"]' in html
     body = html[html.index("function overlaySourceCell()") :][:1600]
     assert "no aggregated features table" in body
+    # The dropped list is rendered by `droppedNote`, which every branch shares.
+    note = html[html.index("function droppedNote(dropped)") :][:900]
     assert (
-        "not usable, nearest first:" in body
+        "not usable, nearest first:" in note
     ), "the dropped list is not ordered by how close each column came to being usable"
 
 
@@ -4000,3 +4007,105 @@ def test_the_overlay_source_is_read_from_the_active_cohort():
     body = html[html.index("function overlaySourceCell()") :][:900]
     assert "active.overlay_source" in body
     assert "PAYLOAD.overlay_source" not in html
+
+
+# ==========================================================================
+# PC-035: a run with no aggregated features table is still colourable. Every
+# full production run in this project's archive lacks one -- none of them wrote
+# a final_results/ directory at all -- so this is the common case, not the
+# exotic one.
+# ==========================================================================
+
+
+def test_the_colour_frame_prefers_the_aggregated_table(tmp_path):
+    """When aggregate_features did run, nothing changes."""
+    from explorer.payload import _colour_frame
+
+    final = tmp_path / "final_results"
+    final.mkdir()
+    (final / "run_aggregated_features.tsv").write_text(
+        "protid\tLeidenCluster\nA\tLC0\n", encoding="utf-8"
+    )
+    frame, seed = _colour_frame(str(tmp_path), "run")
+    assert seed["found"] is True
+    assert seed["source"] == "aggregate_features"
+    assert list(frame["protid"]) == ["A"]
+
+
+def test_a_run_with_no_aggregated_table_is_assembled_from_what_it_does_have(tmp_path):
+    """uniprot_features LEFT JOIN leiden_features -- the subset colouring needs.
+
+    Both files are already read by this module for other purposes, so the
+    fallback adds no new dependency. Without it a 2530-protein cohort offered
+    four colours instead of thirteen and could not be coloured by cluster at
+    all, which is the first thing anyone asks a map to do.
+    """
+    from explorer.payload import _colour_frame
+
+    (tmp_path / "protein_features").mkdir()
+    (tmp_path / "protein_features" / "uniprot_features.tsv").write_text(
+        "protid\tOrganism\nA\tmouse\nB\trat\n", encoding="utf-8"
+    )
+    (tmp_path / "foldseek_clustering_results").mkdir()
+    (tmp_path / "foldseek_clustering_results" / "leiden_features.tsv").write_text(
+        "protid\tLeidenCluster\nA\tLC0\nB\tLC1\n", encoding="utf-8"
+    )
+    frame, seed = _colour_frame(str(tmp_path), "run")
+    assert seed["found"] is False, "it must not claim the aggregated table exists"
+    assert seed["source"] == "assembled"
+    assert "LeidenCluster" in frame.columns, "the cluster column is what this is for"
+    assert seed["assembled_from"] == [
+        "protein_features/uniprot_features.tsv",
+        "foldseek_clustering_results/leiden_features.tsv",
+    ]
+
+
+def test_the_assembly_survives_a_run_with_no_leiden_table(tmp_path):
+    """The join is optional; the base table alone still colours."""
+    from explorer.payload import _colour_frame
+
+    (tmp_path / "protein_features").mkdir()
+    (tmp_path / "protein_features" / "uniprot_features.tsv").write_text(
+        "protid\tOrganism\nA\tmouse\n", encoding="utf-8"
+    )
+    frame, seed = _colour_frame(str(tmp_path), "run")
+    assert seed["source"] == "assembled"
+    assert seed["assembled_from"] == ["protein_features/uniprot_features.tsv"]
+    assert "Organism" in frame.columns
+
+
+def test_a_run_with_nothing_to_colour_by_says_so_rather_than_raising(tmp_path):
+    """An empty output tree is a refusal, not a traceback."""
+    from explorer.payload import _colour_frame
+
+    frame, seed = _colour_frame(str(tmp_path), "run")
+    assert frame is None
+    assert seed["source"] == "none"
+    assert seed["found"] is False
+
+
+def test_an_assembled_vocabulary_says_so_and_names_what_it_cannot_recover():
+    """ "No aggregated features table, so the columns are absent" is FALSE once
+    the vocabulary is assembled from the base tables -- the columns are there.
+
+    What is genuinely gone is anything `assess_pdbs` produces, and a reader who
+    is not told that would conclude pdb_confidence was merely unusable.
+    """
+    from explorer.template import render
+
+    html = render({"spaces": []}, plotly_js="", title="t")
+    body = html[html.index("function overlaySourceCell()") :][:2600]
+    assert 'source.source === "assembled"' in body
+    assert "assembled from" in body
+    assert "assess_pdbs" in body
+    assert "cannot be recovered this way" in body
+    assert 'source.source === "none"' in body, "an empty tree needs its own branch"
+
+
+def test_the_dropped_note_is_built_once_for_every_branch():
+    """Two copies would eventually disagree about the ordering or the cut-off."""
+    from explorer.template import render
+
+    html = render({"spaces": []}, plotly_js="", title="t")
+    assert html.count("function droppedNote(dropped)") == 1
+    assert html.count("nearest first:") == 1, "the note is spelled out more than once"
