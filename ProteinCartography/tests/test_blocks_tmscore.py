@@ -8,7 +8,12 @@ not.
 
 import numpy as np
 import pytest
-from blocks.tmscore import PipelineContext, TMScoreProvider, validate_params
+from blocks.tmscore import (
+    MATRIX_FILENAME,
+    PipelineContext,
+    TMScoreProvider,
+    validate_params,
+)
 from matrix_io import CENSORED_FILL_TOKEN
 
 FILL = CENSORED_FILL_TOKEN
@@ -278,3 +283,61 @@ def test_is_available_does_not_depend_on_the_matrix_existing():
     available, reason = TMScoreProvider().is_available()
     assert available
     assert reason == ""
+
+
+# ---------------------------------------------------------------------------
+# Characterization of the unguarded `matrix_path` key.
+#
+# These tests DOCUMENT current behaviour; none of them endorses it. The key
+# lets a tmscore block point at any matrix on disk, ahead of the one the run
+# itself produced, and nothing validates it. It is recorded as FOLLOWUPS #65
+# rather than fixed, because it is legitimate outside the DAG and in use: both
+# shipped explorer cohort configs set it, having been built by direct
+# invocation rather than through the Snakefile. Removing it would break how
+# those cohorts are built; leaving it undocumented is how it stays invisible.
+# ---------------------------------------------------------------------------
+
+
+def test_matrix_path_param_is_honoured_ahead_of_the_run_s_own_matrix(tmp_path):
+    """The param wins over `ctx.path(...)`, which is what the run produced.
+
+    This is the whole of the trap: a block can be pointed at a matrix from a
+    different cohort entirely and the run will use it without complaint.
+    """
+    ctx = PipelineContext(output_dir=str(tmp_path))
+    provider = TMScoreProvider()
+
+    own = provider.matrix_path_for(ctx, {})
+    assert own.endswith(MATRIX_FILENAME), "with no param, the run's own matrix is used"
+
+    elsewhere = provider.matrix_path_for(ctx, {"matrix_path": "/somewhere/else.tsv"})
+    assert elsewhere == "/somewhere/else.tsv"
+    assert elsewhere != own
+
+
+def test_validate_params_neither_checks_matrix_path_nor_rejects_unknown_keys():
+    """The provider is called the authority on its own params and does not check.
+
+    `validate_params` inspects `representation` and `symmetrization` and nothing
+    else, so a matrix_path -- or a typo'd key of any kind -- passes untouched.
+    A path that does not exist is accepted here just as readily as one that does.
+    """
+    out = validate_params({"matrix_path": "/no/such/file.tsv", "typo_key": 1})
+    assert out["matrix_path"] == "/no/such/file.tsv"
+    assert out["typo_key"] == 1, "unknown keys are not rejected, only carried"
+
+
+def test_an_unknown_block_key_is_folded_into_params_rather_than_refused():
+    """The third layer, and the reason the first two are never reached.
+
+    `BlockConfig.from_dict` folds anything outside its known set into `params`,
+    deferring to the provider as "the authority on its own parameters". The
+    provider defers back by not checking. So `matrix_path` written at the block
+    level -- not under `params:` at all -- still arrives as a param.
+    """
+    from config_schema import BlockConfig
+
+    block = BlockConfig.from_dict(
+        "tm", {"provider": "tmscore", "matrix_path": "/pointed/elsewhere.tsv"}
+    )
+    assert block.params["matrix_path"] == "/pointed/elsewhere.tsv"
