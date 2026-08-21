@@ -669,8 +669,9 @@ def build_payload(config, output_dir: str, analysis_name: str = "analysis") -> E
     provenance = _provenance(output_dir, config, spaces)
     records = _records(output_dir, index_order or [])
     pipeline = _pipeline(config, spaces)
-    tm_matrix = _tm_matrix(config, spaces)
-    censoring = _censoring(config, spaces)
+    structural = _structural_space(config, spaces)
+    tm_matrix = _tm_matrix(config, spaces, structural)
+    censoring = _censoring(config, spaces, structural)
     comparison = _censoring_comparison(output_dir, config, spaces)
     if comparison:
         censoring = dict(censoring or {})
@@ -940,6 +941,36 @@ def _matrix_path_for(config, space_id: str) -> str:
     return ""
 
 
+def _structural_space(config, spaces: list) -> str:
+    """Which space the matrix and censoring panels describe, resolved from data.
+
+    Both panels used to default to the literal id ``"structure"``. That is a
+    naming convention, not a fact about a run: a cohort whose structural space
+    is called ``shape`` got an empty matrix panel and a censoring panel that
+    said its input did not exist, while the matrix sat on disk. Nothing failed,
+    because an absent payload key and an unbuildable panel look identical.
+
+    THE RULE, and the ordering in it is deliberate: the FIRST space in config
+    order carrying a block whose provider is ``tmscore`` and whose
+    ``matrix_path`` exists on disk. First-in-config-order is what keeps actin_B
+    on ``structure`` rather than on the capped twin ``structure_capped`` that
+    the censoring comparison adds -- both are tmscore blocks with real
+    matrices, so any rule that did not fix an order would pick between them by
+    dict insertion order, which is a property of how the config was typed.
+
+    Returns "" when no space qualifies, which makes both panels refuse with
+    their own reason rather than draw someone else's matrix.
+    """
+    for space_id in getattr(config, "spaces", {}) or {}:
+        space = next((s for s in spaces if s.space_id == space_id), None)
+        if space is None:
+            continue
+        path = _matrix_path_for(config, space_id)
+        if path and os.path.exists(path):
+            return space_id
+    return ""
+
+
 #: How many quantisation levels the heatmap ships. uint8 over the observed
 #: range: at n=367 the full matrix is 135 KB raw and about 180 KB in base64,
 #: against 1.1 MB for float64. See `_tm_matrix` for why the FULL matrix and not
@@ -947,7 +978,7 @@ def _matrix_path_for(config, space_id: str) -> str:
 _HEATMAP_LEVELS = 255
 
 
-def _tm_matrix(config, spaces: list, sort_space: str = "structure") -> dict:
+def _tm_matrix(config, spaces: list, sort_space: str = "") -> dict:
     """The cohort's similarity matrix, cluster-sorted and quantised for display.
 
     THE WHOLE MATRIX, NOT A TRIANGLE, and that is a measurement rather than a
@@ -1049,7 +1080,7 @@ def _tm_matrix(config, spaces: list, sort_space: str = "structure") -> dict:
     }
 
 
-def _censoring(config, spaces: list, sort_space: str = "structure") -> dict:
+def _censoring(config, spaces: list, sort_space: str = "") -> dict:
     """What the per-query cap removed from this cohort's own matrix.
 
     `matrix_io.summarize_censoring` already computes all of this and is what the

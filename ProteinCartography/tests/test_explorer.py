@@ -1888,7 +1888,7 @@ def test_the_whole_square_ships_because_the_matrix_is_not_symmetric():
     config, spaces = _matrix_fixture(
         _matrix_fixture_dir(), values, {"a": "LC0", "b": "LC0", "c": "LC1"}
     )
-    matrix = _tm_matrix(config, spaces)
+    matrix = _tm_matrix(config, spaces, "structure")
     assert matrix["n"] == 3
     assert len(base64.b64decode(matrix["values"])) == 9, "a triangle was shipped"
     # a_01 = 0.9 against a_10 = 0.3 is the only asymmetric pair here.
@@ -1909,7 +1909,7 @@ def test_the_quantisation_error_is_measured_and_shipped_not_assumed():
 
     values = [[1.0, 0.5], [0.5, 1.0]]
     config, spaces = _matrix_fixture(_matrix_fixture_dir(), values, {"a": "LC0", "b": "LC0"})
-    matrix = _tm_matrix(config, spaces)
+    matrix = _tm_matrix(config, spaces, "structure")
     assert matrix["levels"] == 255
     assert 0.0 <= matrix["max_error"] < 0.01
     assert matrix["low"] == pytest.approx(0.5)
@@ -1927,7 +1927,7 @@ def test_the_matrix_is_sorted_by_cluster_and_then_by_accession():
     config, spaces = _matrix_fixture(
         _matrix_fixture_dir(), values, {"z": "LC0", "a": "LC1", "b": "LC0"}
     )
-    matrix = _tm_matrix(config, spaces)
+    matrix = _tm_matrix(config, spaces, "structure")
     assert matrix["protids"] == ["b", "z", "a"]
     assert matrix["bands"] == [{"cluster": "LC0", "count": 2}, {"cluster": "LC1", "count": 1}]
 
@@ -1963,8 +1963,8 @@ def test_the_heatmap_labels_the_value_as_3di_derived_not_tm_align():
 
     values = [[1.0, 0.5], [0.5, 1.0]]
     config, spaces = _matrix_fixture(_matrix_fixture_dir(), values, {"a": "LC0", "b": "LC0"})
-    assert "3Di+AA" in _tm_matrix(config, spaces)["value_label"]
-    assert "not TM-align" in _tm_matrix(config, spaces)["value_label"]
+    assert "3Di+AA" in _tm_matrix(config, spaces, "structure")["value_label"]
+    assert "not TM-align" in _tm_matrix(config, spaces, "structure")["value_label"]
 
 
 def test_the_heatmap_renderer_decodes_the_matrix_and_refuses_a_wrong_size():
@@ -2041,7 +2041,7 @@ def test_an_uncensored_matrix_reports_its_zero_rather_than_nothing():
 
     values = [[1.0, 0.4], [0.4, 1.0]]
     config, spaces = _matrix_fixture(_matrix_fixture_dir(), values, {"a": "LC0", "b": "LC0"})
-    censoring = _censoring(config, spaces)
+    censoring = _censoring(config, spaces, "structure")
     assert censoring["summary"]["n_censored"] == 0
     assert censoring["summary"]["censoring_rate"] == 0.0
     assert censoring["summary"]["cap_detected"] is False
@@ -2069,7 +2069,7 @@ def test_a_per_query_cap_is_reported_as_one_and_even_sparsity_is_not():
     ]
     clusters = {"a": "LC0", "b": "LC0", "c": "LC1", "d": "LC1"}
     config, spaces = _matrix_fixture(_matrix_fixture_dir(), capped, clusters)
-    summary = _censoring(config, spaces)["summary"]
+    summary = _censoring(config, spaces, "structure")["summary"]
     assert summary["n_censored"] > 0
     assert summary["rows_at_max_fraction"] == 1.0
     assert "cols_at_max_fraction" in summary
@@ -2085,7 +2085,7 @@ def test_the_per_protein_rates_are_restricted_to_the_plotted_proteins():
     config, spaces = _matrix_fixture(
         _matrix_fixture_dir(), values, {"a": "LC0", "b": "LC0", "c": "LC1"}
     )
-    censoring = _censoring(config, spaces)
+    censoring = _censoring(config, spaces, "structure")
     assert {row["protid"] for row in censoring["rates"]} == {"a", "b", "c"}
     assert censoring["n_proteins"] == 3
     rates = [row["rate"] for row in censoring["rates"]]
@@ -2546,3 +2546,97 @@ def test_diagnose_space_says_so_when_it_measures_no_layout():
     assert "else:" in branch, "the no-embedding case is still silent"
     assert "no --embedding was supplied" in branch
     assert "nothing here judges any layout" in branch
+
+
+def test_the_structural_space_is_resolved_from_blocks_not_from_its_name(tmp_path):
+    """A cohort whose structural space is not called "structure" still draws.
+
+    Both panels defaulted to the literal id `"structure"`. That is a naming
+    convention, not a fact about a run, and the failure it produced was silent:
+    an absent payload key and an unbuildable panel render identically, so a
+    cohort using any other id got an empty matrix panel and a censoring panel
+    claiming its input did not exist, while the matrix sat on disk.
+    """
+    from explorer.payload import _structural_space
+
+    matrix = tmp_path / "m.tsv"
+    matrix.write_text("protid\ta\tb\na\t1.0\t0.5\nb\t0.5\t1.0\n")
+
+    class Block:
+        provider = "tmscore"
+
+        def __init__(self, path):
+            self.params = {"matrix_path": path}
+
+    class Space:
+        def __init__(self, blocks):
+            self.blocks = blocks
+
+    class Config:
+        blocks = {"tm": Block(str(matrix))}
+        spaces = {"shape": Space(("tm",))}
+
+    spaces = [type("S", (), {"space_id": "shape"})()]
+    assert _structural_space(Config(), spaces) == "shape"
+
+
+def test_two_tmscore_blocks_resolve_to_the_first_space_in_config_order(tmp_path):
+    """The censoring comparison adds a capped twin, so two qualify.
+
+    Asserted by space id rather than by matrix contents: the point is that the
+    ORDER is fixed by the config, not that one file differs from another. A rule
+    that did not fix an order would choose by dict insertion order, which is a
+    property of how the config was typed.
+    """
+    from explorer.payload import _structural_space
+
+    full = tmp_path / "full.tsv"
+    capped = tmp_path / "capped.tsv"
+    for f in (full, capped):
+        f.write_text("protid\ta\tb\na\t1.0\t0.5\nb\t0.5\t1.0\n")
+
+    class Block:
+        provider = "tmscore"
+
+        def __init__(self, path):
+            self.params = {"matrix_path": path}
+
+    class Space:
+        def __init__(self, blocks):
+            self.blocks = blocks
+
+    class Config:
+        blocks = {"tm": Block(str(full)), "tm_capped": Block(str(capped))}
+        spaces = {"structure": Space(("tm",)), "structure_capped": Space(("tm_capped",))}
+
+    spaces = [
+        type("S", (), {"space_id": "structure"})(),
+        type("S", (), {"space_id": "structure_capped"})(),
+    ]
+    assert _structural_space(Config(), spaces) == "structure"
+
+
+def test_no_tmscore_block_means_no_structural_space_and_no_keys():
+    """The refusal has to be reachable, or the panels refuse for the wrong reason.
+
+    A biophys-only cohort has no matrix at all. `_structural_space` returns ""
+    and both payload keys stay out of `available`, so each panel prints its own
+    `requires` rather than drawing someone else's data.
+    """
+    from explorer.payload import _censoring, _structural_space, _tm_matrix
+
+    class Block:
+        provider = "biophys"
+        params: dict = {}
+
+    class Space:
+        blocks = ("bio",)
+
+    class Config:
+        blocks = {"bio": Block()}
+        spaces = {"chem": Space()}
+
+    spaces = [type("S", (), {"space_id": "chem"})()]
+    assert _structural_space(Config(), spaces) == ""
+    assert not _tm_matrix(Config(), spaces, "")
+    assert not _censoring(Config(), spaces, "")

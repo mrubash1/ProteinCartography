@@ -718,7 +718,12 @@ CATALOGUE = (
         section="2.02",
         question="A row of this matrix IS the feature vector. Sorted by cluster.",
         needs=("matrix",),
-        requires="the cohort's all-vs-all TM matrix, as an n x n labelled TSV",
+        requires=(
+            "a space built on a tmscore block whose matrix_path exists on disk. "
+            "The matrix being present is not enough on its own -- some space has "
+            "to be built from it, because the rows are sorted by that space's "
+            "clusters"
+        ),
         fills_in="point the explorer at the cohort's matrix.tsv",
     ),
     PanelSpec(
@@ -733,7 +738,10 @@ CATALOGUE = (
             "pattern say a per-query cap did it?"
         ),
         needs=("censoring",),
-        requires="the cohort's matrix, which carries its own censoring mask",
+        requires=(
+            "a space built on a tmscore block whose matrix_path exists on disk; "
+            "the mask travels inside that matrix rather than beside it"
+        ),
         fills_in="read from matrix_io.summarize_censoring per run",
     ),
     PanelSpec(
