@@ -629,6 +629,75 @@ def test_every_panel_that_needs_data_says_what_it_needs():
             assert spec.fills_in, f"{spec.panel_id} names no route to filling it in"
 
 
+#: Documents that exist only on the machine this branch was built on. A reader
+#: holding the PR has none of them, so a panel citing one renders, on the page,
+#: an instruction the reader cannot act on. Kept as a literal tuple rather than
+#: a regex because FOLLOWUPS #33's original check WAS a regex and could not
+#: match `POST-PLAN` or a bare `PLAN Phase 9` -- it read as a passing check for
+#: forty-two commits while eleven such strings were being rendered.
+NON_SHIPPING_DOCUMENTS = (
+    "POST-PLAN",
+    "GEOMETRY_DIGEST",
+    "PLAN Phase",
+    "PLAN.md",
+    "REVIEW_LOG",
+    "EXPLORATION.md",
+    "PR_NARRATIVE",
+    "CLAUDE.md",
+    "protein-map-geometry-options",
+)
+
+
+def _document_offences(specs):
+    """Every (panel, field, document) where page text cites something local-only."""
+    return [
+        (spec.panel_id, field, doc)
+        for spec in specs
+        for field, value in (("requires", spec.requires), ("fills_in", spec.fills_in))
+        for doc in NON_SHIPPING_DOCUMENTS
+        if doc in value
+    ]
+
+
+def test_no_panel_tells_the_reader_to_consult_a_document_the_pr_does_not_ship():
+    """`requires` and `fills_in` are both page text, not comments.
+
+    `awaitingBlock` renders "filled in by: " + fills_in into the DOM, so a value
+    like "PLAN Phase 9 item 3" reaches a reader who has no PLAN.md and can only
+    be read as a dead end. This is the guard FOLLOWUPS #33 claimed to have and
+    did not: its evidence sentence asserted zero surviving references while
+    eleven were on the built page.
+    """
+    from explorer.panels import CATALOGUE
+
+    offences = _document_offences(CATALOGUE)
+    assert not offences, f"panels cite documents the PR does not ship: {offences}"
+
+
+def test_the_guard_above_would_actually_catch_one():
+    """A check that has never been seen to fail is not a check.
+
+    This branch has already shipped a gated test that was correct and never
+    executed, and a formatter stage no per-commit run invoked (FOLLOWUPS #64).
+    So the detector -- the same function, not a re-typed copy of its condition
+    -- is run against a panel known to be bad.
+    """
+    from explorer.panels import PanelSpec
+
+    planted = PanelSpec(
+        panel_id="planted",
+        title="planted",
+        sheet="stability",
+        panel_type="stability",
+        provenance="real",
+        section="0.00",
+        needs=("nothing",),
+        requires="a thing",
+        fills_in="PLAN Phase 9 item 3",
+    )
+    assert _document_offences([planted]) == [("planted", "fills_in", "PLAN Phase")]
+
+
 def test_every_panel_carries_a_provenance_tag_and_a_section():
     """The source tags every section real / mixed / synthetic / method.
 
@@ -665,8 +734,9 @@ def test_catalogue_marks_panels_drawable_only_when_their_inputs_are_present():
 def test_six_panels_are_blocked_on_one_missing_input_not_six():
     """The catalogue should make the shape of the gap visible.
 
-    Most of what cannot be drawn is blocked on a phylogeny. If that ever stops
-    being true the plan in POST-PLAN is wrong, and this is where it shows.
+    Most of what cannot be drawn is blocked on a phylogeny, and the catalogue
+    says so by citing one shared input rather than six different ones. If that
+    ever stops being true, this is where it shows.
     """
     from explorer.panels import CATALOGUE
 

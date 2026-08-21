@@ -1,9 +1,12 @@
 #!/usr/bin/env python
 """The catalogue of panels the geometry analysis proposes, and what each needs.
 
-`docs/protein-map-geometry-options-v20.html` argues for a particular explorer
-across eight sheets. Most of what it proposes cannot be drawn from what this
-pipeline currently produces — it wants a reconciled phylogeny for six panels
+A geometry analysis written for this project argues for a particular explorer
+across eight sheets. That document is not part of this PR, so it is described
+here rather than linked; the `section` values below ("3.01", "7.03 E2") are its
+own numbering, kept so the two can be matched up if it is ever published.
+Most of what it proposes cannot be drawn from what this pipeline currently
+produces — it wants a reconciled phylogeny for six panels
 and a perturbation scan for three more, and neither exists. The catalogue names
 every panel anyway, with the input it is waiting for, for one reason:
 
@@ -12,7 +15,9 @@ every panel anyway, with the input it is waiting for, for one reason:
 A panel that is silently absent cannot be told apart from one nobody thought
 of. A panel that renders its own missing input is a question someone can answer.
 So requires is not documentation — it is what the page prints when the data
-is not there, and fills_in points at the POST-PLAN entry that would supply it.
+is not there, and fills_in is what someone would DO to supply it, stated in
+full. A pointer into a planning document is unreadable to anyone holding only
+the PR, which is what FOLLOWUPS #33 is about.
 
 Nothing here fetches or computes. This module is deliberately dependency-free
 (test_optional_dependencies asserts the explorer imports in a bare env), so it
@@ -65,7 +70,9 @@ class PanelSpec:
     #: fact of its absence — "awaiting a reconciled tree" is actionable and
     #: "no data" is not.
     requires: str = ""
-    #: Where in POST-PLAN the work that would fill this panel is described.
+    #: The work that would fill this panel, stated so it reads on its own. This
+    #: is page text, not a comment, so it must never be a pointer into a document
+    #: the reader does not have.
     fills_in: str = ""
     #: Free-form content for panels that carry text or rows rather than a plot.
     content: dict = field(default_factory=dict)
@@ -100,6 +107,18 @@ _NO_SCAN = (
     "deletion, plus a shuffled control. Roughly 1,900 structure predictions for "
     "two queries, and the predictor choice decides the answer before the "
     "experiment runs, so this is a decision and not only compute"
+)
+
+#: The work that would supply those inputs, named once for the same reason. Both
+#: are decisions before they are tasks, and saying so is the honest form of the
+#: refusal — neither is waiting on someone finding the time to write code.
+_TREE_WORK = (
+    "commissioning a reconciled tree for the cohort, which is a decision about "
+    "scope before it is a pipeline change"
+)
+_SCAN_WORK = (
+    "deciding which structure predictor runs the scan, because that choice fixes "
+    "the answer before the experiment does"
 )
 
 
@@ -743,11 +762,16 @@ CATALOGUE = (
         ),
         needs=("stability_series",),
         requires=(
-            "a per-protein stability series. diagnostics/stability.py computes "
-            "one and diagnostics.json exports only the coin-flip list, the "
-            "mean and the min, so the ramp this panel needs is discarded"
+            "a per-protein stability series in the run's own output. "
+            "diagnostics.json carries only the coin-flip list, the mean and the "
+            "min, so the ramp comes from the stability.tsv that diagnose_space.py "
+            "writes beside the summary, and a run made before that existed has "
+            "no ramp to draw"
         ),
-        fills_in="POST-PLAN, the explorer build-out: per-protein stability export",
+        fills_in=(
+            "re-running diagnose_space.py for this cohort, which writes "
+            "stability.tsv beside the summary"
+        ),
     ),
     # --- perturb and probe ----------------------------------------------------
     PanelSpec(
@@ -760,7 +784,7 @@ CATALOGUE = (
         question="Which parts of the chain hold the protein in position?",
         needs=("perturbation",),
         requires=_NO_SCAN,
-        fills_in="GEOMETRY_DIGEST 0.04 decision 3 — Matt's call, not a build task",
+        fills_in=_SCAN_WORK,
     ),
     PanelSpec(
         panel_id="variant_landing",
@@ -772,7 +796,7 @@ CATALOGUE = (
         question="Does a variant leave its cluster?",
         needs=("perturbation",),
         requires=_NO_SCAN,
-        fills_in="GEOMETRY_DIGEST 0.04 decision 3",
+        fills_in=_SCAN_WORK,
     ),
     PanelSpec(
         panel_id="perturbation_grid",
@@ -798,7 +822,10 @@ CATALOGUE = (
         question="How much change should a branch length buy?",
         needs=("patristic",),
         requires=_NO_TREE,
-        fills_in="PLAN Phase 9 item 3, and GEOMETRY_DIGEST correction 2",
+        fills_in=(
+            _TREE_WORK + "; and a rate ratio measured against a tree-derived "
+            "x-axis rather than an identity-derived one"
+        ),
     ),
     PanelSpec(
         panel_id="innovation_clades",
@@ -810,7 +837,7 @@ CATALOGUE = (
         question="Which group changed more than its branch length predicts?",
         needs=("patristic", "clades"),
         requires=_NO_TREE,
-        fills_in="PLAN Phase 9 item 3",
+        fills_in=_TREE_WORK,
     ),
     PanelSpec(
         panel_id="innovation_map",
@@ -822,7 +849,7 @@ CATALOGUE = (
         question="Where in shape space the innovation went, which a bar chart cannot show.",
         needs=("patristic",),
         requires=_NO_TREE,
-        fills_in="PLAN Phase 9 item 3",
+        fills_in=_TREE_WORK,
     ),
     PanelSpec(
         panel_id="ancestral_path",
@@ -834,7 +861,7 @@ CATALOGUE = (
         question="Not how far a lineage travelled, but which way.",
         needs=("ancestors",),
         requires="ancestral state reconstruction, which needs " + _NO_TREE,
-        fills_in="PLAN Phase 9",
+        fills_in=_TREE_WORK + ", and then a reconstruction over it",
     ),
     # --- two trees, one map ---------------------------------------------------
     PanelSpec(
@@ -851,7 +878,10 @@ CATALOGUE = (
             "aggregate_foldseek_fraction_seq_identity.py already exists and "
             "foldseek emits fident, so it is one search pass per cohort"
         ),
-        fills_in="POST-PLAN, the explorer build-out: the cheapest empty to fill",
+        fills_in=(
+            "one foldseek pass per cohort emitting fident, aggregated by "
+            "aggregate_foldseek_fraction_seq_identity.py, which already exists"
+        ),
     ),
     PanelSpec(
         panel_id="records",
@@ -875,7 +905,7 @@ CATALOGUE = (
         question="Where does gene history disagree with organism history?",
         needs=("gene_tree", "species_tree"),
         requires=_NO_TREE,
-        fills_in="PLAN Phase 9",
+        fills_in=_TREE_WORK,
     ),
     PanelSpec(
         panel_id="phylomorphospace",
@@ -890,7 +920,7 @@ CATALOGUE = (
         ),
         needs=("gene_tree", "metric_embedding"),
         requires=_NO_TREE,
-        fills_in="PLAN Phase 9",
+        fills_in=_TREE_WORK,
     ),
     PanelSpec(
         panel_id="tree_space",
@@ -902,7 +932,10 @@ CATALOGUE = (
         question="Every point is an entire phylogeny.",
         needs=("tree_corpus",),
         requires="a corpus of per-family trees; the source demonstrates with 122 families",
-        fills_in="PLAN Phase 9",
+        fills_in=(
+            "commissioning per-family trees across many families, not the one "
+            "tree the other empty panels are waiting on"
+        ),
     ),
     PanelSpec(
         panel_id="discordance",
