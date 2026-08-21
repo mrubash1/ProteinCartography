@@ -90,6 +90,27 @@ def _singleton_membership(
     )
 
 
+def _module_version(name: str):
+    """The version of an installed library, however that library spells it.
+
+    `leidenalg` carries its version as `leidenalg.version` and has no
+    `__version__` at all, so asking only for the dunder records null for the
+    library that chose the partition. `scipy` and `igraph` are read for the same
+    reason: FOLLOWUPS #42 names scipy as the leading hypothesis for two
+    environments returning different Leiden partitions from one matrix, and a
+    manifest that omits it cannot settle that.
+    """
+    try:
+        module = __import__(name)
+    except Exception:
+        return None
+    for attr in ("__version__", "version"):
+        value = getattr(module, attr, None)
+        if isinstance(value, str):
+            return value
+    return None
+
+
 def _write_manifest(path, *, input_file, requested, used, cluster_name, n_proteins, n_clusters):
     """What this run actually did, beside its own output.
 
@@ -104,11 +125,8 @@ def _write_manifest(path, *, input_file, requested, used, cluster_name, n_protei
     import platform
 
     versions = {"python": platform.python_version()}
-    for name in ("scanpy", "leidenalg", "numpy", "pandas"):
-        try:
-            versions[name] = __import__(name).__version__
-        except Exception:
-            versions[name] = None
+    for name in ("scanpy", "leidenalg", "igraph", "scipy", "sklearn", "numpy", "pandas"):
+        versions[name] = _module_version(name)
     try:
         from spaces.manifest import file_digest
 

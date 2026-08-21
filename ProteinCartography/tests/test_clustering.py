@@ -279,3 +279,41 @@ def test_the_snakefile_does_not_pass_manifest_on_the_default_path():
         "the default DAG now writes a Leiden manifest, which adds an output and "
         "will show up in parity as a differing file"
     )
+
+
+@needs_scanpy
+def test_the_manifest_records_leidenalg_which_does_not_have_a_dunder_version(tmp_path):
+    """The first regeneration through this script recorded `leidenalg: null`.
+
+    `leidenalg` spells its version `leidenalg.version` and has no `__version__`,
+    so a manifest that asks only for the dunder is silent about the library that
+    actually chose the partition -- which is the one thing the manifest exists to
+    stop happening (FOLLOWUPS #78), and the disagreement FOLLOWUPS #42 is about.
+    """
+    import json
+
+    import leidenalg  # noqa: F401  -- the test is only meaningful if it is installed
+    from leiden_clustering import scanpy_leiden_cluster
+    from parity import synthetic_matrix
+
+    matrix = synthetic_matrix(tmp_path / "matrix.tsv", n=60)
+    manifest = tmp_path / "m.json"
+    scanpy_leiden_cluster(str(matrix), str(tmp_path / "o.tsv"), manifest_path=str(manifest))
+    versions = json.loads(manifest.read_text())["versions"]
+    assert versions["leidenalg"], "the library that chose the partition is unrecorded"
+    assert versions["scipy"], "FOLLOWUPS #42's leading suspect is unrecorded"
+
+
+@needs_scanpy
+def test_a_library_that_names_its_version_without_dunders_is_still_read(monkeypatch):
+    """Pinned on a fake module, so it holds wherever leidenalg is absent too."""
+    import sys
+    import types
+
+    from leiden_clustering import _module_version
+
+    fake = types.ModuleType("pc_fake_versioned_lib")
+    fake.version = "9.9.9"  # leidenalg's shape: no __version__ at all
+    monkeypatch.setitem(sys.modules, "pc_fake_versioned_lib", fake)
+    assert _module_version("pc_fake_versioned_lib") == "9.9.9"
+    assert _module_version("pc_library_that_is_not_installed_anywhere") is None
