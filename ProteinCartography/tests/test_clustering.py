@@ -191,3 +191,91 @@ def test_sweep_resolutions_is_keyed_and_ordered_by_resolution():
     swept = sweep_resolutions(cohort.values(WIDE_BLOCK), cohort.protids, [2.0, 0.5, 1.0])
     assert list(swept) == [0.5, 1.0, 2.0]
     assert all(len(labels) == cohort.n_proteins for labels in swept.values())
+
+
+# ==========================================================================
+# The sidecar manifest. Four archived leiden_features.tsv files in this project
+# could not be regenerated from their own inputs and none carried any record of
+# the settings that made them, so the disagreement could only be observed, not
+# diagnosed (FOLLOWUPS #78).
+# ==========================================================================
+
+
+@needs_scanpy
+def test_the_manifest_records_the_parameters_actually_used(tmp_path):
+    """The USED values, not the requested ones.
+
+    `n_neighbors` is raised to `round(n/10)` and both are clamped to the matrix,
+    so two runs invoked identically on different-sized cohorts do different
+    things (FOLLOWUPS #79). A manifest echoing the request would have recorded
+    nothing worth having.
+    """
+    import json
+
+    from leiden_clustering import scanpy_leiden_cluster
+    from parity import synthetic_matrix
+
+    matrix = synthetic_matrix(tmp_path / "matrix.tsv", n=250)
+    out = tmp_path / "leiden_features.tsv"
+    manifest = tmp_path / "leiden_features.manifest.json"
+    scanpy_leiden_cluster(str(matrix), str(out), manifest_path=str(manifest))
+
+    assert manifest.exists(), "no manifest was written"
+    payload = json.loads(manifest.read_text())
+    assert payload["requested"]["n_neighbors"] == 10
+    # n/10 for a 250-protein matrix is 25, which is what actually ran.
+    assert payload["used"]["n_neighbors"] == 25, payload["used"]
+    assert payload["n_proteins"] == 250
+    assert payload["n_clusters"] >= 1
+    assert payload["input"]["sha256"], "the input is not pinned by digest"
+    assert payload["versions"]["scanpy"], "the library that decides the answer is unrecorded"
+
+
+@needs_scanpy
+def test_the_manifest_names_the_resolution_nobody_passes(tmp_path):
+    """`sc.tl.leiden` is called with no resolution, so it takes scanpy's default.
+
+    That is the parameter most likely to differ between two runs that look
+    identical from the command line, and the one that would have explained the
+    archives. Recording that it was NOT set is the honest entry.
+    """
+    import json
+
+    from leiden_clustering import scanpy_leiden_cluster
+    from parity import synthetic_matrix
+
+    matrix = synthetic_matrix(tmp_path / "matrix.tsv", n=60)
+    manifest = tmp_path / "m.json"
+    scanpy_leiden_cluster(str(matrix), str(tmp_path / "o.tsv"), manifest_path=str(manifest))
+    payload = json.loads(manifest.read_text())
+    assert "default" in payload["resolution"].lower()
+    assert "passes none" in payload["resolution"]
+
+
+@needs_scanpy
+def test_no_manifest_is_written_unless_one_is_asked_for(tmp_path):
+    """This script runs on the DEFAULT output path.
+
+    Writing a file unconditionally would add an output to the default DAG, and
+    the parity suite would see it as a differing file. Opt-in is what keeps the
+    default path byte-identical.
+    """
+    from leiden_clustering import scanpy_leiden_cluster
+    from parity import synthetic_matrix
+
+    matrix = synthetic_matrix(tmp_path / "matrix.tsv", n=60)
+    scanpy_leiden_cluster(str(matrix), str(tmp_path / "o.tsv"))
+    assert not list(tmp_path.glob("*.json")), "a manifest appeared without being asked for"
+
+
+def test_the_snakefile_does_not_pass_manifest_on_the_default_path():
+    """Pinned against the Snakefile, so the parity guarantee is not just a habit."""
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[2]
+    snakefile = (root / "Snakefile").read_text()
+    block = snakefile[snakefile.index("leiden_clustering.py") :][:600]
+    assert "--manifest" not in block, (
+        "the default DAG now writes a Leiden manifest, which adds an output and "
+        "will show up in parity as a differing file"
+    )
