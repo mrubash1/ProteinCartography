@@ -353,6 +353,16 @@ const PAYLOAD = __PAYLOAD__;
 // The judgement lines, read from the payload rather than retyped here. A
 // threshold typed into the template can drift from the one the diagnostics
 // enforce, and then the picture and the verdict disagree.
+//: What a Procrustes disparity looks like when the two maps ARE the same map.
+//: Measured in FOLLOWUPS #63 as a control: one matrix, one set of parameters,
+//: only the reducer's random seed changed, across three pairs. Quoted rather
+//: than recomputed, because it is a property of the reducer on this data and
+//: the entry that measured it is the one a reviewer will check.
+//:
+//: It exists because every pair the page can compare scores 0.79-0.99, and a
+//: scale with no low end cannot be read.
+const SEED_FLOOR = "0.010 - 0.031";
+
 const THRESHOLDS = PAYLOAD.thresholds || {};
 const COIN_FLIP = THRESHOLDS.coin_flip;
 
@@ -1539,6 +1549,14 @@ function renderCensoringComparison(comparison) {
     });
   }
   // Context, because a disparity means nothing on its own.
+  //
+  // AND THE CONTEXT NEEDED A FLOOR. Every pair this run compares lands between
+  // 0.79 and 0.99, so a table of them alone is the top fifth of the scale and
+  // "0.968 is high" tells a reader nothing — they have never seen a low one.
+  // The seed control is what a disparity looks like when two maps ARE the same
+  // map: same matrix, same parameters, only a different random seed
+  // (FOLLOWUPS #63). With it the span reads 0.01 to 0.99 and the censored twin
+  // sits at the far end rather than somewhere in an undifferentiated band.
   const context = comparison.context || [];
   if (context.length) {
     const rows = context
@@ -1549,12 +1567,29 @@ function renderCensoringComparison(comparison) {
         fmtValue(row.procrustes_disparity),
         `neighbours kept ${fmtValue(row.jaccard_mean)}`,
       ]);
+    // PLAIN TEXT in the label: `reportRows` escapes that cell, so markup there
+    // renders as literal angle brackets. The value cell is the raw slot by
+    // design, so the emphasis goes on the number instead -- which is the part
+    // worth seeing anyway.
+    rows.unshift([
+      "the same map, reseeded",
+      `<b>${escapeHtml(SEED_FLOOR)}</b>`,
+      "the floor: what two runs of one map score",
+    ]);
     const note = document.createElement("div");
     note.className = "table-note";
     note.innerHTML =
-      "Every other pair this run compared, for scale. A disparity is only " +
-      "interpretable beside pairs whose difference is already understood — these " +
-      "are different modalities, where a large number is expected.";
+      "Every other pair this run compared, for scale, with the seed control at " +
+      "the top as the floor. A disparity is only interpretable beside pairs " +
+      "whose difference is already understood — the rows below the floor are " +
+      "different modalities, where a large number is expected. " +
+      "<b>What the number is not:</b> " +
+      "a disparity near 1 does not mean the two maps are " +
+      "random with respect to each other. It means the best rotate, flip and " +
+      "rescale overlay leaves almost all of the variance unexplained. Two maps " +
+      "can keep local neighbourhoods and still refuse to superimpose, which is " +
+      "why neighbour retention is reported beside it and is the number this " +
+      "page acts on.";
     box.append(note, reportRows(rows));
   }
   return box;

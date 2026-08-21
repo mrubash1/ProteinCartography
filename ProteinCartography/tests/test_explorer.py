@@ -4109,3 +4109,47 @@ def test_the_dropped_note_is_built_once_for_every_branch():
     html = render({"spaces": []}, plotly_js="", title="t")
     assert html.count("function droppedNote(dropped)") == 1
     assert html.count("nearest first:") == 1, "the note is spelled out more than once"
+
+
+# ==========================================================================
+# The disparity scale needed a floor. Matt, 2026-08-21: "i still dont get it
+# from this." Every pair the page compares lands between 0.79 and 0.99, so a
+# table of them alone is the top fifth of the scale.
+# ==========================================================================
+
+
+def test_the_disparity_table_carries_a_floor_row():
+    """Without one, "0.968 is high" is unreadable.
+
+    A reader who has only seen 0.79-0.99 cannot tell whether 0.968 is alarming
+    or ordinary. The seed control is what the same map scores against itself.
+    """
+    from explorer.template import render
+
+    html = render({"spaces": []}, plotly_js="", title="t")
+    assert 'const SEED_FLOOR = "0.010 - 0.031";' in html
+    assert '"the same map, reseeded"' in html
+    # The label cell is escaped by `reportRows`, so markup there would render as
+    # literal angle brackets. Emphasis belongs on the value, which is raw.
+    assert "<b>the same map, reseeded</b>" not in html
+    assert "the floor: what two runs of one map score" in html
+    # It must be FIRST in the table, or it is just another row in the band.
+    assert "rows.unshift([" in html
+
+
+def test_the_panel_says_what_a_disparity_is_not():
+    """Near 1 does not mean the maps are random with respect to each other.
+
+    It means the best rigid overlay leaves the variance unexplained -- two maps
+    can keep their local neighbourhoods and still refuse to superimpose. That
+    distinction is why the page acts on retention rather than on disparity.
+    """
+    from explorer.template import render
+
+    html = render({"spaces": []}, plotly_js="", title="t")
+    # Matched as it appears in the SOURCE, not as it concatenates at runtime --
+    # a phrase split across a `+` is not searchable in the emitted page.
+    assert "<b>What the number is not:</b>" in html
+    assert "a disparity near 1 does not mean the two maps are " in html
+    assert "rescale overlay leaves almost all of the variance unexplained." in html
+    assert "why neighbour retention is reported beside it and is the number this " in html
