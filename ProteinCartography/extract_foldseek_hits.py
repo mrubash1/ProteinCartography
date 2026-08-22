@@ -58,11 +58,18 @@ def extract_foldseekhits(
 
     # iterate through results files, reading them
     for i, file in enumerate(input_files):
-        # load the file
-        file_df = pd.read_csv(file, sep="\t", names=constants.FOLDSEEK_COLUMN_NAMES)
-
+        # The size check has to come BEFORE the read, which is where it was not
+        # (FOLLOWUPS #24). It is inert under the pinned pandas 2.0.1 -- reading
+        # an empty file with `names=` supplied returns a 0-row frame rather than
+        # raising -- so moving it changes no output today. It is moved anyway
+        # because the guard only reads as a guard from here: a pandas that
+        # raises on the empty read, or a caller that supplies no `names`, would
+        # find the check sitting downstream of the thing it was meant to stop.
         if os.path.getsize(file) == 0:
             continue
+
+        # load the file
+        file_df = pd.read_csv(file, sep="\t", names=constants.FOLDSEEK_COLUMN_NAMES)
 
         # extract the model ID from the results target column
         file_df["modelid"] = file_df["target"].str.split(" ", expand=True)[0]
