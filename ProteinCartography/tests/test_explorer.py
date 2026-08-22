@@ -4231,3 +4231,54 @@ def test_the_page_orders_by_the_payload_and_not_by_sorting():
     assert "Object.keys(s.embeddings)))].sort()" not in html
     # The control still lists everything, in that order.
     assert "reducers.forEach((r) => reducerSelect.append(new Option(r, r)));" in html
+
+
+def test_a_space_missing_the_selected_layout_says_so_on_the_panel():
+    """PC-007 phase 4. `traceFor` substitutes the space's first embedding when
+    the selection is absent -- right behaviour, but it was SILENT, so a reader
+    comparing panels took two pictures drawn under different reductions for one
+    comparison.
+
+    String level, because nothing here runs the page's JavaScript; the browser
+    pass is what proves it renders. This proves the notice exists, is built with
+    the strips rather than in the fold-out, and names both layouts.
+    """
+    from explorer.template import render
+
+    html = render({"spaces": []}, plotly_js="", title="t")
+    assert "function refreshFallback(space)" in html
+    # Called on every draw, beside the axes sentence, for the same reason.
+    assert "refreshFallback(space);" in html
+    # Built with the contribution/made-of strips, which are above the fold.
+    assert 'swap.className = "shares layout-swap";' in html
+    assert ".layout-swap {" in html
+    # Both layouts named, as contiguous source: a phrase split across a `+` is
+    # not searchable in the emitted page.
+    assert "This space has no " in html
+    assert "so it is drawn with " in html
+    assert "It is not comparable point-for-point with " in html
+
+
+def test_the_layout_notice_is_hidden_rather_than_empty_when_nothing_was_swapped():
+    """A permanent empty strip on every panel is the noise half of a diagnostic
+    that always fires."""
+    from explorer.template import render
+
+    html = render({"spaces": []}, plotly_js="", title="t")
+    assert "swap.hidden = true;" in html
+    assert "node.hidden = !swapped;" in html
+
+
+def test_the_comment_no_longer_asserts_an_invariant_nothing_enforces():
+    """FOLLOWUPS #39's lesson, applied to the comment that taught it.
+
+    The reducer declaration used to end "...and says so", which nothing in the
+    page did. The claim is either enforced or not made.
+    """
+    from explorer.template import render
+
+    html = render({"spaces": []}, plotly_js="", title="t")
+    assert "with whatever it has, rather than vanishing from the grid." in html
+    assert "with whatever it has, and says so, rather than vanishing" not in html
+    # And it points at the test that would fail, rather than restating the rule.
+    assert "test_a_space_missing_the_selected_layout_says_so_on_the_panel" in html

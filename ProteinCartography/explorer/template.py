@@ -79,6 +79,13 @@ button.on { background: var(--ink); color: #fff; border-color: var(--ink); }
 .column-warn { border-top: 0; background: #fdf9ef; color: #7a4e00;
   border-left: 3px solid var(--caution); }
 .column-warn b { color: var(--caution); }
+/* The substituted-layout notice. Same family as .column-warn -- both say "the
+   thing you are looking at is not quite the thing you asked for" -- and both
+   sit above the fold, because the reader who never opens the fold-out is
+   exactly the reader they protect. */
+.layout-swap { border-top: 0; background: #fdf9ef; color: #7a4e00;
+  border-left: 3px solid var(--caution); }
+.layout-swap b { color: var(--caution); }
 .plot { height: 330px; }
 /* The similarity matrix needs to be square and readable; 330px makes a 367-row
    heatmap four cells tall per cluster. */
@@ -396,7 +403,15 @@ let active = COHORTS[0];
 let spaces = active.spaces;
 
 // Every reducer any space produced. A space missing the chosen one is drawn
-// with whatever it has, and says so, rather than vanishing from the grid.
+// with whatever it has, rather than vanishing from the grid.
+//
+// "and says so" used to be the rest of this sentence and nothing enforced it:
+// the substitution was silent, and the only place it surfaced was the axes
+// sentence in the fold-out, which a reader who does not open the fold-out never
+// sees. `refreshFallback` now renders it on the panel itself, above the fold,
+// and `test_a_space_missing_the_selected_layout_says_so_on_the_panel` fails if
+// that stops happening. FOLLOWUPS #39's lesson, applied to the comment that
+// taught it: a comment stating an invariant does not enforce it.
 let reducers = [];
 
 // Which layout the page opens on, and the order the control lists.
@@ -982,6 +997,14 @@ function panelShell(space) {
           .map((r) => `<li>${escapeHtml(r)}</li>`).join("") + "</ul>"
       : "");
   panel.append(title, verdict);
+  // Empty at build time and filled per draw by `refreshFallback`, because which
+  // layout is substituted depends on the selection and the panel is built once.
+  // Same shape as the axes sentence, which is refreshed for the same reason.
+  const swap = document.createElement("div");
+  swap.className = "shares layout-swap";
+  swap.dataset.role = "layout-swap";
+  swap.hidden = true;
+  panel.append(swap);
   // ADR 0002: a fused map does not render without its contribution shares
   // visible. Both numbers, because they differ -- `early` concatenates
   // features, so an even request over blocks of unequal width realizes
@@ -1108,6 +1131,7 @@ function draw() {
   spaces.forEach((space) => {
     panelFor(space).render(space);
     refreshAxes(space);
+    refreshFallback(space);
   });
 }
 
@@ -1122,6 +1146,34 @@ function draw() {
 function drawnReducer(space) {
   const embeddings = space.embeddings || {};
   return embeddings[state.reducer] ? state.reducer : Object.keys(embeddings)[0] || "";
+}
+
+// Say, on the panel, when this space is not drawn with the selected layout.
+//
+// `traceFor` substitutes the space's first embedding when the selection is
+// absent. That is the right behaviour -- the alternative is a hole in the grid
+// -- but it was SILENT, and a reader comparing panels would take two pictures
+// drawn under different reductions for one comparison. The fold-out's axes
+// sentence named the substitution, and below the fold is not where a reader who
+// does not open it will look.
+//
+// Hidden rather than absent when there is nothing to say: a permanent empty
+// strip on every panel is the noise half of a diagnostic that always fires.
+function refreshFallback(space) {
+  const panel = [...el("grid").children].find((p) => p.dataset.space === space.space_id);
+  if (!panel) return;
+  const node = panel.querySelector('[data-role="layout-swap"]');
+  if (!node) return;
+  const drawn = drawnReducer(space);
+  const swapped = Boolean(state.reducer) && Boolean(drawn) && drawn !== state.reducer;
+  node.hidden = !swapped;
+  node.dataset.drawn = drawn;
+  node.innerHTML = swapped
+    ? `<b>Not ${escapeHtml(state.reducer)}.</b> This space has no ` +
+      `${escapeHtml(state.reducer)} layout, so it is drawn with ` +
+      `<b>${escapeHtml(drawn)}</b>. It is not comparable point-for-point with ` +
+      `the panels that are.`
+    : "";
 }
 
 // Rewrite the axes sentence to describe the layout now drawn.
