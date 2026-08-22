@@ -37,7 +37,15 @@ import sys
 import constants
 import pandas as pd
 
-__all__ = ["aggregate_significance", "blast_significance", "foldseek_significance"]
+__all__ = [
+    "TMALIGN_EVALUE_FLOOR",
+    "TMALIGN_MAX_BITS",
+    "TmalignOutputError",
+    "aggregate_significance",
+    "blast_significance",
+    "foldseek_significance",
+    "looks_like_tmalign",
+]
 
 #: The AlphaFold model id embedded in a Foldseek target, e.g. `AF-P60709-F1-model_v4`.
 _AF_MODEL = re.compile(r"AF-(.*)-F1-model")
@@ -55,14 +63,14 @@ class TmalignOutputError(RuntimeError):
 #: by construction and Foldseek does not report structurally meaningless ones, so
 #: in practice they bottom out around 0.3; a useful 3Di-AA search reaches values
 #: many orders of magnitude smaller than this.
-_TMALIGN_EVALUE_FLOOR = 1e-3
+TMALIGN_EVALUE_FLOOR = 1e-3
 
 #: In tmalign mode the bit-score column holds roughly TM-score times 100, so it
 #: cannot exceed ~100. A 3Di-AA search puts real bit scores in the thousands.
-_TMALIGN_MAX_BITS = 100
+TMALIGN_MAX_BITS = 100
 
 
-def _looks_like_tmalign(evalues, bits) -> bool:
+def looks_like_tmalign(evalues, bits) -> bool:
     """Whether this file's `evalue` column is really a TM-score.
 
     ``foldseek_apiquery.py`` accepts ``--mode tmalign``, and the server returns
@@ -84,8 +92,8 @@ def _looks_like_tmalign(evalues, bits) -> bool:
         return False
     finite = evalues.dropna()
     bounded = bool((finite >= 0).all() and (finite <= 1).all())
-    never_small = bool(finite.min() > _TMALIGN_EVALUE_FLOOR)
-    small_bits = bool(bits.dropna().empty or (bits.dropna() <= _TMALIGN_MAX_BITS).all())
+    never_small = bool(finite.min() > TMALIGN_EVALUE_FLOOR)
+    small_bits = bool(bits.dropna().empty or (bits.dropna() <= TMALIGN_MAX_BITS).all())
     return bounded and never_small and small_bits
 
 
@@ -136,7 +144,7 @@ def foldseek_significance(m8_files) -> pd.DataFrame:
             continue
         evalues = pd.to_numeric(frame.loc[keep, "evalue"], errors="coerce")
         bits = pd.to_numeric(frame.loc[keep, "bits"], errors="coerce")
-        if _looks_like_tmalign(evalues, bits):
+        if looks_like_tmalign(evalues, bits):
             raise TmalignOutputError(
                 f"{path} looks like `foldseek_apiquery.py --mode tmalign` output: "
                 f"its e-value column runs {evalues.min():.4g} to {evalues.max():.4g}, "

@@ -152,3 +152,165 @@ def test_truncation_is_not_applied_when_no_maximum_is_given(tmp_path):
     out = tmp_path / "hits.txt"
     extract_foldseekhits([path], str(out))
     assert len(hits_in(out)) == 5
+
+
+# ---------------------------------------------------------------------------
+# the tmalign refusal (PC-014 phase 2)
+#
+# `foldseek_apiquery.py --mode tmalign` returns the SAME 21 columns in the same
+# positions with different meanings: `evalue` holds a TM-score and `bits` holds
+# roughly that times 100. Nothing renames, so nothing errors -- the filter's
+# polarity simply inverts, and `evalue < 0.01` keeps the LEAST similar
+# structures. `hit_significance` has refused this since it was written; this
+# module, which is the one that actually decides the cohort, did not.
+# ---------------------------------------------------------------------------
+
+
+def tmalign_row(accession: str, tm_score: float) -> str:
+    """A row as the server returns it in tmalign mode: TM-score in the `evalue`
+    column, roughly TM-score x 100 in `bits`."""
+    return m8_row(accession, tm_score, bits=int(round(tm_score * 100)))
+
+
+def test_a_tmalign_shaped_file_is_refused_rather_than_filtered(tmp_path):
+    """The whole point: filtering this file would keep the worst hits.
+
+    Shaped on the live tmalign query recorded in `hit_significance`'s own
+    docstring -- e-values spanning 0.402 to 0.9999 with the best hit at the TOP
+    of the range, which is the opposite of an e-value.
+    """
+    from hit_significance import TmalignOutputError
+
+    path = write_m8(
+        tmp_path / "alis_afdb50.m8",
+        [tmalign_row("P00001", 0.9999), tmalign_row("P00002", 0.402)],
+    )
+    with pytest.raises(TmalignOutputError, match="tmalign"):
+        extract_foldseekhits([path], str(tmp_path / "hits.txt"))
+
+
+def test_the_refusal_names_the_file_and_the_range_it_saw(tmp_path):
+    """A refusal a reader cannot check is a refusal they will override."""
+    from hit_significance import TmalignOutputError
+
+    path = write_m8(
+        tmp_path / "alis_afdb50.m8",
+        [tmalign_row("P00001", 0.9999), tmalign_row("P00002", 0.402)],
+    )
+    with pytest.raises(TmalignOutputError) as caught:
+        extract_foldseekhits([path], str(tmp_path / "hits.txt"))
+    message = str(caught.value)
+    assert "alis_afdb50.m8" in message
+    assert "0.402" in message and "0.9999" in message
+    # It must say why refusing beats guessing, and what the pipeline does run.
+    assert "the mode is not recorded in the output" in message
+    assert "3diaa" in message
+
+
+def test_one_tmalign_file_among_real_ones_fails_the_whole_run(tmp_path):
+    """Silently dropping the bad file would produce a cohort from two databases
+    of three, which is a different cohort reported as the same one."""
+    from hit_significance import TmalignOutputError
+
+    good = write_m8(tmp_path / "alis_afdb50.m8", [m8_row("P00001", 1e-40)])
+    bad = write_m8(
+        tmp_path / "alis_afdb-swissprot.m8",
+        [tmalign_row("P00002", 0.91), tmalign_row("P00003", 0.55)],
+    )
+    with pytest.raises(TmalignOutputError):
+        extract_foldseekhits([good, bad], str(tmp_path / "hits.txt"))
+
+
+def test_the_guard_does_not_fire_on_the_real_fixture_ranges(tmp_path):
+    """MEASURED on the repo's own `demo/search-mode` fixture, not quoted from
+    the ticket, whose numbers are from an older snapshot and do not match:
+
+        alis_afdb50.m8          evalue 2.862e-76 .. 0.0009674   bits max 3145
+        alis_afdb-swissprot.m8  evalue 9.138e-80 .. 5.252       bits max 3290
+        alis_afdb-proteome.m8   evalue 1.525e-79 .. 9.829       bits max 3282
+
+    afdb50 is the one worth pinning: every one of its e-values is <= 1, so the
+    guard's `bounded` condition is TRUE for it and only the other two keep it
+    from firing. A guard written with `bounded` alone would refuse the
+    pipeline's own fixture.
+    """
+    import pandas as pd
+    from hit_significance import looks_like_tmalign
+
+    cases = {
+        "afdb50": ([2.862e-76, 1e-20, 0.0009674], [3145, 900, 40]),
+        "afdb-swissprot": ([9.138e-80, 1.0, 5.252], [3290, 200, 30]),
+        "afdb-proteome": ([1.525e-79, 2.0, 9.829], [3282, 150, 25]),
+    }
+    for name, (evalues, bits) in cases.items():
+        assert not looks_like_tmalign(pd.Series(evalues), pd.Series(bits)), name
+
+    # And the fixture that IS bounded still does not fire, which is the point.
+    bounded = pd.Series(cases["afdb50"][0])
+    assert bool((bounded >= 0).all() and (bounded <= 1).all()), "afdb50 is bounded in [0, 1]"
+
+
+def test_a_3diaa_file_is_still_processed_normally(tmp_path):
+    """The refusal must not cost the normal path anything."""
+    path = write_m8(
+        tmp_path / "alis_afdb50.m8",
+        [m8_row("P00001", 2.862e-76, bits=3145), m8_row("P00002", 1e-20, bits=900)],
+    )
+    out = tmp_path / "hits.txt"
+    extract_foldseekhits([path], str(out))
+    assert hits_in(out) == ["P00001", "P00002"]
+
+
+def test_the_evalue_default_and_filter_are_unchanged(tmp_path):
+    """This phase adds a refusal and nothing else. Pinned, because the tempting
+    next edit is to 'tidy' the threshold while the file is open."""
+    from extract_foldseek_hits import DEFAULT_EVALUE
+
+    assert DEFAULT_EVALUE == 0.01
+    path = write_m8(
+        tmp_path / "alis_afdb50.m8",
+        [m8_row("P00001", 1e-40, bits=3000), m8_row("P00002", 0.5, bits=200)],
+    )
+    out = tmp_path / "hits.txt"
+    extract_foldseekhits([path], str(out))
+    assert hits_in(out) == ["P00001"], "0.5 is above the 0.01 default and must be dropped"
+
+
+def test_the_module_imports_nothing_its_rule_environment_lacks():
+    """`extract_foldseek_hits` runs under `envs/pandas.yml`, whose only
+    dependency is `pandas=2.0.1`.
+
+    Phase 2 added an import of `hit_significance` to reuse the tmalign guard.
+    That is safe only because `hit_significance` itself imports nothing beyond
+    the standard library, `constants` and pandas -- and an import added to it
+    later would break `extract_foldseek_hits` at RUNTIME, inside a snakemake
+    rule, where the failure is a red job rather than a red test. Pinned here
+    because the coupling is invisible from either file.
+    """
+    import ast
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    allowed = {"argparse", "os", "re", "sys", "constants", "pandas", "__future__"}
+    for name in ("extract_foldseek_hits.py", "hit_significance.py"):
+        tree = ast.parse((root / name).read_text())
+        # MODULE LEVEL ONLY, which is what runs when the rule imports the file.
+        # `extract_foldseek_hits.main` defers `tests.mock_domain_hits` inside an
+        # `if PROTEINCARTOGRAPHY_SHOULD_USE_MOCKS` branch that production never
+        # takes; a deferred import under a env-var guard is not a dependency of
+        # the rule environment, and this test said it was until it was run.
+        for node in tree.body:
+            if isinstance(node, ast.Import):
+                roots = {alias.name.split(".")[0] for alias in node.names}
+            elif isinstance(node, ast.ImportFrom):
+                roots = {(node.module or "").split(".")[0]}
+            else:
+                continue
+            # The two modules import each other, which is the coupling itself.
+            unexpected = roots - allowed - {"extract_foldseek_hits", "hit_significance"}
+            assert not unexpected, f"{name} imports {unexpected}, which envs/pandas.yml lacks"
+
+    # Not vacuous: the rule above must actually reject something.
+    probe = ast.parse("import scipy\n")
+    top = probe.body[0]
+    assert {alias.name.split(".")[0] for alias in top.names} - allowed == {"scipy"}

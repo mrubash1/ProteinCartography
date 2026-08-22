@@ -5,6 +5,7 @@ import re
 
 import constants
 import pandas as pd
+from hit_significance import TmalignOutputError, looks_like_tmalign
 
 # only import these functions when using import *
 __all__ = ["extract_foldseekhits"]
@@ -77,6 +78,31 @@ def extract_foldseekhits(
         # extract only models that contain AF model string
         # this will need to be changed in the future
         file_df = file_df[file_df["modelid"].str.contains("-F1-model")]
+
+        # Refuse a tmalign-shaped file BEFORE filtering on the e-value column,
+        # because in that mode the column is a TM-score and the filter's
+        # polarity inverts: `evalue < 0.001` would keep the LEAST similar
+        # structures and silently hand them to the map.
+        #
+        # One guard, one definition, two consumers: `hit_significance` has
+        # refused this since it was written, and this module -- which is the one
+        # that actually decides the cohort -- did not. The asymmetry was the
+        # defect, not the missing check.
+        if looks_like_tmalign(
+            pd.to_numeric(file_df["evalue"], errors="coerce"),
+            pd.to_numeric(file_df["bits"], errors="coerce"),
+        ):
+            evalues = pd.to_numeric(file_df["evalue"], errors="coerce").dropna()
+            raise TmalignOutputError(
+                f"{file} looks like `foldseek_apiquery.py --mode tmalign` output: its "
+                f"e-value column runs {evalues.min():.4g} to {evalues.max():.4g}, entirely "
+                "inside [0, 1], with bit scores at TM-score scale. In that mode the server "
+                "reuses the same column positions for different quantities -- the 'e-value' "
+                "is a TM-score -- so filtering it ascending keeps the LEAST similar "
+                "structures. Refusing rather than guessing: the mode is not recorded in the "
+                "output, so this file cannot be interpreted with confidence. The pipeline "
+                "runs 3diaa mode, which this does support."
+            )
 
         # filter by evalue
         file_df = file_df[file_df["evalue"] < evalue]
