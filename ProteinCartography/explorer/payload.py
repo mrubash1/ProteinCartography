@@ -80,6 +80,36 @@ SUMMARY_SECTIONS = (
 #: be silently dropped by a list nobody updated.
 CENSORING_DROPPED_KEYS = ("cross_cluster_table",)
 
+#: Which layout the page opens on, and the order the Layout control lists.
+#:
+#: The page used to take `Object.keys(embeddings).sort()[0]`, so a cohort
+#: declaring both reducers opened on `pca_tsne` purely because "t" sorts before
+#: "u". That is an alphabetical accident deciding which coordinates a reader
+#: sees first, and t-SNE and UMAP disagree about global structure -- exactly the
+#: thing a map is read for.
+#:
+#: UMAP first because it is what the pipeline's own default config asks for and
+#: what every figure in the source material shows. Anything NOT listed here
+#: follows, sorted, rather than vanishing: a reducer added tomorrow degrades to
+#: today's alphabetical behaviour instead of dropping off the control.
+#:
+#: One source of truth, in Python. `_space_manifest` reads it too, which is what
+#: makes its docstring's claim -- that reducers are tried "in the order the
+#: panel would draw them" -- true rather than aspirational, and the resolved
+#: order travels in the provenance so the page cannot disagree with it.
+REDUCER_DISPLAY_ORDER = ("pca_umap", "umap", "pca_tsne", "tsne", "pca")
+
+
+def ordered_reducers(names) -> list:
+    """`names` in display order: the known ones first, then the rest, sorted.
+
+    Order-preserving and total -- every input name comes out exactly once, so
+    this can never hide a reducer the run actually produced.
+    """
+    remaining = set(names)
+    known = [name for name in REDUCER_DISPLAY_ORDER if name in remaining]
+    return known + sorted(remaining.difference(REDUCER_DISPLAY_ORDER))
+
 
 def read_embedding(path: str) -> tuple:
     """``(protids, [[x, y], ...])`` from a reducer's TSV, read by label."""
@@ -1029,7 +1059,7 @@ def _space_manifest(directory: str, reducers) -> dict:
     the provenance this needs; the reducers are tried in the order the panel
     would draw them so the reported `params` match what is on screen.
     """
-    for reducer in list(reducers) + [layout.DIAGNOSTICS_MANIFEST_KEY]:
+    for reducer in ordered_reducers(reducers) + [layout.DIAGNOSTICS_MANIFEST_KEY]:
         manifest = _read_json(os.path.join(directory, layout.manifest_filename(reducer)))
         if manifest:
             return manifest
@@ -1587,5 +1617,10 @@ def _provenance(output_dir: str, config, spaces: list) -> dict:
         "n_proteins": len(spaces[0].protids) if spaces else 0,
         "cohort_rule": getattr(config.cohort, "selection", None),
         "diagnostics_k": config.diagnostics.k,
+        # Resolved here rather than in the page, so the Layout control and this
+        # footer cannot disagree about which reducer is first.
+        "reducer_order": ordered_reducers(
+            {reducer for space in spaces for reducer in space.embeddings}
+        ),
         "manifests": manifests,
     }

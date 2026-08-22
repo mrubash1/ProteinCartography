@@ -4153,3 +4153,81 @@ def test_the_panel_says_what_a_disparity_is_not():
     assert "a disparity near 1 does not mean the two maps are " in html
     assert "rescale overlay leaves almost all of the variance unexplained." in html
     assert "why neighbour retention is reported beside it and is the number this " in html
+
+
+# ==========================================================================
+# Which layout the page opens on. It was `.sort()[0]`, so a cohort declaring
+# both reducers opened on `pca_tsne` because "t" sorts before "u" -- an
+# alphabetical accident choosing between two reductions that disagree about
+# global structure (PC-007 phase 3).
+# ==========================================================================
+
+
+def test_the_declared_order_puts_umap_before_tsne():
+    """The defect itself, at the level of the rule."""
+    from explorer.payload import ordered_reducers
+
+    assert ordered_reducers(["pca_tsne", "pca_umap"]) == ["pca_umap", "pca_tsne"]
+    assert (
+        sorted(["pca_tsne", "pca_umap"])[0] == "pca_tsne"
+    ), "this test is only meaningful while sorting picks the other one"
+
+
+def test_an_unlisted_reducer_follows_rather_than_vanishes():
+    """A reducer added tomorrow must degrade to the old alphabetical behaviour.
+
+    Dropping it off the Layout control would hide a map the run produced, which
+    is worse than ordering it badly.
+    """
+    from explorer.payload import REDUCER_DISPLAY_ORDER, ordered_reducers
+
+    resolved = ordered_reducers(["zebra", "pca_umap", "alpha", "pca_tsne"])
+    assert resolved == ["pca_umap", "pca_tsne", "alpha", "zebra"]
+    # Total: every name in, every name out, exactly once.
+    assert sorted(resolved) == ["alpha", "pca_tsne", "pca_umap", "zebra"]
+    assert "zebra" not in REDUCER_DISPLAY_ORDER
+
+
+def test_the_manifest_lookup_and_the_panel_read_one_order():
+    """`_space_manifest`'s docstring claims it tries reducers "in the order the
+    panel would draw them". It took whatever iterable it was handed, so the
+    claim was aspirational. It reads the same constant now."""
+    import inspect
+
+    from explorer import payload
+
+    source = inspect.getsource(payload._space_manifest)
+    assert "ordered_reducers(reducers)" in source, source
+
+
+def test_the_resolved_order_travels_in_the_provenance():
+    """Resolved in Python and shipped, so the footer and the control cannot
+    disagree about which reducer is first."""
+    from explorer.payload import REDUCER_DISPLAY_ORDER, ordered_reducers
+
+    class _Space:
+        def __init__(self, embeddings):
+            self.embeddings = embeddings
+
+    spaces = [_Space({"pca_tsne": None}), _Space({"pca_umap": None, "pca_tsne": None})]
+    seen = {reducer for space in spaces for reducer in space.embeddings}
+    assert ordered_reducers(seen) == ["pca_umap", "pca_tsne"]
+    assert REDUCER_DISPLAY_ORDER[0] == "pca_umap"
+
+
+def test_the_page_orders_by_the_payload_and_not_by_sorting():
+    """String level, because nothing in this suite runs the page's JavaScript.
+
+    The browser pass is what proves the value; this proves the page stopped
+    asking `.sort()` for it.
+    """
+    from explorer.template import render
+
+    html = render({"spaces": []}, plotly_js="", title="t")
+    assert "function orderReducers(names)" in html
+    assert "reducers = orderReducers([...new Set(" in html
+    assert "provenance || {}).reducer_order" in html
+    # The old rule must be gone from THIS site specifically.
+    assert "Object.keys(s.embeddings)))].sort()" not in html
+    # The control still lists everything, in that order.
+    assert "reducers.forEach((r) => reducerSelect.append(new Option(r, r)));" in html

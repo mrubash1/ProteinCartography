@@ -399,6 +399,26 @@ let spaces = active.spaces;
 // with whatever it has, and says so, rather than vanishing from the grid.
 let reducers = [];
 
+// Which layout the page opens on, and the order the control lists.
+//
+// This used to be `.sort()`, so a cohort declaring both reducers opened on
+// pca_tsne because "t" sorts before "u" -- an alphabetical accident deciding
+// which coordinates a reader sees first, on two reductions that disagree about
+// global structure. The order is RESOLVED IN PYTHON and travels in the
+// provenance (`payload.REDUCER_DISPLAY_ORDER`), so this cannot drift from the
+// manifest lookup that uses the same constant.
+//
+// Anything the order does not name follows, sorted, and a payload written
+// before this field existed falls back to sorting -- so an older page degrades
+// to its old behaviour rather than losing its Layout control.
+function orderReducers(names) {
+  const declared = ((active || {}).provenance || {}).reducer_order || [];
+  const present = new Set(names);
+  const known = declared.filter((r) => present.has(r));
+  const rest = names.filter((r) => !known.includes(r)).sort();
+  return known.concat(rest);
+}
+
 // Everything that depends on WHICH cohort is showing. Called once at startup and
 // again on every switch, so the two paths cannot drift -- a switch that rebuilt
 // the panels but not the dropdowns would leave a control pointing at a feature
@@ -406,7 +426,7 @@ let reducers = [];
 function applyCohort(index) {
   active = COHORTS[index];
   spaces = active.spaces;
-  reducers = [...new Set(spaces.flatMap((s) => Object.keys(s.embeddings)))].sort();
+  reducers = orderReducers([...new Set(spaces.flatMap((s) => Object.keys(s.embeddings)))]);
   state.reducer = reducers[0] || null;
   state.selected = new Set();
   state.overlay = "__none__";
