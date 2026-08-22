@@ -645,6 +645,11 @@ NON_SHIPPING_DOCUMENTS = (
     "PR_NARRATIVE",
     "CLAUDE.md",
     "protein-map-geometry-options",
+    # `HTML-PLAN` and not `HTML-PLAN.md`, because the page cites it as
+    # "HTML-PLAN §6". `PLAN.md` above is a substring of `HTML-PLAN.md` and so
+    # would have caught the filename spelling by accident -- but never the
+    # section spelling, which is the one that was actually on the page.
+    "HTML-PLAN",
 )
 
 
@@ -657,6 +662,38 @@ def _document_offences(specs):
         for doc in NON_SHIPPING_DOCUMENTS
         if doc in value
     ]
+
+
+def test_no_local_only_document_reaches_the_rendered_page():
+    """The panel guard below checks panel METADATA. The page is bigger than that.
+
+    `template.py` is one long string of HTML, CSS and JavaScript, and its own
+    comments are emitted verbatim into the file the reader receives. So a `//`
+    comment naming a local-only document ships, and nothing looked -- the
+    catalogue guard cannot see it, and the four go/no-go greps run by hand
+    never included `HTML-PLAN`.
+
+    Measured when this test was written: `HTML-PLAN` appeared once in every
+    built page -- both shipped cohorts and the demo -- pointing at a document
+    the PR does not contain.
+
+    This renders the template and greps the result, which is the same thing a
+    reader would receive.
+    """
+    from explorer.template import render
+
+    html = render({"spaces": []}, plotly_js="", title="t")
+    offences = sorted(doc for doc in NON_SHIPPING_DOCUMENTS if doc in html)
+    assert not offences, (
+        f"the rendered page cites documents the PR does not ship: {offences}. "
+        "template.py's own comments are emitted into the page."
+    )
+
+
+def test_the_page_guard_would_actually_catch_one():
+    """The detector, not a re-typed copy of its condition, against known-bad text."""
+    planted = "// a note about POST-PLAN, which the reader does not have"
+    assert [doc for doc in NON_SHIPPING_DOCUMENTS if doc in planted] == ["POST-PLAN"]
 
 
 def test_no_panel_tells_the_reader_to_consult_a_document_the_pr_does_not_ship():
@@ -3916,7 +3953,7 @@ def test_a_withheld_heatmap_is_a_third_state_and_not_awaiting_a_matrix():
     """ "Awaiting" would send a reader to produce a file that already exists.
 
     The matrix is on disk and is fine; it is the cohort that is too large to
-    ship it. HTML-PLAN §6's rule is that these empty states stay distinct,
+    ship it. The rule is that these empty states stay distinct,
     because collapsing them hides which panels are one step from working.
     """
     from explorer.template import render

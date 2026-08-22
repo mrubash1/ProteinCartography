@@ -16,7 +16,7 @@ nothing can sort them, join them, or check them; and the categorical
 annotations — lineage, protein family — are not tested at all, though they are
 the columns a biologist actually asks about.
 
-PLAN Phase 6 names four categories to enrich on: taxon, EC, domain
+Four categories are worth enriching on: taxon, EC, domain
 architecture, localization. Building it raised five questions the phase
 description does not answer, and each has a wrong answer that produces a table
 which looks right.

@@ -595,8 +595,9 @@ class CoregistrationConfig:
 class EnrichmentConfig:
     """What a cluster is made of, and which columns get asked.
 
-    Column-driven on purpose. PLAN Phase 6 names four categories -- taxon, EC,
-    domain architecture, localization -- and the pipeline fetches two of them:
+    Column-driven on purpose. Four categories are worth enriching on -- taxon,
+    EC number, domain architecture and subcellular localization -- and the
+    pipeline fetches two of them:
     `Lineage` and `Pfam`/`InterPro` are in `uniprot_features.tsv`, `ec` and
     `cc_subcellular_location` are never requested (FOLLOWUPS #35). Naming the
     columns rather than the categories means the other two arrive the moment

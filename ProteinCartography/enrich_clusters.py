@@ -24,7 +24,8 @@ coordinates and nothing else -- so an enrichment table today describes the
 This module is deliberately indifferent to that: it takes a cluster table by
 path and names the clustering in its output, so per-space clustering is a
 wiring change rather than a rewrite. ADR 0012 §1 records the decision; it is
-also what PLAN Phase 6's cross-space ARI needs and does not have.
+also what a cross-space adjusted Rand index would need and does not have, since
+comparing two spaces' partitions requires each space to have one of its own.
 
 Additive, like every other rule in this work: nothing existing consumes any of
 it, and the rule stays out of the DAG unless a config asks for enrichment.

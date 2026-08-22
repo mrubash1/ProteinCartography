@@ -45,9 +45,9 @@ __all__ = [
     "space_verdict",
 ]
 
-#: What the page is allowed to weigh. Matt's budget, recorded in POST-PLAN: a
-#: hard ceiling of 20 MB and a preferred ceiling of 10 MB for the whole file,
-#: Plotly included.
+#: What the page is allowed to weigh: a hard ceiling of 20 MB and a preferred
+#: ceiling of 10 MB for the whole file, Plotly included. The numbers are a
+#: judgement about what a reader will wait for over a link, not a measurement.
 #:
 #: Named here rather than asserted anywhere, deliberately. A build that FAILS on
 #: size would refuse to produce the artifact a reader needs at exactly the moment
