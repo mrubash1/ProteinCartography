@@ -89,6 +89,16 @@ def parse_args():
         "--cohort-report",
         help="Where to write the cohort report as JSON. Skipped if not given.",
     )
+    parser.add_argument(
+        "--foldseek-mode",
+        default=None,
+        help=(
+            "The Foldseek search mode this run used, recorded in the cohort report. "
+            "Provenance only -- nothing here reads it. It is here because the two "
+            "modes are indistinguishable from their output, so a run that does not "
+            "state its mode cannot be told from one that used the other."
+        ),
+    )
     args = parser.parse_args()
     return args
 
@@ -151,6 +161,7 @@ def select_cohort(
     uniprot_features=None,
     candidates_before_filtering=None,
     report_file=None,
+    foldseek_mode=None,
 ):
     """Apply the selection rule, write the report, and return the retained ids."""
     scores = None
@@ -173,6 +184,12 @@ def select_cohort(
         accessions,
         n_candidates_before_filtering=_count_lines(candidates_before_filtering),
         lineages=_read_lineages(uniprot_features),
+        # Provenance, in the `extra` slot the report already has. Recorded here
+        # rather than in a new file because a new unconditional output would
+        # show up in parity as a differing file; the cohort report is already
+        # gated on MULTISPACE_ENABLED. Omitted entirely when not stated, so the
+        # default tree is byte-identical.
+        extra=({"foldseek_mode": foldseek_mode} if foldseek_mode else None),
     )
     print(cohort.format_report(report), file=sys.stderr, flush=True)
     if report_file:
@@ -191,6 +208,7 @@ def download_pdbs(
     uniprot_features=None,
     candidates_before_filtering=None,
     report_file=None,
+    foldseek_mode=None,
 ):
     """
     Download PDBs for the accessions listed in `input_file` from AlphaFold.
@@ -222,6 +240,7 @@ def download_pdbs(
         uniprot_features=uniprot_features,
         candidates_before_filtering=candidates_before_filtering,
         report_file=report_file,
+        foldseek_mode=foldseek_mode,
     )
 
     session = api_utils.session_with_retry()
@@ -260,6 +279,7 @@ def main():
         uniprot_features=args.uniprot_features,
         candidates_before_filtering=args.candidates_before_filtering,
         report_file=args.cohort_report,
+        foldseek_mode=args.foldseek_mode,
     )
 
 

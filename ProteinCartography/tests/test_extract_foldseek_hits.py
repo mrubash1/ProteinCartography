@@ -314,3 +314,76 @@ def test_the_module_imports_nothing_its_rule_environment_lacks():
     probe = ast.parse("import scipy\n")
     top = probe.body[0]
     assert {alias.name.split(".")[0] for alias in top.names} - allowed == {"scipy"}
+
+
+# ---------------------------------------------------------------------------
+# the mode as a stated value (PC-014 phase 3)
+# ---------------------------------------------------------------------------
+
+
+def test_a_stated_tmalign_is_refused_before_anything_is_read(tmp_path):
+    """A stated mode beats a guess.
+
+    The column-shape heuristic can only ever say "this looks wrong", and it
+    cannot see an empty or fully-filtered tmalign file at all. When the pipeline
+    knows what it asked for -- and it does, from `foldseek_mode` -- saying so is
+    better evidence than inspecting the result.
+    """
+    from hit_significance import TmalignOutputError
+
+    empty = write_m8(tmp_path / "alis_afdb50.m8", [])
+    with pytest.raises(TmalignOutputError, match="only interpret '3diaa'"):
+        extract_foldseekhits([empty], str(tmp_path / "hits.txt"), mode="tmalign")
+
+
+def test_a_stated_3diaa_is_processed_normally(tmp_path):
+    """The mode the pipeline actually passes must cost the normal path nothing."""
+    path = write_m8(tmp_path / "alis_afdb50.m8", [m8_row("P00001", 1e-40, bits=3000)])
+    out = tmp_path / "hits.txt"
+    extract_foldseekhits([path], str(out), mode="3diaa")
+    assert hits_in(out) == ["P00001"]
+
+
+def test_an_unstated_mode_still_falls_back_to_the_heuristic(tmp_path):
+    """Direct invocation, where nobody passed a mode. The shape check is what is
+    left, and it must still fire."""
+    from hit_significance import TmalignOutputError
+
+    path = write_m8(
+        tmp_path / "alis_afdb50.m8",
+        [tmalign_row("P00001", 0.9999), tmalign_row("P00002", 0.402)],
+    )
+    with pytest.raises(TmalignOutputError, match="tmalign"):
+        extract_foldseekhits([path], str(tmp_path / "hits.txt"), mode=None)
+
+
+def test_the_command_line_parser_builds_without_a_flag_collision():
+    """`-m` was already `--max-num-hits` and phase 3 briefly gave it to `--mode`
+    as well.
+
+    argparse raises at PARSE-BUILD time, so the collision took down every
+    `extract_foldseek_hits` job in the pipeline while every unit test here
+    still passed -- nothing in this file had ever built the parser. Only the
+    end-to-end domain test caught it. This builds the parser, which is the
+    cheap half of what that test does.
+    """
+    import sys
+    from unittest import mock
+
+    import extract_foldseek_hits
+
+    argv = [
+        "extract_foldseek_hits.py",
+        "--input",
+        "a.m8",
+        "--output",
+        "out.txt",
+        "--mode",
+        "3diaa",
+        "--max-num-hits",
+        "5",
+    ]
+    with mock.patch.object(sys, "argv", argv):
+        args = extract_foldseek_hits.parse_args()
+    assert args.mode == "3diaa"
+    assert args.max_num_hits == 5

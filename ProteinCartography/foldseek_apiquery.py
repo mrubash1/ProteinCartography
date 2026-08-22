@@ -52,7 +52,16 @@ def parse_args():
         "-m",
         "--mode",
         default="3diaa",
-        help=" | ".join([f"'{mode}'" for mode in SET_MODES]),
+        help=(
+            "Search mode: " + " | ".join([f"'{mode}'" for mode in SET_MODES]) + ". "
+            "THE PIPELINE RUNS '3diaa' and passes it explicitly from `foldseek_mode` "
+            "in the config. Nothing in the output distinguishes the two: tmalign "
+            "returns the same 21 columns in the same positions, with the column named "
+            "'evalue' holding a TM-score and 'bits' holding roughly that times 100. So "
+            "a file produced under the wrong mode cannot be identified with certainty "
+            "afterwards, and both `extract_foldseek_hits.py` and `hit_significance.py` "
+            "refuse one whose columns are tmalign-shaped."
+        ),
     )
     parser.add_argument(
         "-d",

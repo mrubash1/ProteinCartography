@@ -38,6 +38,22 @@ foldseek_databases:
 - "afdb-swissprot"
 - "afdb-proteome"
 
+# Which Foldseek search to run. '3diaa' is the pipeline's mode and the only one
+# the downstream scripts can interpret.
+#
+# This is a setting rather than a constant because `foldseek_apiquery.py` has
+# always accepted `--mode tmalign` and the Snakefile has never passed a mode at
+# all -- so the flag was reachable by hand and unreachable by config, and the
+# choice was recorded nowhere. It is stated here so that it travels with the run.
+#
+# **The two modes are indistinguishable from their output.** tmalign returns the
+# same 21 columns in the same positions with different meanings: the column
+# named `evalue` holds a TM-score and `bits` holds roughly that times 100. So
+# changing this changes which proteins reach the map, and nothing downstream can
+# tell after the fact -- which is why `extract_foldseek_hits.py` and
+# `hit_significance.py` both refuse a file whose columns are tmalign-shaped.
+foldseek_mode: "3diaa"
+
 # The maximum number of Foldseek hits to retain
 # (the foldseek API does not provide a way to limit the number of Foldseek hits returned,
 # so this is used to truncate the list of retrieved hits)

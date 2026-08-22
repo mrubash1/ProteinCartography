@@ -162,6 +162,9 @@ BLAST_TIMEOUT_SECONDS = float(config["blast_timeout_seconds"])
 BLAST_DATABASE = config["blast_database"]
 FOLDSEEK_SERVER_URL = config["foldseek_server_url"]
 FOLDSEEK_DATABASES = config["foldseek_databases"]
+# Validated at parse time, not inside the rule: a typo must fail before the
+# search, not after it. See config_utils._get_foldseek_mode.
+FOLDSEEK_MODE = config_utils._get_foldseek_mode(config)
 MAX_FOLDSEEK_HITS = int(config["max_foldseek_hits"])
 # Read through the cohort config so that `cohort.max_structures` is honored when
 # set, while a legacy config that only knows `max_structures` keeps working --
@@ -367,7 +370,10 @@ rule run_foldseek:
     """
     Queries Foldseek using the web API.
     The script accepts an input file ending in '.pdb' and returns an output file ending in '.tar.gz'.
-    The script also accepts a `--mode` flag of either '3diaa' (default) or 'tmalign'.
+    The mode comes from `foldseek_mode` in the config and is passed explicitly.
+    It was not passed at all until PC-014 phase 3, so the flag was reachable by
+    hand and unreachable by config; '3diaa' is both the default and the only
+    mode the downstream scripts can interpret.
     After running, untars the files and extracts hits.
 
     Note: the foldseek web API returns a limited number of hits; up to 1000 per database
@@ -391,6 +397,7 @@ rule run_foldseek:
             --input {input.pdb_file} \
             --output {output.foldseek_output} \
             --server {FOLDSEEK_SERVER_URL} \
+            --mode {FOLDSEEK_MODE} \
             --database {FOLDSEEK_DATABASES}
         tar -xvf {output.foldseek_output} -C {output.m8_files_dir}
         """
@@ -408,6 +415,7 @@ rule extract_foldseek_hits:
         python ProteinCartography/extract_foldseek_hits.py \
             --input {input.m8_files} \
             --output {output.foldseek_hits} \
+            --mode {FOLDSEEK_MODE} \
             --max-num-hits {MAX_FOLDSEEK_HITS}
         """
 
@@ -575,8 +583,19 @@ checkpoint download_pdbs:
         uniprot_features=rules.fetch_uniprot_metadata.output.uniprot_features,
         aggregated_hits=rules.aggregate_hits.output.aggregated_hits,
     params:
+        # The mode rides with the report rather than being passed always: both are
+        # gated on MULTISPACE_ENABLED, so the default tree gains neither a file
+        # nor a field.
+        #
+        # Two formatting rules are load-bearing in these four lines, and both cost
+        # a red snakefmt to find. Concatenation, never an f-string -- the PEP 701
+        # trap this repo already has a rule about. And NO COMMENTS INSIDE the
+        # parenthesised expression: snakefmt's black parser fails on them here and
+        # reports "EOF in multi-line statement" pointing at a line 20 further down.
         cohort_report_args=lambda wildcards, output: (
-            "--cohort-report " + output.cohort_report if MULTISPACE_ENABLED else ""
+            "--cohort-report " + output.cohort_report + " --foldseek-mode " + FOLDSEEK_MODE
+            if MULTISPACE_ENABLED
+            else ""
         ),
         # Reads the path off `input` rather than rebuilding it. The same file is
         # declared by `aggregate_hit_significance` a hundred lines above and was

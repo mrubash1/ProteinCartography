@@ -531,3 +531,52 @@ def test_params_for_reports_what_each_pipeline_reads():
     assert "n_neighbors" in params_for("umap")
     assert "perplexity" in params_for("pca_tsne")
     assert params_for("pca") == frozenset(), "PCA reads none of these"
+
+
+# ==========================================================================
+# `foldseek_mode`. The flag existed on `foldseek_apiquery.py` from the start and
+# the Snakefile never passed it, so the mode was reachable by hand and
+# unreachable by config, and the choice was recorded nowhere (PC-014 phase 3).
+# ==========================================================================
+
+
+def test_the_foldseek_mode_defaults_to_the_mode_the_pipeline_runs():
+    from config_utils import _get_foldseek_mode
+
+    assert _get_foldseek_mode({}) == "3diaa"
+    assert _get_foldseek_mode({"foldseek_mode": "tmalign"}) == "tmalign"
+    assert _get_foldseek_mode({"foldseek_mode": "  3diaa  "}) == "3diaa"
+
+
+def test_an_unknown_foldseek_mode_fails_at_config_parse_time():
+    """Before the search, not after it -- the argument `SIGNIFICANCE_MEASURES`
+    makes. `foldseek_apiquery.py` does check the value, but inside the rule,
+    once per query protein, after the DAG has been built."""
+    import pytest as _pytest
+    from config_utils import ProteinCartographyInputError, _get_foldseek_mode
+
+    with _pytest.raises(ProteinCartographyInputError, match="foldseek_mode must be one of"):
+        _get_foldseek_mode({"foldseek_mode": "3diAA"})
+    with _pytest.raises(ProteinCartographyInputError, match="foldseek_mode must be one of"):
+        _get_foldseek_mode({"foldseek_mode": "tm-align"})
+
+
+def test_the_accepted_modes_come_from_the_script_rather_than_being_retyped():
+    """One source of truth. If these ever disagree, a config the validator
+    accepts is one the script rejects, inside the rule."""
+    import inspect
+
+    from config_utils import _get_foldseek_mode
+    from foldseek_apiquery import SET_MODES
+
+    assert "from foldseek_apiquery import SET_MODES" in inspect.getsource(_get_foldseek_mode)
+    assert SET_MODES == ["3diaa", "tmalign"]
+
+
+def test_the_shipped_config_states_the_mode():
+    """`config.yml` is always loaded, so every existing user config inherits the
+    key without editing anything."""
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[2]
+    assert 'foldseek_mode: "3diaa"' in (root / "config.yml").read_text()

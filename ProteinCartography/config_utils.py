@@ -146,6 +146,31 @@ def _get_domain_map(config) -> str:
     return value
 
 
+def _get_foldseek_mode(config) -> str:
+    """Which Foldseek search to run, validated at config-parse time.
+
+    Checked here rather than where it is used, for the reason
+    `SIGNIFICANCE_MEASURES` gives: a typo must fail before a four-hour search,
+    not after it. `foldseek_apiquery.py` does check the value, but it checks it
+    inside the rule, once per query protein, after the DAG has been built.
+
+    The accepted set is imported from `foldseek_apiquery` rather than retyped,
+    so the two cannot drift -- and imported INSIDE the function rather than at
+    module scope, because this module is imported while the Snakefile is being
+    parsed and `foldseek_apiquery` pulls in the HTTP stack to get there.
+    """
+    from foldseek_apiquery import SET_MODES
+
+    value = str(config.get("foldseek_mode", "3diaa")).strip()
+    if value not in SET_MODES:
+        raise ProteinCartographyInputError(
+            f"foldseek_mode must be one of {SET_MODES}; got {value!r}. The two modes "
+            "return the same columns with different meanings, so a wrong value here is "
+            "not caught by anything downstream -- it changes which proteins reach the map."
+        )
+    return value
+
+
 def _get_user_domains_file(config) -> str:
     """Optional TSV of parent_protid + chopping (or start/end). Empty string if unset."""
     name = config.get("user_domains_file") or ""

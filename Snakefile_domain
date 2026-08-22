@@ -142,6 +142,7 @@ if MODE == config_utils.Mode.SEARCH:
                 --input {input.pdb_file} \
                 --output {output.foldseek_output} \
                 --server {FOLDSEEK_SERVER_URL} \
+                --mode {FOLDSEEK_MODE} \
                 --database {FOLDSEEK_DATABASES}
             tar -xvf {output.foldseek_output} -C {output.m8_files_dir}
             """
@@ -158,6 +159,7 @@ if MODE == config_utils.Mode.SEARCH:
             python ProteinCartography/extract_foldseek_hits.py \
                 --input {input.m8_files} \
                 --output {output.foldseek_hits} \
+                --mode {FOLDSEEK_MODE} \
                 --max-num-hits {MAX_FOLDSEEK_HITS}
             """
 

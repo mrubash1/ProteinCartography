@@ -19,6 +19,22 @@ def parse_args():
     parser.add_argument(
         "-i", "--input", nargs="+", required=True, help="Takes .m8 file paths as input."
     )
+    parser.add_argument(
+        # No short flag: `-m` is already `--max-num-hits` on this parser, and
+        # argparse raises at PARSE-BUILD time, so the collision took down every
+        # `extract_foldseek_hits` job rather than failing a test. Caught by the
+        # end-to-end domain pipeline test, which is the only thing here that
+        # actually runs the script's command line.
+        "--mode",
+        default=None,
+        help=(
+            "The Foldseek search mode the .m8 files came from, if it is known. "
+            "'3diaa' is what this script can interpret. Passing 'tmalign' is refused "
+            "outright, because in that mode the 'evalue' column is a TM-score and "
+            "filtering it ascending keeps the LEAST similar structures. Omitted on a "
+            "direct invocation, where the shape of the columns is inspected instead."
+        ),
+    )
     parser.add_argument("-o", "--output", required=True, help="Returns a .txt file as output.")
     parser.add_argument(
         "-e",
@@ -43,7 +59,11 @@ def parse_args():
 
 
 def extract_foldseekhits(
-    input_files: list, output_file: str, evalue=DEFAULT_EVALUE, max_num_hits=None
+    input_files: list,
+    output_file: str,
+    evalue=DEFAULT_EVALUE,
+    max_num_hits=None,
+    mode=None,
 ):
     """
     Takes a list of input tabular Foldseek results files from the API query (ending in .m8).
@@ -52,7 +72,25 @@ def extract_foldseekhits(
     Args:
         input_files (list): list of string paths to input files.
         output_file (str): path of destination file.
+        mode (str): the search mode the files came from, if it is known. A stated
+            `tmalign` is refused before anything is read; a stated `3diaa` is
+            trusted and the column-shape heuristic is skipped; `None` means the
+            caller does not know, and the shape is inspected per file.
     """
+    # A STATED MODE BEATS A GUESS. The heuristic below is good but it is a
+    # heuristic: it reads the shape of two columns and can only ever say
+    # "this looks wrong". When the pipeline knows what it asked for -- which it
+    # does, from `foldseek_mode` in the config -- saying so is better evidence
+    # than inspecting the result, and it catches an empty or all-filtered
+    # tmalign file that the heuristic cannot see at all.
+    if mode is not None and mode != "3diaa":
+        raise TmalignOutputError(
+            f"extract_foldseek_hits was told the search mode was {mode!r}, and it can "
+            "only interpret '3diaa'. In any other mode the server reuses the same "
+            "column positions for different quantities -- the column named 'evalue' "
+            "holds a TM-score -- so filtering it ascending keeps the LEAST similar "
+            "structures. Refusing rather than guessing."
+        )
 
     # empty df for collecting results
     dummy_df = pd.DataFrame()
@@ -152,7 +190,13 @@ def main():
         if maybe_write_per_domain_hits(output_file):
             return
 
-    extract_foldseekhits(input_files, output_file, evalue=evalue, max_num_hits=max_num_hits)
+    extract_foldseekhits(
+        input_files,
+        output_file,
+        evalue=evalue,
+        max_num_hits=max_num_hits,
+        mode=args.mode,
+    )
 
 
 # check if called from interpreter
