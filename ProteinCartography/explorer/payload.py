@@ -97,6 +97,32 @@ CENSORING_DROPPED_KEYS = ("cross_cluster_table",)
 #: makes its docstring's claim -- that reducers are tried "in the order the
 #: panel would draw them" -- true rather than aspirational, and the resolved
 #: order travels in the provenance so the page cannot disagree with it.
+#: Every key `build_payload` can put into the `available` set, which is what
+#: `panels.catalogue_for` reads to decide whether each panel is drawable.
+#:
+#: Exported so a test can ask the vocabulary directly. Until this existed the
+#: suite REGEX-PARSED THIS FILE'S OWN SOURCE for `available.add("...")`, and
+#: said so in its docstring -- an honest workaround, but one that would keep
+#: passing if the adds moved somewhere a regex could not see.
+#:
+#: **This constant is READ, never used to build the set.** Initialising
+#: `available` from it would mark every panel drawable regardless of what the
+#: run produced, which is the one change that would move every panel's state
+#: while every count still looked right.
+PRODUCIBLE_KEYS = frozenset(
+    {
+        "comparisons",
+        "fused_spaces",
+        "records",
+        "overlays",
+        "pipeline",
+        "matrix",
+        "censoring",
+        "stability_series",
+    }
+)
+
+
 REDUCER_DISPLAY_ORDER = ("pca_umap", "umap", "pca_tsne", "tsne", "pca")
 
 
@@ -954,6 +980,16 @@ def build_payload(config, output_dir: str, analysis_name: str = "analysis") -> E
         available.add("censoring")
     if any(space.stability for space in spaces):
         available.add("stability_series")
+    # Read, not built from. A key added above and not declared in
+    # PRODUCIBLE_KEYS would otherwise reach `catalogue_for` and silently make a
+    # panel drawable that no test knows about.
+    unknown = available - PRODUCIBLE_KEYS
+    if unknown:
+        raise ValueError(
+            f"build_payload produced availability keys not in PRODUCIBLE_KEYS: "
+            f"{sorted(unknown)}. Add them to the constant, so the panel catalogue "
+            "and the tests that read it agree about what this pipeline can supply."
+        )
     return ExplorerPayload(
         analysis_name=analysis_name,
         spaces=spaces,

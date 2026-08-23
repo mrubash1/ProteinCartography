@@ -2907,17 +2907,89 @@ def test_no_metricity_figure_reaches_the_payload(built):
 
 
 def _producible_keys():
-    """What `build_payload` can actually put into `available`, read from source.
+    """The vocabulary `build_payload` can supply, asked of the module.
 
-    Parsed rather than retyped, so the check reads the code instead of a copy of
-    it. `explorer/payload.py` has no exported vocabulary yet -- PC-009 phase 2
-    would add one -- and until it does, this is the honest way to ask.
+    This used to REGEX-PARSE `payload.py`'s source for `available.add("...")`,
+    because there was no exported vocabulary to ask (PC-009). There is now, so
+    the callers below read `PRODUCIBLE_KEYS` instead. The scrape survives one
+    level down, in
+    `test_the_exported_vocabulary_matches_the_keys_the_code_actually_adds`,
+    where it does the one job it is good at: proving the constant and the code
+    have not drifted apart.
     """
+    from explorer.payload import PRODUCIBLE_KEYS
+
+    return set(PRODUCIBLE_KEYS)
+
+
+def _keys_added_in_source():
+    """The availability keys the code really adds, found by PARSING not grepping.
+
+    A regex over the source was the first attempt and it immediately went wrong:
+    `payload.py`'s own comment explaining the old scrape contains a specimen
+    call, and the regex counted it as a ninth key. Prose that mentions code is
+    indistinguishable from code to a pattern match -- which is the whole reason
+    the exported constant beats the scrape. `ast` sees calls and not sentences.
+    """
+    import ast
     import pathlib
-    import re
 
     source = pathlib.Path(__file__).resolve().parents[1] / "explorer" / "payload.py"
-    return set(re.findall(r'available\.add\("([^"]+)"\)', source.read_text()))
+    tree = ast.parse(source.read_text())
+    keys = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+            continue
+        target = node.func.value
+        if node.func.attr != "add" or not isinstance(target, ast.Name):
+            continue
+        if target.id != "available" or len(node.args) != 1:
+            continue
+        arg = node.args[0]
+        if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+            keys.add(arg.value)
+    return keys
+
+
+def test_the_exported_vocabulary_matches_the_keys_the_code_actually_adds():
+    """A constant beside the code it describes is a copy until something checks.
+
+    `PRODUCIBLE_KEYS` is what the tests and the panel catalogue read; the
+    `available.add(...)` calls are what actually runs. If a key is added to one
+    and not the other, panels change drawability with nothing to say so -- which
+    is why the export replaced the scrape rather than deleting it.
+    """
+    from explorer.payload import PRODUCIBLE_KEYS
+
+    assert set(PRODUCIBLE_KEYS) == _keys_added_in_source()
+    assert len(PRODUCIBLE_KEYS) == 8
+
+
+def test_the_vocabulary_is_read_and_never_used_to_build_the_set():
+    """The one edit here that would move every panel while every count still
+    looked right.
+
+    `available` must start empty and be filled by what the run produced.
+    Initialising it from `PRODUCIBLE_KEYS` would mark every panel drawable
+    regardless, and `catalogue_for` would report a full page over an empty run.
+    """
+    import inspect
+
+    from explorer import payload
+
+    source = inspect.getsource(payload.build_payload)
+    assert "available = set()" in source
+    assert "available = set(PRODUCIBLE_KEYS)" not in source
+    assert "available - PRODUCIBLE_KEYS" in source, "the guard must subtract, not seed"
+
+
+def test_an_availability_key_outside_the_vocabulary_is_refused():
+    """The guard, run against the condition it exists for."""
+    from explorer.payload import PRODUCIBLE_KEYS
+
+    available = {"comparisons", "a_key_nobody_declared"}
+    unknown = available - PRODUCIBLE_KEYS
+    assert unknown == {"a_key_nobody_declared"}
 
 
 def test_the_seventh_empty_panel_needs_a_third_dataset_not_the_tree():
