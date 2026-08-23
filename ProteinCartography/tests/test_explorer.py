@@ -4026,7 +4026,7 @@ def test_the_page_says_why_the_colour_by_list_is_short():
 
     html = render({"spaces": []}, plotly_js="", title="t")
     assert "function overlaySourceCell()" in html
-    assert '["colour-by vocabulary", overlaySourceCell(), "aggregate_features"]' in html
+    assert '["colour-by vocabulary", overlaySourceCell(), overlaySourceFile()]' in html
     body = html[html.index("function overlaySourceCell()") :][:1600]
     assert "no aggregated features table" in body
     # The dropped list is rendered by `droppedNote`, which every branch shares.
@@ -4319,3 +4319,38 @@ def test_the_comment_no_longer_asserts_an_invariant_nothing_enforces():
     assert "with whatever it has, and says so, rather than vanishing" not in html
     # And it points at the test that would fail, rather than restating the rule.
     assert "test_a_space_missing_the_selected_layout_says_so_on_the_panel" in html
+
+
+def test_the_assembled_branch_reconciles_with_the_dropdown_like_the_aggregate_one():
+    """`n_kept` is fixed when the overlay report is built; `build_payload` then
+    adds the blocks' own descriptors with `setdefault`, so they reach the
+    dropdown WITHOUT reaching the count.
+
+    The aggregate branch has always said "plus N from the blocks' own
+    descriptors". The assembled branch returned before saying it, so a cohort
+    with no aggregated features table -- which `_colour_frame`'s own docstring
+    calls the common case -- printed a colour count SMALLER than the list it was
+    explaining. Introduced by e4cc3a8, 19 commits after PC-034 shipped.
+    """
+    from explorer.template import render
+
+    html = render({"spaces": []}, plotly_js="", title="t")
+    # Both branches carry the clause, so the count and the dropdown agree in
+    # both. Matched as contiguous source: a phrase split across a `+` is not
+    # searchable in the emitted page.
+    assert (
+        html.count("plus ${fmtValue(offered - source.n_kept)} from the ") == 2
+    ), "the reconciling clause must be on the assembled branch as well as the aggregate one"
+
+
+def test_the_provenance_column_names_the_file_the_run_actually_read():
+    """It was the literal "aggregate_features" on every branch, including the
+    one whose own text says the run has no features table at all."""
+    from explorer.template import render
+
+    html = render({"spaces": []}, plotly_js="", title="t")
+    assert "function overlaySourceFile()" in html
+    assert '["colour-by vocabulary", overlaySourceCell(), overlaySourceFile()]' in html
+    # The three answers, one per branch of overlaySourceCell.
+    assert 'if (source.source === "none") return "none found";' in html
+    assert '(source.assembled_from || []).join(" + ") || "assembled"' in html

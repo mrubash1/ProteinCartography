@@ -2375,6 +2375,18 @@ function sweepNote(space) {
 //
 // Read from the ACTIVE cohort. On a multi-cohort page some cohorts have the
 // table and some do not, so the top-level payload would answer for the wrong one.
+// Which file the colour-by vocabulary actually came from, for the provenance
+// column. Three answers, matching `overlaySourceCell`'s three branches.
+function overlaySourceFile() {
+  const source = active.overlay_source || {};
+  if (!source.path) return "aggregate_features";
+  if (source.source === "none") return "none found";
+  if (source.source === "assembled") {
+    return (source.assembled_from || []).join(" + ") || "assembled";
+  }
+  return "aggregate_features";
+}
+
 function overlaySourceCell() {
   const source = active.overlay_source || {};
   const offered = Object.keys(active.overlays || {}).length;
@@ -2400,6 +2412,17 @@ function overlaySourceCell() {
     return (
       `${fmtValue(source.n_kept)} of ${fmtValue(source.n_columns)} columns are usable ` +
       `as a colour` +
+      // The same reconciliation the aggregate branch does below, and it was
+      // missing here. `n_kept` is fixed when the overlay report is built;
+      // `payload.build_payload` then adds the blocks' own descriptors with
+      // `setdefault`, so they reach the dropdown WITHOUT reaching the count.
+      // On an assembled cohort -- which the payload's own docstring calls the
+      // common case -- this printed a number smaller than the list it was
+      // explaining, and a reader counting the dropdown got a different answer.
+      (offered > source.n_kept
+        ? `<span class="sweep">plus ${fmtValue(offered - source.n_kept)} from the ` +
+          `blocks' own descriptors</span>`
+        : "") +
       `<span class="sweep">assembled from ${from}, because this run wrote no ` +
       `aggregated features table. Anything <code>assess_pdbs</code> produces — ` +
       `pdb_confidence, pdb_origin, pdb_chains — cannot be recovered this way and ` +
@@ -2470,7 +2493,12 @@ REPORT_FILLERS.cohort = () => {
         : reportMissing("no uniprot_features.tsv was read for this run"),
       "protein_features/uniprot_features.tsv",
     ],
-    ["colour-by vocabulary", overlaySourceCell(), "aggregate_features"],
+    // The third column is the file this row is ABOUT, and it was the literal
+    // "aggregate_features" on every branch -- including `none`, whose own text
+    // says the run has no features table, and `assembled`, which names the
+    // tables it was rebuilt from. Naming a file the run did not read is the
+    // same defect one column to the right.
+    ["colour-by vocabulary", overlaySourceCell(), overlaySourceFile()],
   ];
   Object.entries(p.manifests || {}).forEach(([space, m]) => {
     rows.push([
