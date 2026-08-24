@@ -84,3 +84,89 @@ def test_each_optional_field_maps_a_real_header_to_a_lowercase_field_id(header, 
     assert field_id == field_id.lower().replace(" ", "_")
     assert header != field_id
     assert header[0].isupper()
+
+
+def _accessions_file(tmp_path):
+    """The 24 accessions the recorded artifacts answer for, one per line."""
+    from tests.mocks import API_RESPONSE_ARTIFACTS_DIRPATH, UNIPROT_ARTIFACT_DEFAULT
+
+    rows = (API_RESPONSE_ARTIFACTS_DIRPATH / UNIPROT_ARTIFACT_DEFAULT).read_text().splitlines()
+    accessions = [row.split("\t")[0] for row in rows[1:]]
+    path = tmp_path / "accessions.txt"
+    path.write_text("\n".join(accessions) + "\n")
+    return path, accessions
+
+
+def _fetch(tmp_path, fields, name):
+    """Drive `query_uniprot` against the recorded UniProtKB responses.
+
+    Patches `requests.Session.request`, which is the seam `mocks` itself uses;
+    scoped to the call rather than started globally, because the module-level
+    version is meant for a pipeline subprocess and never stops.
+    """
+    from unittest import mock as _mock
+
+    import fetch_uniprot_metadata as fum
+
+    from tests import mocks
+
+    accessions_path, accessions = _accessions_file(tmp_path)
+    output = tmp_path / name
+    with _mock.patch("requests.Session.request", side_effect=mocks.mock_response):
+        fum.query_uniprot(str(accessions_path), str(output), fields=fields)
+    return output, accessions
+
+
+def test_asking_for_the_optional_fields_puts_both_real_headers_in_the_table(tmp_path):
+    """End to end through `query_uniprot`, against the recorded response.
+
+    The mock answers a request that names the optional fields with a DIFFERENT
+    recorded table -- the default artifact plus exactly two columns. Without
+    that branch this test would pass whether or not the flag ever reached the
+    request, which is the whole thing being checked.
+    """
+    pytest.importorskip("pandas")
+    import pandas as pd
+
+    output, accessions = _fetch(tmp_path, fields_for(OPTIONAL_FIELDS), "with_optional.tsv")
+    frame = pd.read_csv(output, sep="\t")
+    for header in OPTIONAL_FIELDS_DICT:
+        assert header in frame.columns, f"{header!r} missing; got {list(frame.columns)}"
+    assert len(frame) == len(accessions)
+    ec = frame["EC number"].dropna().astype(str)
+    assert set(ec[ec.str.strip() != ""]) == {"3.6.4.-"}
+
+
+def test_the_default_request_gets_neither_column(tmp_path):
+    """The controlled negative. Same code path, same cohort, two fewer columns
+    -- so the test above is measuring the fields and not the plumbing."""
+    pytest.importorskip("pandas")
+    import pandas as pd
+
+    output, _ = _fetch(tmp_path, fields_for(None), "default.tsv")
+    frame = pd.read_csv(output, sep="\t")
+    for header in OPTIONAL_FIELDS_DICT:
+        assert header not in frame.columns
+
+
+def test_the_snakefile_renders_the_config_list_as_bare_arguments():
+    """`--additional-fields {UNIPROT_ADDITIONAL_FIELDS}` interpolates a PYTHON
+    LIST into a shell command, and the rendering is snakemake's, not Python's.
+
+    Worth pinning because the two differ in exactly the way that would be
+    silent: `str([])` is `"[]"`, which argparse would take as a field literally
+    named `[]` and UniProt would reject, while snakemake joins on spaces and an
+    empty list contributes nothing. The default path depends on the second
+    behaviour.
+    """
+    from snakemake.utils import format as snakemake_format
+
+    def render(value):
+        UNIPROT_ADDITIONAL_FIELDS = value  # noqa: F841 -- read by the formatter
+        return snakemake_format(
+            "python fetch_uniprot_metadata.py --additional-fields {UNIPROT_ADDITIONAL_FIELDS}",
+            **locals(),
+        )
+
+    assert render([]).endswith("--additional-fields ")
+    assert render(OPTIONAL_FIELDS).endswith("--additional-fields ec cc_subcellular_location")

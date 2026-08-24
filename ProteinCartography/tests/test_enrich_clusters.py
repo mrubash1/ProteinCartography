@@ -667,3 +667,42 @@ def test_a_column_that_is_present_but_unparseable_is_refused_by_name(monkeypatch
     assert manifest["extra"]["columns_unparseable"][header] == UNPARSEABLE_COLUMNS[header]
     # And nothing was enriched on it.
     assert read_table(output)["annotation"].unique().tolist() == ["Lineage"]
+
+
+def test_an_ec_column_produces_enrichment_rows(monkeypatch, run_dir):
+    """The other end of FOLLOWUPS #35: once the column is there, it enriches.
+
+    EC numbers are the half of #35 that IS usable. The values are the ones the
+    recorded UniProt fixture actually returns -- `3.6.4.-`, a partial
+    assignment with a trailing hyphen -- because that is the shape a
+    punctuation-splitting parser would silently mangle into four terms.
+    """
+    import pandas as pd
+
+    tmp_path, clusters, annotations = run_dir
+    frame = pd.read_csv(annotations, sep="\t")
+    # Two proteins share the term, which is what `min_term_count: 2` needs.
+    frame["EC number"] = ["3.6.4.-", "3.6.4.-"] + [""] * (len(frame) - 2)
+    frame.to_csv(annotations, sep="\t", index=False)
+
+    output = tmp_path / "output_ec"
+    config = write_config(
+        tmp_path,
+        {
+            **DEFAULT_ENRICHMENT,
+            "categorical": ["EC number"],
+            "continuous": [],
+            "min_term_count": 2,
+        },
+        name="config_ec.json",
+    )
+    assert run(monkeypatch, config, output, clusters, annotations) == 0
+
+    table = read_table(output)
+    assert table["annotation"].unique().tolist() == ["EC number"]
+    # ONE term, not four: the dots are part of the identifier.
+    assert set(table["term"]) == {"3.6.4.-"}
+
+    manifest = json.loads((output / "enrichment" / "manifest.json").read_text())
+    assert manifest["extra"]["columns_absent"] == []
+    assert manifest["extra"]["categorical"]["EC number"]["encoding"] == "single"

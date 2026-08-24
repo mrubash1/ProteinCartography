@@ -78,9 +78,15 @@ def mock_bioservices_uniprot_mapping():
     patch.start()
 
 
-def mock_response(method, url, **_):
+def mock_response(method, url, params=None, **_):
     """
-    Return a mock response for a given method and url.
+    Return a mock response for a given method, url and query parameters.
+
+    `params` used to be swallowed by `**_`. It is named now because the
+    UniProtKB mock has to see which FIELDS were asked for: the pipeline can
+    request two optional columns that the default run does not, and a mock that
+    answers every query with the same recorded table would make a test of that
+    feature pass whether or not the fields ever reached the request.
     """
 
     print(f"Mocking the response to: {method} {url}")
@@ -97,7 +103,7 @@ def mock_response(method, url, **_):
     elif url.startswith("https://rest.uniprot.org/uniprotkb/search") or url.startswith(
         "https://rest.uniprot.org/uniprotkb/accessions"
     ):
-        return mock_uniprotkb_rest_api_responses()
+        return mock_uniprotkb_rest_api_responses(params)
 
     # AlphaFold prediction API (isoform-correct pdbUrl, then files download).
     elif url.startswith("https://alphafold.ebi.ac.uk/api/prediction"):
@@ -247,13 +253,28 @@ def mock_ted_api_responses(url):
     return mock_response
 
 
-def mock_uniprotkb_rest_api_responses():
+#: The recorded response for a request that asks for the two OPTIONAL fields.
+#: It is the default artifact plus exactly two columns -- same 24 accessions, in
+#: the same order, every row a strict prefix of its extended twin -- so a test
+#: that switches between them changes those two columns and nothing else.
+#: Recorded live on 2026-08-24; two of the 24 carry an EC number (`3.6.4.-`).
+UNIPROT_ARTIFACT_WITH_OPTIONAL_FIELDS = "rest.uniprot.org_uniprotkb_search_with_optional_fields"
+UNIPROT_ARTIFACT_DEFAULT = "rest.uniprot.org_uniprotkb_search"
+
+
+def mock_uniprotkb_rest_api_responses(params=None):
     """
     Mock the response to calls made to the UniProtKB REST API
     (these are made by `fetch_uniprot_metadata.query_uniprot`).
 
-    Note: this makes no attempt to parse the query string; it just returns a manually curated
-    response from a real API call.
+    It parses the query string for ONE thing only: whether the optional fields
+    were requested. Everything else is still a manually curated response from a
+    real API call, and the accession list is still ignored.
+
+    That one branch is load-bearing rather than fussy. Without it the mock
+    answers a request for `ec` with a table that has no EC column, so a test
+    proving the pipeline can fetch EC numbers would pass identically if the
+    flag never reached the request at all.
     """
 
     mock_response = mock.Mock(spec=requests.Response)
@@ -264,9 +285,13 @@ def mock_uniprotkb_rest_api_responses():
     # to prevent `fetch_uniprot_metadata.query_uniprot` from requesting a second batch of results.
     mock_response.headers = {}
 
-    with open(
-        API_RESPONSE_ARTIFACTS_DIRPATH / "rest.uniprot.org_uniprotkb_search", encoding="utf-8"
-    ) as file:
+    requested = str((params or {}).get("fields", ""))
+    artifact = (
+        UNIPROT_ARTIFACT_WITH_OPTIONAL_FIELDS
+        if "cc_subcellular_location" in requested or ",ec," in f",{requested},"
+        else UNIPROT_ARTIFACT_DEFAULT
+    )
+    with open(API_RESPONSE_ARTIFACTS_DIRPATH / artifact, encoding="utf-8") as file:
         mock_response.text = file.read()
 
     return mock_response
