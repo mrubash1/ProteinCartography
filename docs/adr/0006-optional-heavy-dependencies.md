@@ -26,9 +26,13 @@ constrains the solution:
   in-file: `matplotlib=3.7.1` with a comment explaining exactly this.
 - `setuptools >= 81` removed `pkg_resources`, which `umap-learn 0.5.3` imports at
   module scope. Also now pinned in-file with a comment.
-- The CI conda cache key is `hashFiles('envs/*.yml')`, so CI never re-solves
-  while the env files are unchanged — which is precisely why the drift went
-  undetected for so long.
+- The CI conda cache key hashes the env files, so CI never re-solves while they
+  are unchanged — which is precisely why the drift went undetected for so long.
+  It was `hashFiles('envs/*.yml')` when this record was written and is now the
+  six files a `conda:` directive actually names, because hashing all ten meant
+  editing an env no rule solves evicted a multi-gigabyte cache and rebuilt every
+  pipeline environment. The narrowing does not weaken the point above: the four
+  excluded files are not solved by snakemake at all.
 - `mamba` 2.x removed the `mamba env create` CLI that snakemake 7.25.3 invokes,
   so any new env that leaves mamba unpinned breaks `--conda-frontend mamba`.
 
@@ -39,7 +43,11 @@ constrains the solution:
 > **What exists today.** This record is written in the present indicative, and
 > the blocks it is chiefly about — `plm`, `function`, `localization` — belong to
 > Phases 8 and 9 and are not in this PR. Rules 1 to 4 are all in force for what
-> *is* here: `envs/` is untouched by this branch, every provider implements
+> *is* here: `envs/` is untouched by this branch **except that
+> `cartography_dev.yml` was deleted** — a drifted duplicate of `analysis.yml`
+> that no rule solved, pinning sklearn 1.3.2 against the determinism
+> guarantee's 1.2.2; see FOLLOWUPS #2. Rule 1 below is about what enters an env
+> file, and nothing entered one. Every provider implements
 > `is_available`, no optional dependency is load-bearing, and the CI job proving
 > it is the `end-to-end-with-no-optional-dependencies` job in
 > `.github/workflows/multispace.yml`. Items marked **(deferred)** below arrive
@@ -79,9 +87,8 @@ Two supporting mechanisms:
   ABI break. Each env gets a job that creates it and imports its top-level
   packages.
 - **A scheduled fresh-solve job (deferred; no workflow carries a `schedule:`).**
-  Because the cache key is
-  `hashFiles('envs/*.yml')`, unchanged env files are never re-solved and drift is
-  invisible. A weekly job that bypasses the cache is the only thing that surfaces
+  Because the cache key is a hash of the env files, unchanged ones are never
+  re-solved and drift is invisible. A weekly job that bypasses the cache is the only thing that surfaces
   it.
 
 **Licensed blocks are designed to be droppable.** Each is one config entry plus
