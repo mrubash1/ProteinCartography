@@ -750,9 +750,17 @@ def test_no_file_the_pr_ships_points_at_a_document_it_does_not():
     reviewer and reaches neither -- and that is where the survivors were.
 
     What this found when it was written: `test_reduce_space.py:19` pointing at
-    PLAN §0.4, and four rows of `docs/FOLLOWUPS.md` -- #35, #42, #52 and #75,
-    the last one naming the very document that shipped in every built page
-    until commit 173. Two of those were in the files #33 called CLEAN.
+    a numbered PLAN section, and four rows of `docs/FOLLOWUPS.md` -- #35, #42,
+    #52 and #75, the last one naming the very document that shipped in every
+    built page until commit 173. Two of those were in the files #33 called
+    CLEAN.
+
+    That sentence is deliberately not reproducing the pointer it describes.
+    An earlier draft did, and this file is `DOCUMENT_REFERENCE_EXEMPT`, so the
+    detector below could not see its own docstring -- the blind spot named in
+    that constant, holding a live instance of exactly what it hunts. The same
+    edit was forced on #33 by the guard itself; here it had to be found by
+    reading.
 
     WHAT IT DOES NOT COVER, stated so the next reader does not assume it does.
     It matches POINTERS: a section, phase or item number, which is the form a
