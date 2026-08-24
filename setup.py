@@ -2,7 +2,7 @@ from setuptools import setup
 
 setup(
     name="ProteinCartography",
-    url="https://github.com/Arcadia-Science/ProteinCartography-private",
+    url="https://github.com/Arcadia-Science/ProteinCartography",
     author="Dennis Sun",
     author_email="dennis.sun@arcadiascience.com",
     packages=[
@@ -13,7 +13,6 @@ setup(
         "ProteinCartography.spaces.reducers",
         "ProteinCartography.explorer",
     ],
-    version="0.0.2",
     license="MIT",
     description="Builds maps of protein space from structures.",
     scripts=[
