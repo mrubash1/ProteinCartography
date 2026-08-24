@@ -16,6 +16,7 @@ and nothing in a shape assertion would notice.
 from __future__ import annotations
 import json
 import os
+import pathlib
 import re
 
 import pytest
@@ -688,6 +689,117 @@ def test_no_local_only_document_reaches_the_rendered_page():
         f"the rendered page cites documents the PR does not ship: {offences}. "
         "template.py's own comments are emitted into the page."
     )
+
+
+#: Files allowed to name a document the PR does not ship, and why each is here.
+#: Adding to this set is a decision, not a formality.
+DOCUMENT_REFERENCE_EXEMPT = {
+    # Defines NON_SHIPPING_DOCUMENTS and plants known-bad specimens so the three
+    # detectors can each be SEEN to fail. Its own occurrences are the vocabulary
+    # and the specimens, not citations.
+    #
+    # THIS IS THE SCAN'S ONE BLIND SPOT, and it is stated rather than hidden: a
+    # real citation added to this file would not be caught here. It is the file
+    # whose whole subject is this invariant, so anyone editing it is already
+    # thinking about it -- but that is a mitigation, not a guarantee.
+    "ProteinCartography/tests/test_explorer.py",
+}
+
+#: A local-only document may be NAMED as something deliberately excluded -- that
+#: is the decision record doing its job, and `docs/FOLLOWUPS.md` #33 has to be
+#: able to say which documents do not ship. What a reader cannot use is a
+#: POINTER: a section, phase or item number standing in for the evidence, which
+#: resolves to nothing in the PR they were handed.
+DOCUMENT_POINTER = re.compile(
+    r"(?:POST-PLAN|HTML-PLAN|PLAN)"
+    r"(?:\.md)?"
+    r"[\s`'\"*_]*(?:\u00a7|section|phase|item)[\s`'\"*_]*[0-9]",
+    re.I,
+)
+
+
+def _tracked_text_files():
+    """Every text file GIT KNOWS ABOUT, which is exactly what the PR contains.
+
+    Tracked rather than working-tree, deliberately: `PLAN.md`, `POST-PLAN.md`,
+    `CLAUDE.md` and `features/` are local-only and cite each other constantly,
+    which is fine, because a reviewer never receives them. `git ls-files` is the
+    only thing that knows the difference, so this shells out rather than
+    re-deriving it from `.gitignore` plus `.git/info/exclude` -- a re-derivation
+    is how the local-only set drifts.
+    """
+    import subprocess
+
+    root = pathlib.Path(__file__).resolve().parents[2]
+    listing = subprocess.run(
+        ["git", "ls-files"], cwd=root, capture_output=True, text=True, check=True
+    )
+    for name in listing.stdout.splitlines():
+        if name.endswith((".py", ".md", ".yml", ".yaml", ".toml", ".cfg")) or name.endswith(
+            "Snakefile"
+        ):
+            yield name, (root / name)
+
+
+def test_no_file_the_pr_ships_points_at_a_document_it_does_not():
+    """The third detector, and the one that covers where the misses actually were.
+
+    Two already existed and neither could see this. One renders `template.py`
+    and greps the HTML, so it covers the PAGE. The other reads panel METADATA,
+    `requires` and `fills_in`. A docstring in a tracked test file ships to the
+    reviewer and reaches neither -- and that is where the survivors were.
+
+    What this found when it was written: `test_reduce_space.py:19` pointing at
+    PLAN §0.4, and four rows of `docs/FOLLOWUPS.md` -- #35, #42, #52 and #75,
+    the last one naming the very document that shipped in every built page
+    until commit 173. Two of those were in the files #33 called CLEAN.
+
+    WHAT IT DOES NOT COVER, stated so the next reader does not assume it does.
+    It matches POINTERS: a section, phase or item number, which is the form a
+    reader cannot resolve. It does not match a MENTION -- "the categories PLAN
+    names" sources a claim to a document nobody has, and no pattern separates
+    that from #33 recording which documents deliberately do not ship. Mentions
+    are a human read. There was one, at `test_enrich_clusters.py:315`, and it
+    was fixed by hand in the same commit rather than by this test.
+
+    The invariant was stated in three places and enforced over two artifacts.
+    This is the third artifact.
+    """
+    offences = []
+    for name, path in _tracked_text_files():
+        if name in DOCUMENT_REFERENCE_EXEMPT:
+            continue
+        for number, line in enumerate(path.read_text().splitlines(), start=1):
+            for hit in DOCUMENT_POINTER.finditer(line):
+                offences.append(f"{name}:{number}: {hit.group(0)!r}")
+    assert not offences, (
+        "these ship, and point at a document the reader was not given:\n  "
+        + "\n  ".join(offences)
+        + "\nCarry the reason itself instead of a pointer to where it is written."
+    )
+
+
+def test_the_pointer_detector_would_actually_catch_one():
+    """The detector against known-bad text, and against text it must NOT flag.
+
+    The negative half is the load-bearing half. A pattern that flagged every
+    mention would force #33 to stop saying which documents do not ship, which
+    is the one thing that entry exists to record.
+    """
+    for bad in (
+        "see PLAN \u00a70.4",
+        "PLAN Phase 6 names",
+        "(PLAN section 0.1)",
+        "`HTML-PLAN.md` \u00a75",  # BACKTICKED, and the first pattern missed it
+        "**PLAN.md** item 3",
+    ):
+        assert DOCUMENT_POINTER.search(bad), f"{bad!r} is a pointer and must be caught"
+    for fine in (
+        "`docs/REVIEW_LOG.md` does not ship",
+        "PLAN listed a built feature as unbuilt",
+        "the planted string",
+    ):
+        assert not DOCUMENT_POINTER.search(fine), f"{fine!r} is a mention, not a pointer"
 
 
 def test_the_page_guard_would_actually_catch_one():

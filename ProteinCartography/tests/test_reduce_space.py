@@ -15,8 +15,10 @@ Two levels, deliberately:
   never run (`compute_block` did the same before it), so the entry point
   gets driven end to end here as well as through the demo.
 
-The sklearn-gated tests do not run in `cartography_tidy`. Run them somewhere
-they do not skip -- see PLAN §0.4.
+The sklearn-gated tests do not run in `cartography_tidy`, which has no sklearn.
+Run them in an environment that does: a gated test which only ever skips reports
+green while checking nothing, and this file's whole reason for existing is that
+the entry point had never run.
 """
 
 from __future__ import annotations

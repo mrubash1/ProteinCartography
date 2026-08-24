@@ -312,7 +312,8 @@ def test_an_untested_row_is_never_significant_and_has_no_q(default_run):
 
 def test_a_requested_column_that_is_absent_is_named_not_skipped(monkeypatch, run_dir, capsys):
     """FOLLOWUPS #35: `ec` and `cc_subcellular_location` are never fetched, so
-    two of the four categories PLAN names have no column. "No enrichment for
+    two of the four enrichment categories -- taxon, domain architecture, EC
+    number and subcellular localization -- have no column. "No enrichment for
     localization" and "localization was never in the table" are different
     facts."""
     tmp_path, clusters, annotations = run_dir
