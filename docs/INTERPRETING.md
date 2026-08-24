@@ -302,9 +302,16 @@ Two behaviours to know:
   Mann-Whitney against it, so a cluster whose structures all failed to download
   reads as *significantly lower pLDDT* rather than as *no measurement*
   (FOLLOWUPS #34).
-- EC number and subcellular localization are named in the plan and have **no
-  data source**: `fetch_uniprot_metadata` requests neither. Taxon and domain
-  architecture are present and are what the demo enriches on (FOLLOWUPS #35).
+- EC number and subcellular localization are the two enrichment categories the
+  default run does not fetch. They are **one config key away**, not
+  unreachable: `uniprot_additional_fields: [ec, cc_subcellular_location]`
+  requests them, and they arrive as `EC number` and `Subcellular location
+  [CC]`. Only the first is enrichable -- EC numbers are single-valued terms,
+  while `Subcellular location [CC]` is a free-text comment block carrying
+  evidence codes and a `Note=`, which no term encoding parses, so
+  `enrich_clusters` refuses it by name rather than testing its punctuation.
+  Taxon and domain architecture are fetched by default and are what the demo
+  enriches on (FOLLOWUPS #35).
 
 ---
 

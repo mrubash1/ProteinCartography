@@ -55,6 +55,7 @@ import numpy as np
 
 __all__ = [
     "ENCODINGS",
+    "UNPARSEABLE_COLUMNS",
     "Comparison",
     "benjamini_hochberg",
     "detect_encoding",
@@ -69,6 +70,25 @@ __all__ = [
 #: in `uniprot_features.tsv` today, in adjacent columns, which is why detection
 #: is per column and overridable rather than guessed per value.
 ENCODINGS = ("list_repr", "delimited", "single")
+
+#: The negative space of `ENCODINGS`: columns that arrive in the table and that
+#: none of the three can turn into terms, mapped to the reason.
+#:
+#: `Subcellular location [CC]` is a free-text UniProt comment block --
+#: "SUBCELLULAR LOCATION: Cytoplasm, cytoskeleton {ECO:0000269|PubMed:11687588}.
+#: Nucleus {...}. Note=..." -- so `single` makes one term per protein out of a
+#: whole paragraph including its citations, and `delimited` splits on whatever
+#: semicolons the evidence braces happen to contain. Both produce terms; neither
+#: produces a fact. Refused BY NAME for the same reason an absent column is
+#: named rather than skipped: silently enriching on garbage is the one outcome
+#: worse than not enriching.
+UNPARSEABLE_COLUMNS = {
+    "Subcellular location [CC]": (
+        "a free-text CC block with ECO evidence braces and a Note=; no entry in "
+        "ENCODINGS parses it into terms, so enriching on it would test the "
+        "punctuation of a citation list"
+    ),
+}
 
 
 @dataclass(frozen=True)

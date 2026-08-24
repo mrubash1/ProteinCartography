@@ -597,12 +597,17 @@ class EnrichmentConfig:
 
     Column-driven on purpose. Four categories are worth enriching on -- taxon,
     EC number, domain architecture and subcellular localization -- and the
-    pipeline fetches two of them:
-    `Lineage` and `Pfam`/`InterPro` are in `uniprot_features.tsv`, `ec` and
-    `cc_subcellular_location` are never requested (FOLLOWUPS #35). Naming the
-    columns rather than the categories means the other two arrive the moment
-    the columns do, and means a cohort with its own annotation columns is
-    already supported.
+    DEFAULT run fetches two: `Lineage` and `Pfam`/`InterPro` are in
+    `uniprot_features.tsv`. The other two are one config key away rather than
+    unreachable: `uniprot_additional_fields: [ec, cc_subcellular_location]`
+    fetches them as `EC number` and `Subcellular location [CC]` (FOLLOWUPS
+    #35). Naming the columns rather than the categories is what makes that
+    work without touching this class, and means a cohort with its own
+    annotation columns is already supported.
+
+    Fetching a column is not the same as being able to enrich on it.
+    `Subcellular location [CC]` is free text and `enrichment.UNPARSEABLE_COLUMNS`
+    refuses it by name.
 
     A requested column that is absent is reported by name, never skipped
     silently: "no enrichment for localization" and "localization was never in

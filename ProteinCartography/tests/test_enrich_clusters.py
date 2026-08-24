@@ -311,26 +311,34 @@ def test_an_untested_row_is_never_significant_and_has_no_q(default_run):
 
 
 def test_a_requested_column_that_is_absent_is_named_not_skipped(monkeypatch, run_dir, capsys):
-    """FOLLOWUPS #35: `ec` and `cc_subcellular_location` are never fetched, so
-    two of the four enrichment categories -- taxon, domain architecture, EC
-    number and subcellular localization -- have no column. "No enrichment for
-    localization" and "localization was never in the table" are different
-    facts."""
+    """FOLLOWUPS #35, with the column names that UniProt actually sends.
+
+    THESE USED TO READ "EC" AND "Subcellular location", NEITHER OF WHICH IS A
+    REAL HEADER, so the test asserted the absence of columns that would have
+    been absent even after the fields were fetched -- it would have kept
+    reporting them missing forever. The real headers are `EC number` and
+    `Subcellular location [CC]`, verified live and pinned in
+    `fetch_uniprot_metadata.OPTIONAL_FIELDS_DICT`. They are still genuinely
+    absent here, because `uniprot_additional_fields` defaults to `[]`, so the
+    test keeps testing the mechanism it was written for.
+
+    "No enrichment for localization" and "localization was never in the table"
+    are different facts."""
     tmp_path, clusters, annotations = run_dir
     output = tmp_path / "output"
     config = write_config(
         tmp_path,
         {
             **DEFAULT_ENRICHMENT,
-            "categorical": ["Lineage", "EC", "Subcellular location"],
+            "categorical": ["Lineage", "EC number", "Subcellular location [CC]"],
             "continuous": [],
         },
     )
     assert run(monkeypatch, config, output, clusters, annotations) == 0
 
-    assert "EC" in capsys.readouterr().err
+    assert "EC number" in capsys.readouterr().err
     manifest = json.loads((output / "enrichment" / "manifest.json").read_text())
-    assert manifest["extra"]["columns_absent"] == ["EC", "Subcellular location"]
+    assert manifest["extra"]["columns_absent"] == ["EC number", "Subcellular location [CC]"]
     assert read_table(output)["annotation"].unique().tolist() == ["Lineage"]
 
 
@@ -617,3 +625,45 @@ def test_an_empty_result_still_has_the_columns():
     frame = to_frame([], "LeidenCluster")
     assert list(frame.columns) == list(TABLE_COLUMNS)
     assert frame.empty
+
+
+def test_a_column_that_is_present_but_unparseable_is_refused_by_name(monkeypatch, run_dir, capsys):
+    """The other half of #35, and the one an absent-column test cannot reach.
+
+    Fetching `cc_subcellular_location` does not make it enrichable. Its value
+    is a free-text UniProt comment block, so `single` would make one term out
+    of a paragraph including its citations and `delimited` would split on
+    whatever semicolons the ECO evidence braces happen to contain. Both produce
+    terms; neither produces a fact. So the column is refused BY NAME with its
+    reason -- the same treatment an absent column gets, because silently
+    enriching on garbage is the one outcome worse than not enriching.
+    """
+    import pandas as pd
+    from enrichment import UNPARSEABLE_COLUMNS
+
+    tmp_path, clusters, annotations = run_dir
+    header = "Subcellular location [CC]"
+    frame = pd.read_csv(annotations, sep="\t")
+    frame[header] = (
+        "SUBCELLULAR LOCATION: Cytoplasm, cytoskeleton "
+        "{ECO:0000269|PubMed:11687588}. Nucleus {ECO:0000269|PubMed:29925947}. "
+        "Note=Localized in cytoplasmic mRNP granules."
+    )
+    frame.to_csv(annotations, sep="\t", index=False)
+
+    output = tmp_path / "output_unparseable"
+    config = write_config(
+        tmp_path,
+        {**DEFAULT_ENRICHMENT, "categorical": ["Lineage", header], "continuous": []},
+        name="config_unparseable.json",
+    )
+    assert run(monkeypatch, config, output, clusters, annotations) == 0
+
+    assert "not enrichable" in capsys.readouterr().err
+    manifest = json.loads((output / "enrichment" / "manifest.json").read_text())
+    # Present, so NOT absent -- the two refusals must not be confused.
+    assert manifest["extra"]["columns_absent"] == []
+    assert list(manifest["extra"]["columns_unparseable"]) == [header]
+    assert manifest["extra"]["columns_unparseable"][header] == UNPARSEABLE_COLUMNS[header]
+    # And nothing was enriched on it.
+    assert read_table(output)["annotation"].unique().tolist() == ["Lineage"]

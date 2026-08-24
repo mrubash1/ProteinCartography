@@ -41,6 +41,7 @@ import pandas as pd
 from config_io import load_config
 from config_schema import from_legacy
 from enrichment import (
+    UNPARSEABLE_COLUMNS,
     benjamini_hochberg,
     detect_encoding,
     hypergeometric_enrichment,
@@ -347,6 +348,8 @@ def describe(report: dict) -> str:
         parts.append(f"{report['n_untested']} untested")
     if report["columns_absent"]:
         parts.append(f"absent from the table: {report['columns_absent']}")
+    if report.get("columns_unparseable"):
+        parts.append(f"present but not enrichable: {sorted(report['columns_unparseable'])}")
     dropped = sum(len(entry["dropped"]) for entry in report["categorical"].values())
     if dropped:
         parts.append(f"{dropped} term(s) below min_term_count")
@@ -373,8 +376,17 @@ def main() -> int:
     frame, dropped_proteins = join_on_protid(clusters_table, annotations, settings.cluster_column)
     cluster_labels = sorted(frame[settings.cluster_column].dropna().unique())
 
-    present = [column for column in settings.columns if column in frame.columns]
+    in_table = [column for column in settings.columns if column in frame.columns]
     absent = [column for column in settings.columns if column not in frame.columns]
+    # A column can be in the table and still not be enrichable. Refused by name
+    # with its reason, exactly as an absent one is: "no enrichment for
+    # localization" and "localization is a paragraph of prose" are different
+    # facts, and testing the second as if it were terms produces a table of
+    # p-values about citation punctuation.
+    unparseable = {
+        column: UNPARSEABLE_COLUMNS[column] for column in in_table if column in UNPARSEABLE_COLUMNS
+    }
+    present = [column for column in in_table if column not in unparseable]
 
     rows = []
     categorical_report, continuous_report = {}, {}
@@ -425,6 +437,7 @@ def main() -> int:
         "min_term_count": settings.min_term_count,
         "columns_requested": list(settings.columns),
         "columns_absent": absent,
+        "columns_unparseable": unparseable,
         "categorical": categorical_report,
         "continuous": continuous_report,
         "proteins_dropped_by_the_join": dropped_proteins,

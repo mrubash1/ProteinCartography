@@ -194,10 +194,14 @@ coregistration:
 # single protein. `min_term_count: 2` drops those; the count of what it dropped
 # is in the manifest rather than nowhere.
 #
-# `EC` and subcellular localization are the other two categories worth
-# enriching on and are deliberately absent: the pipeline never requests those
-# fields from UniProt, so naming them here would only produce a line saying
-# they were not in the table.
+# EC number and subcellular localization are the other two categories worth
+# enriching on, and they are absent here BY CHOICE rather than by limitation.
+# Adding `uniprot_additional_fields: [ec, cc_subcellular_location]` fetches
+# them; their headers arrive as `EC number` and `Subcellular location [CC]`.
+# The demo leaves them out because that changes what every run downloads, and
+# because only the first is enrichable -- `Subcellular location [CC]` is a
+# free-text comment block that no term encoding parses, and `enrich_clusters`
+# refuses it by name.
 enrichment:
   cluster_column: LeidenCluster
   categorical: [Lineage, Pfam, Organism]
