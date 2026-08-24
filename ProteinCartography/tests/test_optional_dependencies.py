@@ -52,6 +52,9 @@ CORE_MODULES = [
     # The explorer's payload is pandas-only; plotly is imported inside
     # `build_explorer.main` after `is_available()` has been consulted.
     "explorer.payload",
+    # Stdlib-only on purpose: it audits a BUILT PAGE, which is the artifact you
+    # are most likely to be holding in an environment with nothing installed.
+    "explorer.audit_payload",
     "explorer.template",
     "explorer.panels",
     "explorer.descriptions",
