@@ -504,7 +504,6 @@ For either custom proteins provided through `override_file` in either mode, or b
 The pipeline uses a variety of conda environments to manage software dependencies.
 The major conda environments are:
 - `cartography_tidy`: used to run the pipeline. Includes only dependencies necessary to start the snakemake pipeline, which builds additional environments as needed based on each rule.
-- `cartography_dev`: used for development. Includes all dependencies for every of the snakemake pipeline and Python package dependencies together in one environment, plus dependencies for development support (e.g. `jupyter`, `ipython`) and experimental features not yet implemented in the main pipeline (e.g. `pytorch`).
 - `cartography_pub`: used to run the Jupyter notebooks in the `pub/` directory. Includes just the dependencies needed to run the notebooks.
 
 ## Contributing
