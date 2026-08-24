@@ -132,7 +132,9 @@ def add_integers(first_integer: int, second_integer: int) -> int:
 We strive to encapsulate new functionality within modular Python scripts that accept arguments from the command line using `argparse`. These scripts are then called from snakemake rules and can also be run directly from the command line by the user.
 - Every script should include a `parse_args()` function and a `main()` function.
 - Every script with `#!/usr/bin/env python` (so that the scripts are executable from the command line on unix systems).
-- An example template for new scripts is found in [`template.py`](./ProteinCartography/template.py).
+- For a short script that follows all three conventions above, see
+  [`extract_blast_hits.py`](./ProteinCartography/extract_blast_hits.py): a shebang,
+  a `parse_args()`, one named function doing the work, and a `main()`.
 
 ### Adding new dependencies
 First, please consider carefully whether you need to add a new dependency to the project.

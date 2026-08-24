@@ -35,6 +35,5 @@ setup(
         "ProteinCartography/map_refseq_ids.py",
         "ProteinCartography/plot_interactive.py",
         "ProteinCartography/fetch_uniprot_metadata.py",
-        "ProteinCartography/rescue_mapping.py",
     ],
 )
