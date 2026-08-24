@@ -107,7 +107,6 @@ def _fetch(tmp_path, fields, name):
     from unittest import mock as _mock
 
     import fetch_uniprot_metadata as fum
-
     from tests import mocks
 
     accessions_path, accessions = _accessions_file(tmp_path)
