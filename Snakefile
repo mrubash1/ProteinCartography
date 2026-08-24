@@ -1099,9 +1099,11 @@ rule diagnose_space:
 
     The Leiden clustering is an input because cross-cluster edge retention is
     the censoring number worth reading, and it needs a partition to be about.
-    It comes from the legacy path, which is the pipeline's only clustering
-    today; when spaces cluster in their own right this should take that
-    instead.
+    It is a FALLBACK and not normally the partition used: `diagnose_space.py`
+    clusters each space in its own right and prefers that, dropping to this
+    legacy structural clustering only when scanpy or leidenalg will not import.
+    When it does drop, `partition.source` and `partition.caveat` say so and the
+    explorer renders both, so a fallback run is visible rather than silent.
     """
     input:
         blocks=get_space_block_inputs,
