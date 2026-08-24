@@ -2506,6 +2506,126 @@ def test_a_manifest_disagreeing_with_its_array_yields_nothing(tmp_path):
     assert _block_column_overlays(str(tmp_path), Config(), protids) == {}
 
 
+def _censoring_overlay_fixture(tmp_path, rows, protids):
+    """A config whose `structure` space resolves to a matrix with censored cells."""
+    path = _tiny_matrix(tmp_path, rows, protids)
+
+    class Block:
+        provider = "tmscore"
+        params = {"matrix_path": path}
+
+    class Space:
+        blocks = ("tmscore",)
+
+    class Config:
+        blocks = {"tmscore": Block()}
+        spaces = {"structure": Space()}
+
+    return Config(), path
+
+
+def test_the_censoring_rate_becomes_an_overlay_aligned_by_label(tmp_path):
+    """The per-protein censoring rate, on the map rather than only in a panel.
+
+    THE ORDER IS THE WHOLE TEST. `_censoring` computes these same rates and
+    returns them sorted by DESCENDING RATE, so a positional reuse of that list
+    yields a column of the right length, full of real numbers, with every colour
+    on the wrong protein. This fixture is built so the two orders differ: by
+    label the answer is [0, 2/3, 1/3] and the descending sort is [2/3, 1/3, 0].
+    A test on an already-sorted fixture would pass either way.
+    """
+    pytest.importorskip("numpy")
+    pytest.importorskip("pandas")
+    from explorer.payload import _censoring_rate_overlay
+    from matrix_io import load_labeled_matrix
+
+    protids = ["pA", "pB", "pC"]
+    rows = [[1.0, 1.0, 1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 1.0]]
+    config, path = _censoring_overlay_fixture(tmp_path, rows, protids)
+
+    overlays = _censoring_rate_overlay(config, "structure", protids)
+    assert list(overlays) == ["censoring:rate"]
+    assert overlays["censoring:rate"]["kind"] == "continuous"
+
+    values = overlays["censoring:rate"]["values"]
+    assert len(values) == len(protids)
+
+    # Read the truth back by label from the labelled matrix, which is the
+    # ticket's own criterion, rather than restating the arithmetic here.
+    by_label = load_labeled_matrix(path, repair=True).censoring_rate_per_protid()
+    assert values == [pytest.approx(float(by_label[protid])) for protid in protids]
+
+    # And prove the fixture can tell the two orders apart, so this test cannot
+    # go vacuous if someone later "simplifies" it onto sorted input.
+    assert values != sorted(values, reverse=True)
+
+
+def test_a_protid_absent_from_the_matrix_gets_no_censoring_value(tmp_path):
+    """A hole, not a zero. Zero means "measured against everything"."""
+    pytest.importorskip("numpy")
+    pytest.importorskip("pandas")
+    from explorer.payload import _censoring_rate_overlay
+
+    protids = ["pA", "pB", "pC"]
+    rows = [[1.0, 1.0, 1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 1.0]]
+    config, _ = _censoring_overlay_fixture(tmp_path, rows, protids)
+
+    values = _censoring_rate_overlay(config, "structure", [*protids, "not_in_matrix"])
+    assert values["censoring:rate"]["values"][-1] is None
+
+
+def test_an_exhaustive_cohort_is_offered_no_censoring_overlay(tmp_path):
+    """Both shipped cohorts are exhaustive, so ABSENCE is the correct outcome
+    here and the test asserts it rather than working around it.
+
+    An all-zero continuous ramp renders as one flat colour, which reads as
+    missing data, and it would advertise a diagnostic with nothing to diagnose.
+    """
+    pytest.importorskip("numpy")
+    pytest.importorskip("pandas")
+    from explorer.payload import _censoring_rate_overlay
+
+    protids = ["pA", "pB", "pC"]
+    exhaustive = [[1.0, 0.5, 0.5], [0.5, 1.0, 0.5], [0.5, 0.5, 1.0]]
+    config, _ = _censoring_overlay_fixture(tmp_path, exhaustive, protids)
+
+    assert _censoring_rate_overlay(config, "structure", protids) == {}
+
+
+def test_the_censoring_rate_can_never_become_part_of_a_geometry(tmp_path):
+    """It is a property of how well a protein was MEASURED, not of the protein,
+    and it correlates with length (ADR 0003). `config_schema` already forbids
+    the provider; this pins the same rule at the explorer boundary, so shipping
+    it as a colour cannot be read as permission to make it an axis.
+
+    The provider is taken FROM THE KEY THE CODE ACTUALLY EMITS, not written out
+    here. Restating "censoring" would let a later rename to a fusable source
+    pass a test whose whole subject is that this source is not fusable.
+    """
+    pytest.importorskip("numpy")
+    pytest.importorskip("pandas")
+    import inspect
+
+    from config_schema import NOT_FUSABLE_PROVIDERS
+    from explorer import payload
+    from explorer.payload import _censoring_rate_overlay
+
+    protids = ["pA", "pB", "pC"]
+    rows = [[1.0, 1.0, 1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 1.0]]
+    config, _ = _censoring_overlay_fixture(tmp_path, rows, protids)
+
+    (key,) = _censoring_rate_overlay(config, "structure", protids)
+    provider, separator, _column = key.partition(":")
+    assert separator, f"{key!r} does not carry its source, so nothing pins the source"
+    assert provider in NOT_FUSABLE_PROVIDERS
+
+    # And it reaches the page as an overlay, never as a block: `build_payload`
+    # puts it in `overlays` and there is no other route from here to a geometry.
+    source = inspect.getsource(payload.build_payload)
+    assert "_censoring_rate_overlay(config, structural, index_order or [])" in source
+    assert "overlays.setdefault(name, overlay)" in source
+
+
 def test_a_descriptor_never_displaces_a_feature_table_column_of_the_same_name():
     """The block columns are added with `setdefault` after the table's, and they
     carry a `block:` prefix so the source travels with the number."""

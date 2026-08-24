@@ -870,6 +870,54 @@ def _block_column_overlays(output_dir: str, config, protids: list) -> dict:
     return overlays
 
 
+def _censoring_rate_overlay(config, sort_space: str, protids: list) -> dict:
+    """How well each protein was measured, as a colour on its own map.
+
+    The censoring panel already draws the DISTRIBUTION of per-protein censoring.
+    This puts the same quantity on the map, so "the poorly measured proteins are
+    all over here" stops being a thing a reader has to take on trust and becomes
+    a thing they can see. Named ``censoring:rate`` in the same
+    ``<source>:<name>`` convention as the block columns, so the source travels
+    with the number.
+
+    ALIGNED BY LABEL, THROUGH THE LABELLED MATRIX. `_censoring` computes the
+    same rates and returns them as `rates`, and that list must NOT be reused
+    here: it is filtered to the sort space's protids and then re-sorted by
+    descending rate. Reusing it positionally against `index_order` would produce
+    a column of the right length, full of real numbers, with every colour on the
+    wrong protein -- the kind of wrong that looks like a finding.
+
+    RETURNS NOTHING WHEN NO PROTEIN WAS CENSORED, deliberately. A continuous
+    ramp whose every value is zero renders as one flat colour, which a reader
+    reasonably takes for missing data; and it would advertise a diagnostic where
+    there is nothing to diagnose. Both shipped cohorts were built from
+    exhaustive matrices, so on today's page this overlay is correctly ABSENT --
+    that is the expected outcome, not a gap.
+
+    This quantity may never enter a geometry. It is a property of how well a
+    protein was measured rather than of the protein, and it correlates with
+    length (ADR 0003); `config_schema.NOT_FUSABLE_PROVIDERS` forbids the
+    provider, and an overlay is the one place it can be shown without becoming
+    an axis of the map.
+    """
+    if not sort_space or not protids:
+        return {}
+    path = _matrix_path_for(config, sort_space)
+    if not path or not os.path.exists(path):
+        return {}
+
+    from matrix_io import load_labeled_matrix
+
+    matrix = load_labeled_matrix(path, repair=True)
+    by_label = {
+        str(protid): float(rate) for protid, rate in matrix.censoring_rate_per_protid().items()
+    }
+    column = [by_label.get(str(protid)) for protid in protids]
+    if not any(value for value in column if value is not None):
+        return {}
+    return {"censoring:rate": {"kind": "continuous", "values": column}}
+
+
 def build_payload(config, output_dir: str, analysis_name: str = "analysis") -> ExplorerPayload:
     """Read a finished run and assemble the explorer's data.
 
@@ -946,6 +994,12 @@ def build_payload(config, output_dir: str, analysis_name: str = "analysis") -> E
     records = _records(output_dir, index_order or [])
     pipeline = _pipeline(config, spaces)
     structural = _structural_space(config, spaces)
+    # Registered here rather than beside the block columns above because it
+    # needs `structural` to know which matrix it is describing. `setdefault`
+    # for the same reason as the block columns: a features-table column of this
+    # name, however unlikely, is the one the reader asked for.
+    for name, overlay in _censoring_rate_overlay(config, structural, index_order or []).items():
+        overlays.setdefault(name, overlay)
     tm_matrix = _tm_matrix(config, spaces, structural)
     censoring = _censoring(config, spaces, structural)
     comparison = _censoring_comparison(output_dir, config, spaces)
