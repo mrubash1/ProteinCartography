@@ -36,7 +36,13 @@ jobs:
         id: cache-snakemake-conda-envs
         with:
           path: .snakemake/conda
-          key: conda-${{ runner.os }}--${{ runner.arch }}--${{ hashFiles('envs/*.yml') }}
+          key: conda-${{ runner.os }}--${{ runner.arch }}--${{ hashFiles(
+            'envs/analysis.yml', 'envs/blast.yml', 'envs/foldseek.yml',
+            'envs/pandas.yml', 'envs/plotting.yml', 'envs/web_apis.yml') }}
+          # The six env files the rules actually name in a `conda:` directive.
+          # `envs/*.yml` also hashed the dev, tidy, test and pub envs, none of
+          # which any rule solves, so editing one evicted the whole cache.
+          # `multispace.yml` shares this key and must be edited with it.
           # note: there are deliberately no `restore-keys` here. A `restore-keys` match still
           # leaves `cache-hit` false, so the step below runs anyway and begins by deleting
           # `.snakemake/conda` -- meaning a partial match would download a stale multi-gigabyte

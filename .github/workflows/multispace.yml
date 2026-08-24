@@ -19,7 +19,11 @@ on:
   pull_request:
     branches:
       - main
-    types: [opened, reopened, labeled, synchronize]
+    # No `labeled` here. `test.yml` carries it because `test.yml:66` actually
+    # gates a step on a label; nothing in this file does, so `labeled` only
+    # re-ran three heavy jobs -- the whole DAG, the slow determinism suite,
+    # and parity -- every time anyone put any label on any PR.
+    types: [opened, reopened, synchronize]
   workflow_dispatch:
 
 jobs:
@@ -87,7 +91,13 @@ jobs:
           path: .snakemake/conda
           # Same key as `test.yml` on purpose, so the two jobs share one cache
           # rather than each building a multi-gigabyte copy.
-          key: conda-${{ runner.os }}--${{ runner.arch }}--${{ hashFiles('envs/*.yml') }}
+          key: conda-${{ runner.os }}--${{ runner.arch }}--${{ hashFiles(
+            'envs/analysis.yml', 'envs/blast.yml', 'envs/foldseek.yml',
+            'envs/pandas.yml', 'envs/plotting.yml', 'envs/web_apis.yml') }}
+          # Scoped to the six env files the Snakefile rules actually name in a
+          # `conda:` directive, not all ten. `envs/*.yml` meant that editing a
+          # developer or publication env -- which no rule solves -- evicted a
+          # multi-gigabyte cache and rebuilt every pipeline environment.
 
       - name: Create the snakemake conda envs
         if: steps.cache-snakemake-conda-envs.outputs.cache-hit != 'true'
@@ -214,19 +224,31 @@ jobs:
         run: micromamba install -y -n analysis-env pytest=7.4.3
         shell: bash -leo pipefail {0}
 
-      - name: Two runs above N=500 must be bit-identical
+      - name: Two runs above N=500 must be bit-identical, and must not skip
+        # ONE run, not two. This step used to execute the entire slow determinism
+        # suite twice -- once for its exit status, then again through `tee` only
+        # to grep the output for SKIPPED. That doubled the job's runtime, and it
+        # split the two things being checked across two invocations that were
+        # free to disagree with each other.
+        #
+        # Redirect and replay rather than `| tee`, which is what the parity job
+        # below already does and for the reason recorded there: these steps run
+        # under `micromamba-shell`, which does not carry the job's `pipefail`,
+        # so a piped pytest reports `tee`'s exit status and a failing suite
+        # reads as a green step. The parity job's comment records that happening
+        # for real -- four failures, one green step.
+        #
+        # The SKIPPED grep stays because `test_determinism.py` uses
+        # `importorskip`: a guard can be written, be correct, and never execute.
+        # Note the ordering -- a non-zero pytest status is reported first, so a
+        # genuine failure is never relabelled as a skip.
         run: |
-          PYTHONPATH="$PWD/ProteinCartography:$PWD/ProteinCartography/tests" \
-            python -m pytest ProteinCartography/tests/test_determinism.py \
-            -q --runslow -p no:cacheprovider
-        shell: micromamba-shell {0}
-
-      - name: The guard must have run, not skipped
-        # An `importorskip` test can be written, be correct, and never execute.
-        run: |
-          PYTHONPATH="$PWD/ProteinCartography:$PWD/ProteinCartography/tests" \
-            python -m pytest ProteinCartography/tests/test_determinism.py \
-            -q --runslow -p no:cacheprovider -rs 2>&1 | tee /tmp/determinism.txt
+          set +e
+          python -m pytest ProteinCartography/tests/test_determinism.py \
+            -q --runslow -rs -p no:cacheprovider > /tmp/determinism.txt 2>&1
+          status=$?
+          cat /tmp/determinism.txt
+          if [ $status -ne 0 ]; then exit $status; fi
           if grep -q "SKIPPED" /tmp/determinism.txt; then
             echo "::error::a determinism test skipped; this job proves nothing"
             exit 1
@@ -279,7 +301,13 @@ jobs:
         id: cache-snakemake-conda-envs
         with:
           path: .snakemake/conda
-          key: conda-${{ runner.os }}--${{ runner.arch }}--${{ hashFiles('envs/*.yml') }}
+          key: conda-${{ runner.os }}--${{ runner.arch }}--${{ hashFiles(
+            'envs/analysis.yml', 'envs/blast.yml', 'envs/foldseek.yml',
+            'envs/pandas.yml', 'envs/plotting.yml', 'envs/web_apis.yml') }}
+          # Scoped to the six env files the Snakefile rules actually name in a
+          # `conda:` directive, not all ten. `envs/*.yml` meant that editing a
+          # developer or publication env -- which no rule solves -- evicted a
+          # multi-gigabyte cache and rebuilt every pipeline environment.
 
       - name: Create the snakemake conda envs
         # Both checkouts share this prefix, so the baseline does not rebuild it.
@@ -301,8 +329,7 @@ jobs:
         # below caught them.
         run: |
           set +e
-          PYTHONPATH="$PWD/ProteinCartography:$PWD/ProteinCartography/tests" \
-            python -m pytest ProteinCartography/tests/test_parity.py \
+          python -m pytest ProteinCartography/tests/test_parity.py \
             -q --runslow -rs -p no:cacheprovider > /tmp/parity.txt 2>&1
           status=$?
           cat /tmp/parity.txt
