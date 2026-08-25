@@ -57,6 +57,83 @@ def parse_args():
     return args
 
 
+def _summarize(features_file, agg_col, annot_col, colors, exclude_words, ignore_nan) -> tuple:
+    """The per-group annotation counts and word clouds, and the colours used.
+
+    The body of this function was written twice, and both copies carried a
+    `TODO (KC)` saying so -- `plot_semantic_analysis` called its collectors
+    `summary_dict`/`len_dict`/`wc_dict` and `count_features` called the same
+    values `annotation_count`/`total_annots`/`wordclouds`, which is the reason
+    the duplication was hard to see in a diff.
+
+    Returns `(counts, used_colors)` rather than one dict: `counts` is exactly
+    the four-key mapping `count_features` has always returned, and callers of
+    that function must keep seeing it unchanged. The colours are the second
+    element because `apc.extend_colors` may have lengthened the caller's list,
+    and the bar chart has to use the SAME extension the word clouds were built
+    with -- returning the input list instead would colour the two halves of the
+    figure differently above `len(colors)` groups.
+    """
+    features_df = pd.read_csv(features_file, sep="\t")
+
+    def ignore_function(x):
+        if ignore_nan:
+            return [i for i in x if i is not np.nan]
+        return list(x)
+
+    # group features file by aggregation column and extract aggregated annotation column
+    groupedby_agg_df = features_df.groupby(agg_col).agg(ignore_function)[annot_col]
+
+    used_colors = colors
+    if len(used_colors) < len(groupedby_agg_df):
+        used_colors = apc.extend_colors(used_colors, len(groupedby_agg_df))
+
+    annotation_count_dict = {}
+    str_annotation_count_dict = {}
+    total_annots_dict = {}
+    wordclouds_dict = {}
+
+    for i, (clu, values) in enumerate(groupedby_agg_df.items()):
+        # count the number of occurrences of each exact annotation string
+        annotation_count_dict[clu] = pd.DataFrame(pd.value_counts(values))
+
+        # count number of unique annotations per cluster
+        total_annots_dict[clu] = len(values)
+
+        # combine all annotations into one long space-separated string,
+        # then break into individual words
+        annot_word_list = " ".join(list(values)).split(" ")
+
+        # sanitize word list by removing irrelevant words and parentheses
+        sanitized_word_list = [
+            word.replace("(", "").replace(")", "")
+            for word in annot_word_list
+            if word not in exclude_words
+        ]
+
+        # get value counts per-word
+        str_summary = dict(pd.value_counts(sanitized_word_list, normalize=True))
+
+        # save word frequencies to dict
+        str_annotation_count_dict[clu] = str_summary
+
+        # generate word cloud based on frequencies
+        wordclouds_dict[clu] = WordCloud(
+            width=500,
+            height=500,
+            background_color="white",
+            color_func=lambda *args, i=i, **kwargs: used_colors[i],
+        ).generate_from_frequencies(str_summary)
+
+    counts = {
+        "annotation_count": annotation_count_dict,
+        "str_annotation_count": str_annotation_count_dict,
+        "total_annots": total_annots_dict,
+        "wordclouds": wordclouds_dict,
+    }
+    return counts, used_colors
+
+
 def plot_semantic_analysis(
     features_file: str,
     agg_col: str,
@@ -101,67 +178,17 @@ def plot_semantic_analysis(
             Defaults to False.
         output_file (str): path of destination file.
     """
-    # read in features file
-    features_df = pd.read_csv(features_file, sep="\t")
-
-    # TODO (KC): this is duplicated in count_
-    def ignore_function(x):
-        if ignore_nan:
-            return [i for i in x if i is not np.nan]
-        return list(x)
-
-    # group features file by aggregation column and extract aggregated annotation column
-    groupedby_agg_df = features_df.groupby(agg_col).agg(ignore_function)[annot_col]
-
-    # determine number of groups
-    n_groups = len(groupedby_agg_df)
-
-    used_colors = colors
-
-    if len(used_colors) < n_groups:
-        used_colors = apc.extend_colors(used_colors, n_groups)
+    counts, used_colors = _summarize(
+        features_file, agg_col, annot_col, colors, exclude_words, ignore_nan
+    )
+    summary_dict = counts["annotation_count"]
+    wc_dict = counts["wordclouds"]
+    # `str_annotation_count` and `total_annots` are deliberately not unpacked:
+    # this function computed both and read neither, which only became visible
+    # once the shared body stopped hiding them among its own locals.
 
     # set plot row parameters based on number of groups and columns
-    n_rows = int(np.ceil(len(groupedby_agg_df) / n_cols))
-
-    # collectors for plot information
-    summary_dict = {}
-    str_summary_dict = {}
-    len_dict = {}
-    wc_dict = {}
-
-    # generate summary statistics
-    for i, (clu, values) in enumerate(groupedby_agg_df.items()):
-        # count the number of occurrences of each exact annotation string
-        summary_dict[clu] = pd.DataFrame(pd.value_counts(values))
-
-        # count number of unique annotations per cluster
-        len_dict[clu] = len(values)
-
-        # combine all annotations into one long space-separated string,
-        # then break into individual words
-        annot_word_list = " ".join(list(values)).split(" ")
-
-        # sanitize word list by removing irrelevant words and parentheses
-        sanitized_word_list = [
-            word.replace("(", "").replace(")", "")
-            for word in annot_word_list
-            if word not in exclude_words
-        ]
-
-        # get value counts per-word
-        str_summary = dict(pd.value_counts(sanitized_word_list, normalize=True))
-
-        # save word frequencies to dict
-        str_summary_dict[clu] = str_summary
-
-        # generate word cloud based on frequencies
-        wc_dict[clu] = WordCloud(
-            width=500,
-            height=500,
-            background_color="white",
-            color_func=lambda *args, i=i, **kwargs: used_colors[i],
-        ).generate_from_frequencies(str_summary)
+    n_rows = int(np.ceil(len(summary_dict) / n_cols))
 
     # create figure with correct number of dimensions
     plt.figure(figsize=(n_cols * 6, n_rows * 3))
@@ -232,71 +259,7 @@ def count_features(
         exclude_words (list): words to mask out from annotations
         ignore_nan (bool): whether to ignore NaN annotations
     """
-    # read in features file
-    features_df = pd.read_csv(features_file, sep="\t")
-
-    # TODO (KC): this is duplicated from plot_semantic_analysis above
-    def ignore_function(x):
-        if ignore_nan:
-            return [i for i in x if i is not np.nan]
-        return list(x)
-
-    # group features file by aggregation column and extract aggregated annotation column
-    groupedby_agg_df = features_df.groupby(agg_col).agg(ignore_function)[annot_col]
-
-    # determine number of groups
-    n_groups = len(groupedby_agg_df)
-
-    used_colors = colors
-
-    if len(used_colors) < n_groups:
-        used_colors = apc.extend_colors(used_colors, n_groups)
-
-    # collectors for plot information
-    annotation_count_dict = {}
-    str_annotation_count_dict = {}
-    total_annots_dict = {}
-    wordclouds_dict = {}
-
-    # generate summary statistics
-    for i, (clu, values) in enumerate(groupedby_agg_df.items()):
-        # count the number of occurrences of each exact annotation string
-        annotation_count_dict[clu] = pd.DataFrame(pd.value_counts(values))
-
-        # count number of unique annotations per cluster
-        total_annots_dict[clu] = len(values)
-
-        # combine all annotations into one long space-separated string,
-        # then break into individual words
-        annot_word_list = " ".join(list(values)).split(" ")
-
-        # sanitize word list by removing irrelevant words and parentheses
-        sanitized_word_list = [
-            word.replace("(", "").replace(")", "")
-            for word in annot_word_list
-            if word not in exclude_words
-        ]
-
-        # get value counts per-word
-        str_summary = dict(pd.value_counts(sanitized_word_list, normalize=True))
-
-        # save word frequencies to dict
-        str_annotation_count_dict[clu] = str_summary
-
-        # generate word cloud based on frequencies
-        wordclouds_dict[clu] = WordCloud(
-            width=500,
-            height=500,
-            background_color="white",
-            color_func=lambda *args, i=i, **kwargs: used_colors[i],
-        ).generate_from_frequencies(str_summary)
-
-    results = {
-        "annotation_count": annotation_count_dict,
-        "str_annotation_count": str_annotation_count_dict,
-        "total_annots": total_annots_dict,
-        "wordclouds": wordclouds_dict,
-    }
+    results, _ = _summarize(features_file, agg_col, annot_col, colors, exclude_words, ignore_nan)
 
     return results
 
