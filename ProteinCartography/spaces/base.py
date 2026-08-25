@@ -453,6 +453,25 @@ class BlockProvider(Protocol):
     def compute(self, ctx, params: dict) -> BlockResult:
         ...
 
+    def plan(self, ctx, params: dict):
+        """The manifest this block WOULD be written with, without computing it.
+
+        **OPTIONAL.** `compute_block` reaches it with `getattr` and recomputes
+        when a provider has none, so a third-party provider (ADR 0006) that
+        never heard of this keeps working exactly as before.
+
+        Return `None` when the answer cannot be known cheaply -- a missing
+        input, an unreadable file. `None` means "recompute", which is what
+        happened before this existed.
+
+        It must agree with `compute`'s manifest on `Manifest.input_key`: same
+        provider, params, input digests, protids and seed. It must NOT try to
+        fill `extra`, which is what the provider learned WHILE computing and is
+        exactly what a plan cannot know. `input_key` excludes `extra` for that
+        reason; see its docstring and FOLLOWUPS #27.
+        """
+        ...
+
 
 @dataclass(frozen=True)
 class SpaceSpec:

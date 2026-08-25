@@ -227,6 +227,12 @@ class BlockStore:
 
         Compares content hashes, never mtimes -- a rerun that produced identical
         inputs should hit the cache, and a touched file should not miss it.
+
+        `describes_same_inputs`, not `matches`. `matches` compares `cache_key`,
+        which folds in `extra` -- and every provider fills `extra` with what it
+        learned WHILE computing, so no caller can build a matching key without
+        having already done the work this check exists to avoid. See
+        `Manifest.input_key`; this is the second half of FOLLOWUPS #27.
         """
         if not self.has_block(block_id):
             return False
@@ -234,7 +240,7 @@ class BlockStore:
             stored = self.read_manifest(block_id)
         except StoreError:
             return False
-        return stored.matches(expected)
+        return stored.describes_same_inputs(expected)
 
     def invalidate(self, block_id: str) -> None:
         d = self.block_dir(block_id)

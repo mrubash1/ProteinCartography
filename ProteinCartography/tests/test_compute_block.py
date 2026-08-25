@@ -192,3 +192,139 @@ def test_the_builtin_providers_all_register(monkeypatch, run_dir):
     compute_block._register_builtins()
     registered = set(list_providers(BLOCK_GROUP))
     assert {"tmscore", "threedi", "biophys", "domains"} <= registered
+
+
+# ---------------------------------------------------------------------------
+# PC-012 phase 1 -- the freshness check that could never fire (FOLLOWUPS #27)
+# ---------------------------------------------------------------------------
+
+
+def test_a_second_run_over_unchanged_inputs_skips_and_says_so(monkeypatch, run_dir, capsys):
+    """The defect, end to end.
+
+    `expected` used to be built with `protids=[]` and no `inputs`, so its
+    `cache_key` could not equal any written one and `is_fresh` was always False.
+    Every block recomputed on every invocation snakemake allowed through.
+    """
+    config = write_config(run_dir, {"biophys": {"provider": "biophys"}})
+    output = run_dir / "output"
+
+    assert run(monkeypatch, config, "biophys", output) == 0
+    assert "wrote 'biophys'" in capsys.readouterr().err
+
+    assert run(monkeypatch, config, "biophys", output) == 0
+    assert "is up to date" in capsys.readouterr().err
+
+
+def test_force_still_recomputes(monkeypatch, run_dir, capsys):
+    config = write_config(run_dir, {"biophys": {"provider": "biophys"}})
+    output = run_dir / "output"
+    run(monkeypatch, config, "biophys", output)
+    capsys.readouterr()
+    run(monkeypatch, config, "biophys", output, "--force")
+    assert "wrote 'biophys'" in capsys.readouterr().err
+
+
+def test_a_changed_input_is_not_skipped(monkeypatch, run_dir, capsys):
+    """Content hashes, never mtimes -- so this has to be a real edit."""
+    config = write_config(run_dir, {"biophys": {"provider": "biophys"}})
+    output = run_dir / "output"
+    run(monkeypatch, config, "biophys", output)
+    capsys.readouterr()
+
+    features = run_dir / "output" / "protein_features" / "uniprot_features.tsv"
+    features.write_text(features.read_text() + "P3\tMKKAAAEEEGGGWWW\n")
+    run(monkeypatch, config, "biophys", output)
+    assert "wrote 'biophys'" in capsys.readouterr().err
+
+
+def test_a_changed_param_is_not_skipped(monkeypatch, run_dir, capsys):
+    config = write_config(run_dir, {"biophys": {"provider": "biophys"}})
+    output = run_dir / "output"
+    run(monkeypatch, config, "biophys", output)
+    capsys.readouterr()
+
+    changed = write_config(run_dir, {"biophys": {"provider": "biophys", "ph": 6.5}})
+    run(monkeypatch, changed, "biophys", output)
+    assert "wrote 'biophys'" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("provider_name", ["biophys", "threedi", "domains", "tmscore"])
+def test_every_builtin_providers_plan_agrees_with_what_it_writes(
+    monkeypatch, tmp_path, provider_name
+):
+    """The exit criterion, and the thing that makes the skip safe.
+
+    `plan()` and `compute()` must agree on `Manifest.input_key`. They come
+    through one `_manifest` per provider so they cannot drift, and this asserts
+    it for each of the four rather than trusting the shape.
+
+    They must ALSO disagree on `cache_key`, which is the fact the whole design
+    rests on: `cache_key` folds in `extra`, `plan` cannot know `extra`, and that
+    is why `is_fresh` compares `input_key` instead.
+    """
+    import compute_block as cb
+    from blocks.tmscore import PipelineContext
+    from spaces.manifest import Manifest
+    from spaces.registry import BLOCK_GROUP, get_provider
+
+    cb._register_builtins()
+    output = tmp_path / "output"
+    features = output / "protein_features"
+    features.mkdir(parents=True)
+    (features / "uniprot_features.tsv").write_text(
+        "protid\tSequence\tPfam\n"
+        "P1\tMDDDIAALVVDNGSGMCKAGFAGDDAPRAVFPSIVGRPRHQ\tPF00022\n"
+        "P2\tMKKKKKAAAAAEEEEEGGGGGWWWWW\tPF00022;PF00023\n"
+    )
+    # `foldseek structureto3didescriptor` output: four tab-separated fields,
+    # no header -- name, amino acids, 3Di, coordinates. `read_descriptors`
+    # refuses anything else rather than guessing, which is how the first draft
+    # of this fixture made `threedi.plan` return None.
+    (features / "3di_descriptors.tsv").write_text(
+        "P1.pdb\tMDDDIAALV\tDVQAVCVVD\t0,0,0\nP2.pdb\tMKKKKKAAA\tQQVVDDAAC\t0,0,0\n"
+    )
+    clustering = output / "foldseek_clustering_results"
+    clustering.mkdir(parents=True)
+    (clustering / "all_by_all_tmscore_pivoted.tsv").write_text(
+        "protid\tP1\tP2\nP1\t1.000E+00\t7.000E-01\nP2\t7.000E-01\t1.000E+00\n"
+    )
+
+    provider = get_provider(BLOCK_GROUP, provider_name)
+    ctx = PipelineContext(output_dir=str(output))
+    params = provider.spec_schema({})
+    params["block_id"] = provider_name
+
+    planned = provider.plan(ctx, params)
+    assert planned is not None, f"{provider_name}.plan returned None on a complete input tree"
+    written = provider.compute(ctx, params).manifest
+    if isinstance(written, dict):
+        written = Manifest.from_dict(written)
+
+    assert (
+        planned.input_key == written.input_key
+    ), f"{provider_name}: plan and compute disagree about their inputs"
+    assert planned.protids_digest == written.protids_digest
+    assert planned.inputs == written.inputs
+    assert planned.cache_key != written.cache_key, (
+        f"{provider_name}: plan and compute agree on cache_key, which would mean this "
+        "provider records nothing it learned while computing -- check `extra`"
+    )
+
+
+def test_a_provider_without_a_plan_still_works(monkeypatch, run_dir, capsys):
+    """ADR 0006: a third-party provider that never heard of `plan` must keep
+    working, and must simply recompute every time as it did before."""
+    import compute_block as cb
+    from spaces.registry import BLOCK_GROUP, get_provider
+
+    config = write_config(run_dir, {"biophys": {"provider": "biophys"}})
+    output = run_dir / "output"
+    run(monkeypatch, config, "biophys", output)
+    capsys.readouterr()
+
+    cb._register_builtins()
+    provider = get_provider(BLOCK_GROUP, "biophys")
+    monkeypatch.delattr(type(provider), "plan")
+    run(monkeypatch, config, "biophys", output)
+    assert "wrote 'biophys'" in capsys.readouterr().err

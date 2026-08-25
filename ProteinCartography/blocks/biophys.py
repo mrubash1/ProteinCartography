@@ -468,6 +468,62 @@ class BiophysProvider:
         """
         return True, ""
 
+    def _protids(self, path: str, params: dict) -> list:
+        sequences = read_sequences(
+            open(path).read(),
+            sequence_column=params.get("sequence_column", DEFAULT_SEQUENCE_COLUMN),
+        )
+        if not sequences:
+            raise BiophysError(f"{path} yielded no sequences.")
+        return list(sequences)
+
+    def _manifest(self, ctx, params: dict, path: str, protids, extra=None):
+        """The ONE place this provider builds a manifest.
+
+        Both `plan` and `compute` come through here, which is the whole point:
+        FOLLOWUPS #27 exists because the expected manifest and the written one
+        were constructed at two different sites and drifted. Two sites is how
+        that happens; one cannot.
+
+        `extra` is None from `plan` and a dict from `compute`, and that is the
+        only difference between them. `Manifest.input_key` excludes `extra`, so
+        the two agree on the question `is_fresh` asks.
+        """
+        return Manifest.build(
+            "block",
+            params.get("block_id", "biophys"),
+            provider="biophys",
+            params=params,
+            inputs={"features": file_digest(path)},
+            protids=protids,
+            seed=getattr(ctx, "seed", 123456),
+            extra=extra,
+        )
+
+    def plan(self, ctx, params: dict):
+        """The manifest a `compute` over these inputs would write, minus `extra`.
+
+        Reads the input and parses it -- which is the cheap half -- and stops
+        before the per-residue descriptor arithmetic `descriptor_matrix` does, which is the half
+        worth skipping.
+
+        The protids are exact rather than approximate: `descriptor_matrix` sets `protids =
+        list(sequences)` and never
+        filters it -- `unusable` is a REPORT, not a filter.
+        """
+        params = validate_params(params)
+        path = self.features_path_for(ctx, params)
+        if not os.path.exists(path):
+            return None
+        try:
+            protids = self._protids(path, params)
+        except Exception:
+            # Any failure here means "recompute", which is what happened before
+            # this method existed. `compute` will raise the real error, with its
+            # own message, on the very next line of the caller.
+            return None
+        return self._manifest(ctx, params, path, protids)
+
     def compute(self, ctx, params: dict) -> BlockResult:
         params = validate_params(params)
         path = self.features_path_for(ctx, params)
@@ -498,14 +554,11 @@ class BiophysProvider:
                 file=sys.stderr,
             )
 
-        manifest = Manifest.build(
-            "block",
-            params.get("block_id", "biophys"),
-            provider="biophys",
-            params=params,
-            inputs={"features": file_digest(path)},
-            protids=protids,
-            seed=getattr(ctx, "seed", 123456),
+        manifest = self._manifest(
+            ctx,
+            params,
+            path,
+            protids,
             extra={
                 "descriptors": names,
                 "ph": params["ph"],

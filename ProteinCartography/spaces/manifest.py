@@ -219,6 +219,54 @@ class Manifest:
         }
         return hash_params(payload)
 
+    @property
+    def input_key(self) -> str:
+        """Identity of the inputs ALONE -- `cache_key` without ``extra``.
+
+        `cache_key`'s docstring gives the reason `derived` is excluded from it:
+        a key folding in the output "could only ever be computed by someone who
+        had already produced the output, so it would never match on the one path
+        that matters -- a fresh process asking 'do I need to build this?'."
+
+        **That argument applies to ``extra`` too, and `cache_key` folds ``extra``
+        in.** Every built-in provider fills `extra` with facts it learns while
+        computing -- the observed censoring rate, the k-mer vocabulary size, how
+        many proteins were shorter than k. So no caller can construct a matching
+        `cache_key` before computing, and `is_fresh` could never return True.
+        That is FOLLOWUPS #27, and its cause is here rather than in the
+        `protids=[]` call site the entry names.
+
+        This is a SECOND key rather than a narrowing of the first, deliberately.
+        `cache_key` is rendered in the explorer's provenance footer and is folded
+        into every downstream manifest -- `reduce_space`, `diagnose_space` and
+        `coregister` all key their own `inputs` on it -- so changing what it
+        hashes would move every space's identity on the page. That is PC-012
+        phase 3's decision, not this one's.
+
+        Not written into the manifest file and not rendered anywhere. It is a
+        question asked of two manifests, not a fact about one.
+        """
+        payload = {
+            "kind": self.kind,
+            "id": self.id,
+            "provider": self.provider,
+            "params": self.params,
+            "inputs": self.inputs,
+            "protids_digest": self.protids_digest,
+            "seed": self.seed,
+            "versions": self.versions,
+        }
+        return hash_params(payload)
+
+    def describes_same_inputs(self, other: Manifest) -> bool:
+        """True when both were built from the same inputs, whatever they found.
+
+        The question `is_fresh` actually needs, and a strictly weaker one than
+        :meth:`matches`. Two manifests can describe the same inputs and disagree
+        about `extra`; they cannot describe different inputs and agree here.
+        """
+        return self.input_key == other.input_key
+
     def to_dict(self) -> dict:
         data = asdict(self)
         data["cache_key"] = self.cache_key

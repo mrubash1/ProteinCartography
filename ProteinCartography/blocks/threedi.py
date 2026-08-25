@@ -236,6 +236,60 @@ class ThreeDiProvider:
         """
         return True, ""
 
+    def _protids(self, path: str, params: dict) -> list:
+        with open(path) as handle:
+            descriptors = read_descriptors(handle.read())
+        if not descriptors:
+            raise DescriptorError(f"{path} contains no 3Di descriptors.")
+        return list(descriptors)
+
+    def _manifest(self, ctx, params: dict, path: str, protids, extra=None):
+        """The ONE place this provider builds a manifest.
+
+        Both `plan` and `compute` come through here, which is the whole point:
+        FOLLOWUPS #27 exists because the expected manifest and the written one
+        were constructed at two different sites and drifted. Two sites is how
+        that happens; one cannot.
+
+        `extra` is None from `plan` and a dict from `compute`, and that is the
+        only difference between them. `Manifest.input_key` excludes `extra`, so
+        the two agree on the question `is_fresh` asks.
+        """
+        return Manifest.build(
+            "block",
+            params.get("block_id", "threedi"),
+            provider="threedi",
+            params=params,
+            inputs={"descriptors": file_digest(path)},
+            protids=protids,
+            seed=getattr(ctx, "seed", 123456),
+            extra=extra,
+        )
+
+    def plan(self, ctx, params: dict):
+        """The manifest a `compute` over these inputs would write, minus `extra`.
+
+        Reads the input and parses it -- which is the cheap half -- and stops
+        before the k-mer counting `kmer_profile` does, which is the half worth skipping.
+
+        The protids are exact rather than approximate: `kmer_profile` sets `protids =
+        list(descriptors)` and never
+        filters it -- `too_short` is a REPORT, not a filter, and every protein
+        keeps its row.
+        """
+        params = validate_params(params)
+        path = self.descriptors_path_for(ctx, params)
+        if not os.path.exists(path):
+            return None
+        try:
+            protids = self._protids(path, params)
+        except Exception:
+            # Any failure here means "recompute", which is what happened before
+            # this method existed. `compute` will raise the real error, with its
+            # own message, on the very next line of the caller.
+            return None
+        return self._manifest(ctx, params, path, protids)
+
     def compute(self, ctx, params: dict) -> BlockResult:
         params = validate_params(params)
         path = self.descriptors_path_for(ctx, params)
@@ -253,14 +307,11 @@ class ThreeDiProvider:
             descriptors, k=params["k"], scaling=params["scaling"]
         )
 
-        manifest = Manifest.build(
-            "block",
-            params.get("block_id", "threedi"),
-            provider="threedi",
-            params=params,
-            inputs={"descriptors": file_digest(path)},
-            protids=protids,
-            seed=getattr(ctx, "seed", 123456),
+        manifest = self._manifest(
+            ctx,
+            params,
+            path,
+            protids,
             extra={
                 "k": params["k"],
                 "scaling": params["scaling"],

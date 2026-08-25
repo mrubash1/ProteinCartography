@@ -136,6 +136,60 @@ class TMScoreProvider:
 
     # -- compute -----------------------------------------------------------
 
+    def _protids(self, path: str, params: dict) -> list:
+        matrix = load_labeled_matrix(
+            path,
+            require_alignment=True,
+            repair=(params["representation"] == "profile"),
+        )
+        return list(matrix.protids)
+
+    def _manifest(self, ctx, params: dict, path: str, protids, extra=None):
+        """The ONE place this provider builds a manifest.
+
+        Both `plan` and `compute` come through here, which is the whole point:
+        FOLLOWUPS #27 exists because the expected manifest and the written one
+        were constructed at two different sites and drifted. Two sites is how
+        that happens; one cannot.
+
+        `extra` is None from `plan` and a dict from `compute`, and that is the
+        only difference between them. `Manifest.input_key` excludes `extra`, so
+        the two agree on the question `is_fresh` asks.
+        """
+        return Manifest.build(
+            "block",
+            params.get("block_id", "tmscore"),
+            provider="tmscore",
+            params=params,
+            inputs={"similarity_matrix": file_digest(path)},
+            protids=protids,
+            seed=ctx.seed,
+            extra=extra,
+        )
+
+    def plan(self, ctx, params: dict):
+        """The manifest a `compute` over these inputs would write, minus `extra`.
+
+        Reads the input and parses it -- which is the cheap half -- and stops
+        before the pairwise-distance work `_profile_block` and `_direct_block` do, which is the half
+        worth skipping.
+
+        The protids are exact rather than approximate: `compute` takes them straight off the loaded
+        matrix.
+        """
+        params = validate_params(params)
+        path = self.matrix_path_for(ctx, params)
+        if not os.path.exists(path):
+            return None
+        try:
+            protids = self._protids(path, params)
+        except Exception:
+            # Any failure here means "recompute", which is what happened before
+            # this method existed. `compute` will raise the real error, with its
+            # own message, on the very next line of the caller.
+            return None
+        return self._manifest(ctx, params, path, protids)
+
     def compute(self, ctx: PipelineContext, params: dict) -> BlockResult:
         params = validate_params(params)
         path = self.matrix_path_for(ctx, params)
@@ -158,14 +212,11 @@ class TMScoreProvider:
         )
 
         censoring = summarize_censoring(matrix)
-        manifest = Manifest.build(
-            "block",
-            params.get("block_id", "tmscore"),
-            provider="tmscore",
-            params=params,
-            inputs={"similarity_matrix": file_digest(path)},
-            protids=matrix.protids,
-            seed=ctx.seed,
+        manifest = self._manifest(
+            ctx,
+            params,
+            path,
+            matrix.protids,
             extra={"censoring": censoring},
         )
 

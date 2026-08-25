@@ -18,7 +18,6 @@ import sys
 
 from config_io import load_config
 from config_schema import from_legacy
-from spaces.manifest import Manifest
 from spaces.registry import BLOCK_GROUP, ProviderNotFoundError, ProviderUnavailableError
 from spaces.registry import get_provider as _get_provider
 from spaces.store import BlockStore
@@ -128,8 +127,21 @@ def main() -> int:
     if block.normalization is not None:
         params.setdefault("normalization", block.normalization)
 
-    expected = Manifest.build("block", block.id, provider=block.provider, params=params, protids=[])
-    if not args.force and store.is_fresh(block.id, expected):
+    # ASK THE PROVIDER what it would write, instead of guessing.
+    #
+    # This used to be `Manifest.build(..., protids=[])` with no `inputs`, whose
+    # key could not equal any written one -- so `is_fresh` was always False and
+    # every block recomputed on every invocation snakemake allowed through.
+    # That is FOLLOWUPS #27, and the fix is not a better guess: it is that only
+    # the provider knows its own inputs, so only the provider can say.
+    #
+    # `getattr`, and `None` is a legitimate answer. A third-party provider
+    # (ADR 0006) that never heard of `plan` recomputes exactly as it did before,
+    # and so does one whose input is missing or unreadable -- `compute` then
+    # raises the real error with its own message.
+    plan = getattr(provider, "plan", None)
+    expected = plan(ctx, params) if callable(plan) else None
+    if not args.force and expected is not None and store.is_fresh(block.id, expected):
         print(f"[compute_block] {block.id!r} is up to date", file=sys.stderr)
         return 0
 
