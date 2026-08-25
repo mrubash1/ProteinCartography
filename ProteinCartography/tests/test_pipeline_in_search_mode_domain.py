@@ -1,6 +1,7 @@
 """Mocked Snakemake run of the parallel domain path for a two-domain query."""
 
 from __future__ import annotations
+import json
 import os
 import pathlib
 
@@ -108,6 +109,36 @@ def test_pipeline_in_search_mode_domain_map(repo_dirpath, config_filepath):
         (output_dirpath / "domain_path" / "query_structures").glob("P99999__d*.fasta")
     )
     assert {p.name for p in query_fastas} == {"P99999__d01.fasta", "P99999__d02.fasta"}
+
+    # PC-023 phase 4. The domain side records what it discarded and under which
+    # rule, which the protein side has done since ADR 0008 and this side did not.
+    # The Snakefile's own DOMAIN_COHORT_SELECTION comment used to end "and no
+    # cohort report on the domain side to notice it from"; this is the assertion
+    # that makes that sentence's replacement true when tested rather than when
+    # read.
+    cohort_report = json.loads(
+        (output_dirpath / "domain_path" / "features" / "cohort_report.json").read_text()
+    )
+    # `as_filtered` and not `accession`: `DOMAIN_COHORT_SELECTION` substitutes
+    # `accession` ONLY when the protein side selects by significance, and this
+    # config does not. What is pinned here is that the domain side STATES its
+    # rule at all -- before this it inherited the script's default silently and
+    # there was no file to read it from.
+    assert cohort_report["rule"] == "as_filtered"
+    assert cohort_report["n_candidates"] >= 1
+    # FALSE, and that is the report doing its job rather than a failure.
+    # `cohort.REPRODUCIBLE_RULES` is ("accession", "significance"); `as_filtered`
+    # is neither, so this cohort cannot be reproduced from its own record. Before
+    # this file existed the domain path made that choice silently and nothing
+    # anywhere said so -- which is the exact sentence the Snakefile's
+    # DOMAIN_COHORT_SELECTION comment used to end on.
+    assert cohort_report["reproducible"] is False
+    assert any(
+        "reproducib" in w for w in cohort_report["warnings"]
+    ), "an unreproducible cohort has to say so in words, not only in a boolean"
+    # And it names the search mode it ran under, which is the other half of what
+    # makes a cohort reproducible from its own record (FOLLOWUPS #25).
+    assert cohort_report["extra"]["foldseek_mode"] == "3diaa"
 
     domain_hits = {
         line

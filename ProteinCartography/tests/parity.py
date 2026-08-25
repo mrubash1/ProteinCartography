@@ -208,6 +208,15 @@ ADDITIVE_OUTPUTS = (
         "the retained set was always a choice and now the run says so.",
     ),
     (
+        "domain_path/features/cohort_report.json",
+        "the domain cohort's own diagnostic, written by `domain_download_pdbs`. "
+        "The baseline has no domain path at all, so it has no equivalent file. "
+        "Like both entries beside it, it is UNREACHABLE in a default run -- the "
+        "domain gate resolves off for a single-domain cohort and this list's "
+        "docstring warns against growing it, so it earns its place only by being "
+        "genuinely additive rather than by being expected.",
+    ),
+    (
         "blast_results/*.blast_hits.mapping.tsv",
         "the RefSeq-to-UniProt pairs behind the hit list, which the baseline "
         "computes and discards. Written sorted and deduplicated, so it is stable "

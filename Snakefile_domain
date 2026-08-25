@@ -237,10 +237,25 @@ if MODE == config_utils.Mode.SEARCH:
             """
 
     rule domain_download_pdbs:
+        """
+        Download the domain cohort's hit structures, and say what was discarded.
+
+        The cohort report is declared UNCONDITIONALLY here, which is safe for a
+        reason worth stating: this is a plain rule, not a checkpoint. FOLLOWUPS
+        #47 records that an unconsumed output on a CHECKPOINT makes the
+        checkpoint never re-run and `checkpoints.<name>.get()` raise — that is
+        why the protein side's report at `Snakefile:606-610` has to be
+        conditional. Nothing about that applies to a plain rule, whose outputs
+        are all produced whenever it runs at all.
+
+        And it runs only when the domain gate is on, so a run with no
+        multi-domain query produces no report and no directory to put one in.
+        """
         input:
             rules.domain_filter_hits.output.filtered_hits,
         output:
             hit_structures=directory(DOMAIN_HIT_STRUCTURES_DIR),
+            cohort_report=DOMAIN_FEATURES_DIR / "cohort_report.json",
         conda:
             "envs/web_apis.yml"
         benchmark:
@@ -251,7 +266,9 @@ if MODE == config_utils.Mode.SEARCH:
                 --input {input} \
                 --output {output.hit_structures} \
                 --max-structures {MAX_STRUCTURES} \
-                --selection {DOMAIN_COHORT_SELECTION}
+                --selection {DOMAIN_COHORT_SELECTION} \
+                --cohort-report {output.cohort_report} \
+                --foldseek-mode {FOLDSEEK_MODE}
             """
 
     checkpoint domain_prepare_structures:

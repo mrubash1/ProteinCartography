@@ -200,7 +200,10 @@ USER_DOMAINS_FILE = config_utils._get_user_domains_file(config)
 #
 # What this removes is the silence. Before, one config truncated the protein map
 # by significance and the domain map by UniProt's response order, with no error
-# and no cohort report on the domain side to notice it from.
+# to say so. "And no cohort report on the domain side to notice it from" used to
+# end that sentence and is no longer true: `domain_download_pdbs` writes
+# `domain_path/features/cohort_report.json`, so the domain side now records what
+# it discarded and under which rule, exactly as the protein side does.
 # See docs/adr/0008-cohort-selection.md.
 DOMAIN_COHORT_SELECTION = COHORT_SELECTION
 if DOMAIN_MAP != "off" and COHORT_SELECTION == "significance":
