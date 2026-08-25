@@ -67,7 +67,8 @@ enrichment, which is below 1.0 exactly when the term is under-represented.
 
 Both are numpy plus `math.lgamma` and `math.erfc`, per ADR 0006, and both are
 cross-checked against scipy behind an `importorskip`: Mann-Whitney to 2e-16
-including on heavily tied and 60%-censored input, the hypergeometric to a
+including on input with 60% of its values written as exact zeros — ADR 0009's
+per-cell production rate, not the per-pair one — the hypergeometric to a
 *relative* 6e-12 down to p = 1e-94, Fisher's one-sided exact test to 8e-15, and
 Benjamini–Hochberg to 2e-16.
 

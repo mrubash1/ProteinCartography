@@ -123,8 +123,15 @@ of a per-query top-N cut rather than of biology.
 
 - A zero means *Foldseek did not report this pair within the per-query top-1000*.
   Reading it as "these proteins are structurally dissimilar" is a category error.
-- The matrix is **not symmetric**: 36.6% of reported pairs are reported in one
-  direction only, with a maximum asymmetry of 0.9944.
+- The matrix is **not symmetric**, and the denominator decides the number.
+  **53.6%** of the unordered pairs reported *at all* — 925,435 of 1,726,380 —
+  were reported in one direction only. The same numerator over ordered non-zero
+  *cells* is 36.6%: smaller, and, as `diagnostics/censoring.py` puts it, "easy to
+  quote by accident". The largest disagreement between two directions that were
+  **both measured** is **0.6711**; the 0.99 that an all-cells maximum reports is
+  a measured value compared against a `"0.0"` fill, which measures censoring
+  rather than asymmetry. `asymmetry_report` returns all three, each with its
+  denominator named, for exactly this reason.
 - **Censoring is not uniform across the map.** Between-cluster pairs carry the
   weakest scores and fall off the cap first, so at high censoring nearly every
   surviving edge is *within* a cluster. The clusters look crisper while their

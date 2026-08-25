@@ -154,8 +154,9 @@ it. That parallelism is what makes the parity test meaningful.
 latter by default, and it is the most likely source of a subtle wrong answer
 here. (ADR 0007)
 
-**2. A zero in the TM matrix is missing, not measured.** 60.5% of a production
-matrix is fill, and zero of those fills is a measured value. The mask is carried
+**2. A zero in the TM matrix is missing, not measured.** 60.5% of the *cells* of
+a production 2,530-protein matrix are fill, and zero of those fills is a measured
+value. The mask is carried
 explicitly, built by string form during parse. (ADR 0009)
 
 **3. Block scale is normalized before weighting, always.** Contribution shares

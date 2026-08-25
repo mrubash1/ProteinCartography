@@ -117,8 +117,9 @@ forbidding reflection would report two identical maps as maximally different.
   must read `boundary_ties` and `rank_correlation_undefined`, not just the mean.
 - The metrics are numpy, with no scipy or scikit-learn dependency, per ADR 0006.
   Both Spearman and Procrustes agree with scipy's implementations to 3e-16,
-  including Spearman on a 60%-censored matrix, where tie handling is the common
-  case rather than an edge case.
+  including Spearman on a matrix with 60% of its **cells** written as exact
+  zeros — the production rate ADR 0009 measures per cell, not per pair — where
+  tie handling is the common case rather than an edge case.
 - The euclidean-and-unnormalized decision is a **debt with a named creditor**.
   It is correct only for as long as `reduce_space` shares it.
 
