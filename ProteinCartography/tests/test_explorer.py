@@ -4494,3 +4494,64 @@ def test_an_unpinned_domains_block_reads_exactly_as_it_did():
     assert (
         "ARE annotated but" not in text
     ), "with nothing outside the vocabulary there is no second count to report"
+
+
+# ==========================================================================
+# PC-038 -- the payload is written INSIDE a live <script> element, so a string
+# field carrying `</script>` closes it and every byte after it is parsed as
+# markup. The fix is at the serialisation boundary rather than field by field,
+# because `payload.py` passes `comparisons` and `spaces[].diagnostics` through
+# whole, with no allow-list.
+# ==========================================================================
+
+
+def test_a_payload_string_cannot_close_the_script_element():
+    """The whole of the defect, planted and counted.
+
+    `render` substitutes `json.dumps(payload)` into `const PAYLOAD = ...;`,
+    which sits inside the `<script>` element the template opens two lines
+    earlier. HTML tokenises that element's contents before JavaScript ever sees
+    them, so a `</script>` in any string field ends the element early: the page
+    then carries three closing tags against two openings, and the markup after
+    the injected tag is live.
+    """
+    hostile = "</script><img src=x onerror=alert(1)>"
+    html = render({"spaces": [], "analysis_name": hostile}, plotly_js="", title="t")
+    assert html.count("<script") == 2
+    assert html.count("</script>") == 2
+    # The escaping must not change what the page RECEIVES, only how it is
+    # written. A fix that mangled the value would pass the count above.
+    assert _embedded_payload(html)["analysis_name"] == hostile
+
+
+def test_the_payload_line_carries_no_raw_angle_bracket_or_ampersand():
+    """`<`, `>` and `&` are the entire unescaped surface, and all three are closed.
+
+    Deliberately NOT U+2028/U+2029: `json.dumps` defaults to
+    `ensure_ascii=True` and already emits those as `\\u2028`/`\\u2029`, so a
+    test that planted one would have been green before the fix and would have
+    proved nothing.
+    """
+    planted = "a<b>c&d</e>"
+    html = render({"spaces": [], "analysis_name": planted}, plotly_js="", title="t")
+    match = re.search(r"^const PAYLOAD = (.*);$", html, re.MULTILINE)
+    assert match, "the rendered page carries no `const PAYLOAD = ...;` line"
+    line = match.group(1)
+    for char in ("<", ">", "&"):
+        assert char not in line, f"{char!r} reaches the <script> element unescaped"
+    assert json.loads(line)["analysis_name"] == planted
+
+
+def test_the_payload_escaping_is_at_the_serialisation_boundary_not_field_by_field():
+    """A field nobody enumerated is covered by the same act that covers `protein`.
+
+    `payload.py:1177-1180` copies every column of `coregistration/summary.tsv`
+    and `:1002-1018` copies every key of `spaces/<id>/diagnostics.json`, both
+    with no allow-list, so a field inventory is a snapshot and not an
+    invariant. Escaping named fields would leave those two open; the planted
+    defect therefore goes in a key this template has never heard of.
+    """
+    document = {"spaces": [], "comparisons": [{"a_column_added_upstream": "</script>x"}]}
+    html = render(document, plotly_js="", title="t")
+    assert html.count("</script>") == 2
+    assert _embedded_payload(html)["comparisons"][0]["a_column_added_upstream"] == "</script>x"

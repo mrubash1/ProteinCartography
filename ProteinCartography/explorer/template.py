@@ -2988,6 +2988,39 @@ showCohort(0);
 """
 
 
+def _script_safe_json(payload: dict) -> str:
+    """The payload as JSON that cannot terminate the element it is written into.
+
+    `render` substitutes the result into `const PAYLOAD = ...;`, which sits
+    INSIDE a live `<script>` element. HTML tokenises that element's contents
+    before JavaScript ever sees them, so a payload string containing
+    `</script>` closes the element early and every byte after it is parsed as
+    markup. `json.dumps` does not prevent that: with the default
+    `ensure_ascii=True` it already emits U+2028 and U+2029 as `\\u2028` and
+    `\\u2029`, but it leaves `<`, `>` and `&` alone, and those three are the
+    whole unescaped surface.
+
+    Rewriting them as `\\uXXXX` keeps the JSON valid, so the payload the page
+    PARSES is unchanged and only the file's bytes move. Every `<`, `>` and `&`
+    in a `json.dumps` result is necessarily inside a string, because JSON's own
+    structural characters are `{}[],:"` and whitespace.
+
+    Done here, at the serialisation boundary, rather than field by field:
+    `payload.py` builds `comparisons` (`:1177-1180`) and `spaces[].diagnostics`
+    (`:1002-1018`) as whole-object pass-throughs with no allow-list, so any
+    field inventory is a snapshot rather than an invariant and a column added
+    upstream would arrive unescaped.
+    """
+    import json
+
+    return (
+        json.dumps(payload, sort_keys=True)
+        .replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+        .replace("&", "\\u0026")
+    )
+
+
 def render(payload: dict, plotly_js: str, title: str) -> str:
     """The finished HTML.
 
@@ -2996,10 +3029,8 @@ def render(payload: dict, plotly_js: str, title: str) -> str:
     would have to be doubled. The same reasoning as the Snakefile's ban on
     f-string wildcard paths, met in a different syntax.
     """
-    import json
-
     return (
         _TEMPLATE.replace("__PLOTLY__", plotly_js)
-        .replace("__PAYLOAD__", json.dumps(payload, sort_keys=True))
+        .replace("__PAYLOAD__", _script_safe_json(payload))
         .replace("__TITLE__", title)
     )
