@@ -66,6 +66,41 @@ def _save_path(pivot_file: str, saveprefix: str | None, dimtype: str) -> str:
     return pivot_file.replace(".tsv", "_" + dimtype + ".tsv")
 
 
+def _reduce_and_frame(
+    pivot_file, saveprefix, dimtype, save, reduce, pass_column_names=False, **kwargs
+) -> tuple:
+    """Read the pivot table, run one reducer over it, frame and optionally save.
+
+    The twelve lines around each reducer call were written three times, and the
+    reducer math itself already lives in `spaces/reducers/core.py` -- so what was
+    duplicated here was only the I/O envelope. `reduce` takes the values, the
+    protids and this function's `**kwargs`, which is where each reducer's own
+    parameters stay.
+
+    Returns `(frame, savefile)`. The path comes back even when `save` is false
+    because `calculate_PCA(prep_step=True)` returns it instead of the frame, and
+    computing it in two places is how the two would drift.
+
+    `pass_column_names` is UMAP's alone and is a parameter rather than a default
+    because it changes what the reducer does: below N=3 `reduce_umap` reuses the
+    input's existing PC column names instead of running PCA on PCA output, and
+    only this function has the frame those names are on.
+    """
+    pivoted_df = pd.read_csv(pivot_file, sep="\t", index_col="protid")
+    if pass_column_names:
+        kwargs["input_column_names"] = list(pivoted_df.columns)
+    result = reduce(pivoted_df.to_numpy(), list(pivoted_df.index), **kwargs)
+    frame = pd.DataFrame(
+        result.coordinates,
+        columns=result.column_names,
+        index=pivoted_df.index,
+    )
+    savefile = _save_path(pivot_file, saveprefix, dimtype)
+    if save:
+        frame.to_csv(savefile, sep="\t")
+    return frame, savefile
+
+
 def calculate_PCA(
     pivot_file: str,
     random_state: int,
@@ -76,23 +111,16 @@ def calculate_PCA(
     prep_step=False,
     **kwargs,
 ):
-    pivoted_df = pd.read_csv(pivot_file, sep="\t", index_col="protid")
-    result = reduce_pca(
-        pivoted_df.to_numpy(),
-        list(pivoted_df.index),
+    pca_results_df, savefile = _reduce_and_frame(
+        pivot_file,
+        saveprefix,
+        dimtype,
+        save,
+        reduce_pca,
         n_components=n_components,
         random_state=random_state,
         **kwargs,
     )
-    pca_results_df = pd.DataFrame(
-        result.coordinates,
-        columns=result.column_names,
-        index=pivoted_df.index,
-    )
-
-    savefile = _save_path(pivot_file, saveprefix, dimtype)
-    if save:
-        pca_results_df.to_csv(savefile, sep="\t")
     if prep_step:
         return savefile
     return pca_results_df
@@ -109,25 +137,18 @@ def calculate_TSNE(
     dimtype="tsne",
     **kwargs,
 ):
-    pivoted_df = pd.read_csv(pivot_file, sep="\t", index_col="protid")
-    result = reduce_tsne(
-        pivoted_df.to_numpy(),
-        list(pivoted_df.index),
+    tsne_results_df, _ = _reduce_and_frame(
+        pivot_file,
+        saveprefix,
+        dimtype,
+        save,
+        reduce_tsne,
         n_components=n_components,
         perplexity=perplexity,
         n_iter=n_iter,
         random_state=random_state,
         **kwargs,
     )
-    tsne_results_df = pd.DataFrame(
-        result.coordinates,
-        columns=result.column_names,
-        index=pivoted_df.index,
-    )
-
-    savefile = _save_path(pivot_file, saveprefix, dimtype)
-    if save:
-        tsne_results_df.to_csv(savefile, sep="\t")
     return tsne_results_df
 
 
@@ -142,28 +163,19 @@ def calculate_UMAP(
     dimtype="umap",
     **kwargs,
 ):
-    pivoted_df = pd.read_csv(pivot_file, sep="\t", index_col="protid")
-    result = reduce_umap(
-        pivoted_df.to_numpy(),
-        list(pivoted_df.index),
+    umap_results_df, _ = _reduce_and_frame(
+        pivot_file,
+        saveprefix,
+        dimtype,
+        save,
+        reduce_umap,
+        pass_column_names=True,
         n_components=n_components,
         n_neighbors=n_neighbors,
         min_dist=min_dist,
         random_state=random_state,
-        # Below N=3 the fallback reuses this matrix's existing PC columns rather
-        # than running PCA on PCA output, which is what the pre-port code did.
-        input_column_names=list(pivoted_df.columns),
         **kwargs,
     )
-    umap_results_df = pd.DataFrame(
-        result.coordinates,
-        columns=result.column_names,
-        index=pivoted_df.index,
-    )
-
-    savefile = _save_path(pivot_file, saveprefix, dimtype)
-    if save:
-        umap_results_df.to_csv(savefile, sep="\t")
     return umap_results_df
 
 

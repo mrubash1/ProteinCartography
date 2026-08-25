@@ -395,3 +395,66 @@ def test_main_still_reduces_a_single_block_space(store_root, monkeypatch, cohort
     manifest = json.loads((store_root / "spaces" / "solo" / "manifest_pca.json").read_text())
     assert manifest["extra"]["fusion"]["strategy"] == "none"
     assert manifest["extra"]["fusion"]["contributions"][0]["share"] == 1.0
+
+
+# --- dim_reduction's I/O envelope ---------------------------------------------
+
+
+def test_calculate_umap_hands_the_reducer_the_input_column_names(tmp_path, monkeypatch):
+    """`reduce_umap`'s below-N=3 fallback reuses the input's existing PC column
+    names rather than running PCA on PCA output (`spaces/reducers/core.py:194`),
+    and it can only do that if `calculate_UMAP` passes them.
+
+    Nothing tested this. `calculate_UMAP` had no test of any kind, so when the
+    three reducers' shared read/frame/save envelope was extracted the argument
+    could have been dropped in silence -- which is what happened in the first
+    draft of that extraction. Asserted by recording what the reducer was called
+    with, so it needs no umap installed.
+    """
+    import dim_reduction
+
+    recorded = {}
+
+    class Result:
+        coordinates = [[0.0, 1.0], [1.0, 0.0]]
+        column_names = ["UMAP1", "UMAP2"]
+
+    def fake_reduce_umap(values, protids, **kwargs):
+        recorded.update(kwargs)
+        recorded["protids"] = list(protids)
+        return Result()
+
+    monkeypatch.setattr(dim_reduction, "reduce_umap", fake_reduce_umap)
+    pivot = tmp_path / "pivot.tsv"
+    pivot.write_text("protid\tPC0\tPC1\nA\t0.1\t0.4\nB\t0.9\t0.2\n")
+    dim_reduction.calculate_UMAP(str(pivot), random_state=0)
+    assert recorded["input_column_names"] == ["PC0", "PC1"]
+    assert recorded["protids"] == ["A", "B"]
+
+
+def test_the_other_two_reducers_are_not_given_column_names(tmp_path, monkeypatch):
+    """The counterpart, and the reason `pass_column_names` is a parameter rather
+    than something the envelope always does: PCA and t-SNE take no such argument
+    and would raise on it."""
+    import dim_reduction
+
+    seen = {}
+
+    class Result:
+        coordinates = [[0.0, 1.0], [1.0, 0.0]]
+        column_names = ["A1", "A2"]
+
+    for name, call in (
+        ("reduce_pca", lambda p: dim_reduction.calculate_PCA(p, random_state=0)),
+        ("reduce_tsne", lambda p: dim_reduction.calculate_TSNE(p, random_state=0)),
+    ):
+
+        def fake(values, protids, _name=name, **kwargs):
+            seen[_name] = kwargs
+            return Result()
+
+        monkeypatch.setattr(dim_reduction, name, fake)
+        pivot = tmp_path / f"{name}.tsv"
+        pivot.write_text("protid\tPC0\tPC1\nA\t0.1\t0.4\nB\t0.9\t0.2\n")
+        call(str(pivot))
+        assert "input_column_names" not in seen[name], name
