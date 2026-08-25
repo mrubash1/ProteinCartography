@@ -81,8 +81,17 @@ string explains what is missing and how to get it. `compute_block` skips an
 unavailable **block** with a log line on stderr and exits 0
 (`compute_block.py:105-108`); the Snakefile itself never consults availability
 and does not import the registry at all, which `spaces/registry.py:196-199`
-states outright. A missing optional dependency is a reduced result, never an
-error.
+states outright.
+
+A missing optional dependency is a reduced result **at block level, and an error
+at space level**, which is deliberate and is narrower than this rule first
+claimed. A block nothing needs is skipped and the run continues. A space that
+NAMES a skipped block fails: `reduce_space.py:88-92` raises `SystemExit` naming
+the block and the recorded reason. Producing a map that silently omits a space
+the config asked for would be a wrong answer that looks complete, which is worse
+than stopping — so the run stops exactly when the configured product cannot be
+built. This rule as originally written said "never an error" without that
+distinction, and the code has never behaved that way.
 
 **3. The shipped multispace config names only free, ungated blocks.** `tmscore`,
 `threedi`, `biophys`, `domains`, in `demo/multispace/config.yml`; the default

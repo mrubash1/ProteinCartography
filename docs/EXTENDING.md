@@ -146,8 +146,11 @@ it*, because it is shown to the user verbatim. Check for weights and data files,
 not only for importable packages — a model whose checkpoint has not been
 downloaded is not available even though its library imports fine.
 
-**A missing optional dependency is a reduced result, never an error** (ADR 0006
-rule 2). The Snakefile skips an unavailable block with a log line.
+**A missing optional dependency is a reduced result at block level, and an error
+at space level** (ADR 0006 rule 2). `compute_block` records the skip and exits 0,
+so a block nothing needs costs you nothing. A space that *names* a skipped block
+raises instead: a map missing a space the config asked for looks complete and is
+not, so the run stops rather than shipping one.
 
 ### `compute`
 

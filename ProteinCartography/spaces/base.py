@@ -494,9 +494,16 @@ class BlockProvider(Protocol):
         """Return ``(available, reason)``.
 
         ``reason`` explains what is missing and how to get it when
-        ``available`` is False. A missing optional dependency must degrade the
-        run, never break it -- the Snakefile skips unavailable spaces with a log
-        line. See ADR 0006.
+        ``available`` is False.
+
+        A missing optional dependency degrades the run at BLOCK level and stops
+        it at SPACE level. ``compute_block`` records the skip and exits 0
+        (``compute_block.py:105-108``); a space that names a skipped block is a
+        configured product that cannot be built, so ``reduce_space`` raises
+        rather than emitting a map with a space silently missing from it
+        (``reduce_space.py:88-92``). The Snakefile itself never consults
+        availability. See ADR 0006 rule 2, which used to say "never an error"
+        and did not describe what the code does.
         """
         ...
 
