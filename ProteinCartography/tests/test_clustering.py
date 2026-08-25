@@ -294,3 +294,69 @@ def test_a_library_that_names_its_version_without_dunders_is_still_read(monkeypa
     monkeypatch.setitem(sys.modules, "pc_fake_versioned_lib", fake)
     assert _module_version("pc_fake_versioned_lib") == "9.9.9"
     assert _module_version("pc_library_that_is_not_installed_anywhere") is None
+
+
+# --- the clusterability guard the four call sites used to each write out -------
+
+
+@needs_scanpy
+def test_a_cohort_below_the_threshold_reports_why_rather_than_a_boolean():
+    """ADR 0006 rule 2: a reduced result has to say what reduced it, so the
+    guard returns the sentence its caller will print.
+
+    Gated, and the gate is the point: with scanpy absent the guard reports THAT
+    first, which is what the ordering test below pins. These two tests and that
+    one are complementary and neither environment runs both.
+    """
+    from clustering import MIN_CLUSTERABLE, require_clusterable
+
+    protids = [f"P{i}" for i in range(MIN_CLUSTERABLE - 1)]
+    reason = require_clusterable(protids)
+    assert reason == f"{MIN_CLUSTERABLE - 1} proteins is too few to cluster"
+
+
+@needs_scanpy
+def test_the_noun_reaches_the_sentence():
+    """`coregister` clusters the SHARED index, which is not a space's own
+    protids, and its message said so before this guard existed."""
+    from clustering import require_clusterable
+
+    assert require_clusterable(["a"], noun="shared proteins") == (
+        "1 shared proteins is too few to cluster"
+    )
+
+
+@needs_scanpy
+def test_a_cohort_at_the_threshold_is_clusterable():
+    from clustering import MIN_CLUSTERABLE, require_clusterable
+
+    assert require_clusterable([f"P{i}" for i in range(MIN_CLUSTERABLE)]) == ""
+
+
+def test_an_unavailable_clusterer_is_reported_before_the_size_is_looked_at():
+    """Order matters: with scanpy absent, a two-protein cohort must report the
+    missing package rather than its size, or an install problem reads as a
+    cohort problem."""
+    import clustering
+
+    if AVAILABLE:
+        pytest.skip("scanpy is installed here; the ordering is exercised where it is not")
+    assert clustering.require_clusterable(["a", "b"]) == EXPLANATION
+
+
+def test_the_threshold_is_not_written_out_anywhere_it_is_used():
+    """The number was at five call sites. A threshold repeated five times is a
+    threshold that can be changed in four."""
+    import pathlib
+    import re
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    offenders = []
+    for name in ("clustering.py", "diagnose_space.py", "coregister.py"):
+        text = (root / name).read_text()
+        for i, line in enumerate(text.splitlines(), 1):
+            if re.search(r"len\(protids\)\s*<\s*3\b", line) or re.search(r"\bn\s*<\s*3\b", line):
+                offenders.append(f"{name}:{i}: {line.strip()}")
+    assert not offenders, "the clusterability threshold is hardcoded again:\n" + "\n".join(
+        offenders
+    )

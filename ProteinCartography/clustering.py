@@ -57,9 +57,11 @@ __all__ = [
     "DEFAULT_N_PCS",
     "DEFAULT_RESOLUTION",
     "DEFAULT_SEED",
+    "MIN_CLUSTERABLE",
     "ClusteringError",
     "Partition",
     "is_available",
+    "require_clusterable",
     "leiden_partition",
     "sweep_resolutions",
 ]
@@ -78,6 +80,14 @@ DEFAULT_RESOLUTION = 1.0
 #: indistinguishable from the instability it is trying to measure -- which is
 #: the defect ``tests/test_determinism.py`` exists to catch in the reducers.
 DEFAULT_SEED = 0
+
+
+#: Below this, a cohort has one cluster by definition and Leiden has nothing to
+#: decide. Named here because the number was written out at five call sites --
+#: `leiden_partition`'s own short circuit and four guards in `diagnose_space`
+#: and `coregister` -- and a threshold repeated five times is a threshold that
+#: can be changed in four.
+MIN_CLUSTERABLE = 3
 
 
 class ClusteringError(RuntimeError):
@@ -146,6 +156,30 @@ def _clamped(n: int, n_vars: int, n_neighbors: int, n_pcs: int) -> tuple:
     return used_neighbors, max(1, min(n_pcs, max_pcs))
 
 
+def require_clusterable(protids, noun: str = "proteins") -> str:
+    """``""`` when this cohort can be clustered, otherwise the reason it cannot.
+
+    The two reasons are a missing scanpy and a cohort below `MIN_CLUSTERABLE`,
+    and both were checked separately at four call sites in `diagnose_space` and
+    `coregister` -- each of which then did something different with the answer,
+    which is why the checks stayed duplicated while the actions diverged.
+
+    Returns a REASON rather than a boolean, and the empty string rather than
+    None for the clusterable case, because every caller has to print or record
+    why it skipped: ADR 0006 rule 2 says a missing optional dependency is a
+    reduced result and a reduced result has to say what reduced it.
+
+    `noun` exists so `coregister` can keep saying "shared proteins", which is
+    what its cohort is and is not the same set as a space's own protids.
+    """
+    available, explanation = is_available()
+    if not available:
+        return explanation
+    if len(protids) < MIN_CLUSTERABLE:
+        return f"{len(protids)} {noun} is too few to cluster"
+    return ""
+
+
 def leiden_partition(
     values: np.ndarray,
     protids: list,
@@ -183,7 +217,7 @@ def leiden_partition(
     # definition and needing scanpy installed to say so would make an optional
     # dependency load-bearing for an answer that does not depend on it -- and a
     # malformed call should report *that*, not a missing package.
-    if n < 3:
+    if n < MIN_CLUSTERABLE:
         return Partition(
             protids=list(protids),
             labels=["LC0"] * n,

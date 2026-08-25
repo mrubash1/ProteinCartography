@@ -398,13 +398,13 @@ def _own_partition(space_id, fused, protids, space_dir):
     dependency is a reduced result, never an error", applied to the one
     dependency this work reaches for that it did not add.
     """
-    from clustering import ClusteringError, is_available, leiden_partition
+    from clustering import MIN_CLUSTERABLE, ClusteringError, is_available, leiden_partition
 
     available, explanation = is_available()
     if not available:
         _skip(f"{space_id}: not clustered ({explanation}); partition-dependent sections skipped")
         return None
-    if len(protids) < 3:
+    if len(protids) < MIN_CLUSTERABLE:
         _skip(f"{space_id}: {len(protids)} proteins is too few to cluster")
         return None
     try:
@@ -418,10 +418,9 @@ def _own_partition(space_id, fused, protids, space_dir):
 
 def _sweep_for(fused, protids, resolutions):
     """``{resolution: labels}``, or None when this space cannot be clustered."""
-    from clustering import ClusteringError, is_available, sweep_resolutions
+    from clustering import ClusteringError, require_clusterable, sweep_resolutions
 
-    available, explanation = is_available()
-    if not available or len(protids) < 3:
+    if require_clusterable(protids):
         return None
     try:
         return sweep_resolutions(np.asarray(fused.values, dtype=np.float64), protids, resolutions)
@@ -465,13 +464,11 @@ def _random_distance_control(protids, high):
     comparison is of structure rather than of units, and the seed is fixed so
     that a control which happens to look alarming can be reproduced.
     """
-    from clustering import ClusteringError, is_available, leiden_partition
+    from clustering import ClusteringError, leiden_partition, require_clusterable
 
-    available, explanation = is_available()
-    if not available:
-        return [], {"random_distances": explanation}
-    if len(protids) < 3:
-        return [], {"random_distances": f"{len(protids)} proteins is too few to cluster"}
+    reason = require_clusterable(protids)
+    if reason:
+        return [], {"random_distances": reason}
     rng = np.random.RandomState(0)
     scale = float(np.median(high[~np.eye(len(protids), dtype=bool)])) or 1.0
     values = rng.normal(0.0, scale, size=(len(protids), min(len(protids), 32)))

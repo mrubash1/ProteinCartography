@@ -108,17 +108,11 @@ def _partitions_for(compared, aligned, protids) -> dict:
     space without a matching embedding has no Procrustes disparity. The reason
     is logged once rather than per pair.
     """
-    from clustering import ClusteringError, is_available, leiden_partition
+    from clustering import ClusteringError, leiden_partition, require_clusterable
 
-    available, explanation = is_available()
-    if not available:
-        print(f"[coregister] no cluster ARI: {explanation}", file=sys.stderr)
-        return {}
-    if len(protids) < 3:
-        print(
-            f"[coregister] no cluster ARI: {len(protids)} shared proteins is too few " "to cluster",
-            file=sys.stderr,
-        )
+    reason = require_clusterable(protids, noun="shared proteins")
+    if reason:
+        print(f"[coregister] no cluster ARI: {reason}", file=sys.stderr)
         return {}
     partitions = {}
     for space_id in compared:
