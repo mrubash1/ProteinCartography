@@ -2,6 +2,31 @@ import enum
 import pathlib
 import sys
 
+#: The search modes the Foldseek API itself accepts.
+#:
+#: This list lives HERE, and not in `foldseek_apiquery` where it used to, for a
+#: reason that has nothing to do with tidiness. This module is imported while
+#: the Snakefile is being PARSED, and `foldseek_apiquery` imports `api_utils`,
+#: whose line 4 is `from bioservices import UniProt`. `envs/cartography_test.yml`
+#: -- the environment both CI workflows use -- does not ship bioservices, so
+#: reaching for this list from there made `snakemake -n` fail before it had
+#: resolved a single rule. Measured: HEAD exited 1 where the fork point exited 0.
+#: Keeping this module's imports to the standard library is what stops that, and
+#: `test_snakefile_parses_without_optional_dependencies.py` is what enforces it.
+SET_MODES = ["3diaa", "tmalign"]
+
+#: The subset the pipeline can actually run to completion.
+#:
+#: `tmalign` is a real Foldseek mode and the API serves it, but this pipeline
+#: cannot consume it: the cohort rule is EVD statistics -- an `evalue < 0.001`
+#: filter and a significance ranking -- and a TM-score carries no significance
+#: model. tmalign returns the same 21 columns in the same positions with
+#: different meanings, so `extract_foldseek_hits.py:86` and
+#: `hit_significance.py:147` both REFUSE such a file rather than rank it
+#: backwards. Accepting the value here and dying inside the rule is the exact
+#: failure this validator exists to prevent, so it is refused at parse time.
+RUNNABLE_MODES = ["3diaa"]
+
 
 class ProteinCartographyInputError(Exception):
     pass
@@ -154,19 +179,36 @@ def _get_foldseek_mode(config) -> str:
     not after it. `foldseek_apiquery.py` does check the value, but it checks it
     inside the rule, once per query protein, after the DAG has been built.
 
-    The accepted set is imported from `foldseek_apiquery` rather than retyped,
-    so the two cannot drift -- and imported INSIDE the function rather than at
-    module scope, because this module is imported while the Snakefile is being
-    parsed and `foldseek_apiquery` pulls in the HTTP stack to get there.
-    """
-    from foldseek_apiquery import SET_MODES
+    Validated against `RUNNABLE_MODES`, not `SET_MODES`. The two differ, and the
+    difference is the point: the API accepts `tmalign` and this pipeline cannot
+    consume it, so accepting it here bought a config that parsed and then died
+    downstream -- late, and after the expensive search in a real run. The error
+    names the mode rather than pretending it does not exist, because it is a
+    documented Foldseek mode and a user who asked for it deserves to be told why
+    it is refused rather than that it is a typo.
 
+    This function no longer imports `foldseek_apiquery`. It used to, deferred
+    into the body with a docstring explaining that the deferral kept the
+    Snakefile free of a parse-time dependency on the HTTP stack. The deferral
+    achieved nothing: `Snakefile:167` CALLS this function while the Snakefile is
+    being parsed, which triggered the very import it was written to avoid, and
+    broke `snakemake -n` outright in any environment without bioservices. A
+    comment stating an invariant does not enforce it.
+    """
     value = str(config.get("foldseek_mode", "3diaa")).strip()
-    if value not in SET_MODES:
+    if value not in RUNNABLE_MODES:
+        detail = (
+            " That is a real Foldseek mode and the API serves it, but this pipeline"
+            " cannot interpret its output: it returns the same 21 columns in the same"
+            " positions with different meanings -- the column named 'evalue' holds a"
+            " TM-score -- and the cohort rule downstream is e-value statistics, which a"
+            " TM-score has no equivalent of. extract_foldseek_hits.py and"
+            " hit_significance.py both refuse such a file rather than rank it backwards."
+            if value in SET_MODES
+            else ""
+        )
         raise ProteinCartographyInputError(
-            f"foldseek_mode must be one of {SET_MODES}; got {value!r}. The two modes "
-            "return the same columns with different meanings, so a wrong value here is "
-            "not caught by anything downstream -- it changes which proteins reach the map."
+            f"foldseek_mode must be one of {RUNNABLE_MODES}; got {value!r}.{detail}"
         )
     return value
 

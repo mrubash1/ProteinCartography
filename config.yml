@@ -46,12 +46,18 @@ foldseek_databases:
 # all -- so the flag was reachable by hand and unreachable by config, and the
 # choice was recorded nowhere. It is stated here so that it travels with the run.
 #
-# **The two modes are indistinguishable from their output.** tmalign returns the
-# same 21 columns in the same positions with different meanings: the column
-# named `evalue` holds a TM-score and `bits` holds roughly that times 100. So
-# changing this changes which proteins reach the map, and nothing downstream can
-# tell after the fact -- which is why `extract_foldseek_hits.py` and
-# `hit_significance.py` both refuse a file whose columns are tmalign-shaped.
+# **`3diaa` is the only value this pipeline can run.** tmalign is a real Foldseek
+# mode and the API serves it, but it returns the same 21 columns in the same
+# positions with different meanings -- the column named `evalue` holds a TM-score
+# and `bits` holds roughly that times 100 -- and the cohort rule downstream is
+# e-value statistics, which a TM-score has no equivalent of. So
+# `extract_foldseek_hits.py` and `hit_significance.py` both refuse a file whose
+# columns are tmalign-shaped, and the config validator refuses the value up
+# front rather than letting a run reach them.
+#
+# This comment used to say that changing the mode "changes which proteins reach
+# the map". That was false, and contradicted its own next sentence: the run does
+# not produce a different map, it aborts.
 foldseek_mode: "3diaa"
 
 # The maximum number of Foldseek hits to retain

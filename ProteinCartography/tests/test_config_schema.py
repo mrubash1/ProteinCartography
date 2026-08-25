@@ -24,8 +24,12 @@ from config_schema import (
     SpaceConfig,
     from_legacy,
 )
-from config_utils import ProteinCartographyInputError, _get_foldseek_mode
-from foldseek_apiquery import SET_MODES
+from config_utils import (
+    RUNNABLE_MODES,
+    SET_MODES,
+    ProteinCartographyInputError,
+    _get_foldseek_mode,
+)
 from reduce_space import params_for
 from spaces.base import NotFusableError
 
@@ -539,7 +543,6 @@ def test_params_for_reports_what_each_pipeline_reads():
 
 def test_the_foldseek_mode_defaults_to_the_mode_the_pipeline_runs():
     assert _get_foldseek_mode({}) == "3diaa"
-    assert _get_foldseek_mode({"foldseek_mode": "tmalign"}) == "tmalign"
     assert _get_foldseek_mode({"foldseek_mode": "  3diaa  "}) == "3diaa"
 
 
@@ -553,11 +556,59 @@ def test_an_unknown_foldseek_mode_fails_at_config_parse_time():
         _get_foldseek_mode({"foldseek_mode": "tm-align"})
 
 
-def test_the_accepted_modes_come_from_the_script_rather_than_being_retyped():
-    """One source of truth. If these ever disagree, a config the validator
-    accepts is one the script rejects, inside the rule."""
-    assert "from foldseek_apiquery import SET_MODES" in inspect.getsource(_get_foldseek_mode)
+def test_tmalign_is_refused_at_parse_time_and_not_left_to_die_in_the_rule():
+    """It used to be ACCEPTED here. The value is a real Foldseek mode, so it
+    passed a membership test against the API's vocabulary -- and then
+    `extract_foldseek_hits.py:86` raised `TmalignOutputError` inside the rule,
+    after the DAG was built and, in a real run, after the search. A validator
+    whose whole argument is "fail before a four-hour search, not after it" was
+    admitting the one value guaranteed to fail after it."""
+    with _pytest.raises(ProteinCartographyInputError, match="foldseek_mode must be one of"):
+        _get_foldseek_mode({"foldseek_mode": "tmalign"})
+
+
+def test_the_refusal_explains_tmalign_rather_than_calling_it_a_typo():
+    """A documented mode refused with the same message as a misspelling tells a
+    user nothing. The two cases are distinguishable and are distinguished."""
+    with _pytest.raises(ProteinCartographyInputError) as documented:
+        _get_foldseek_mode({"foldseek_mode": "tmalign"})
+    with _pytest.raises(ProteinCartographyInputError) as typo:
+        _get_foldseek_mode({"foldseek_mode": "tm-align"})
+    assert "TM-score" in str(documented.value)
+    assert "TM-score" not in str(typo.value)
+
+
+def test_the_two_vocabularies_are_both_real_and_do_not_collapse():
+    """`SET_MODES` is what the API accepts; `RUNNABLE_MODES` is what this
+    pipeline can consume. They are deliberately different, and a change that
+    silently merged them would restore the accepts-then-dies behaviour."""
     assert SET_MODES == ["3diaa", "tmalign"]
+    assert RUNNABLE_MODES == ["3diaa"]
+    assert set(RUNNABLE_MODES) < set(SET_MODES)
+
+
+def test_the_validator_reaches_no_module_outside_the_standard_library():
+    """The predecessor of this test asserted that the string
+    `"from foldseek_apiquery import SET_MODES"` appeared in the function's
+    source -- pinning a MECHANISM while nothing tested its EFFECT. The mechanism
+    was a deferred import, justified in a docstring as keeping the Snakefile
+    free of a parse-time dependency on the HTTP stack, and it did not work: the
+    Snakefile calls this function at parse time. This asserts the effect
+    instead, and
+    `test_snakefile_parses_without_optional_dependencies.py` asserts it end to
+    end, in the subprocess where the real failure happened."""
+    import ast
+    import textwrap
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(_get_foldseek_mode)))
+    imports = [node for node in ast.walk(tree) if isinstance(node, (ast.Import, ast.ImportFrom))]
+    assert imports == [], (
+        "_get_foldseek_mode imports something. It is called while the Snakefile is "
+        "being parsed, so anything it reaches must be in the standard library. "
+        "Asserted on the AST rather than on the source text: the first version of "
+        "this check looked for the substring 'import' and went red on the word "
+        "'imports' inside the docstring."
+    )
 
 
 def test_the_shipped_config_states_the_mode():

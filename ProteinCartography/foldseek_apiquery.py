@@ -18,8 +18,14 @@ https://search.foldseek.com/api/ticket
 # only import these functions when using import *
 __all__ = ["foldseek_apiquery"]
 
-# Possible align mode options from API
-SET_MODES = ["3diaa", "tmalign"]
+# Possible align mode options from API.
+#
+# Defined in `config_utils` and imported here rather than the other way round.
+# The Snakefile validates the configured mode at parse time, so whichever module
+# owns this list is imported during parsing -- and this one reaches bioservices
+# through `api_utils`, which the CI environment does not have. The dependency
+# points this way so that a parse never touches the HTTP stack.
+from config_utils import SET_MODES  # noqa: E402
 
 # Possible databases options from API
 SET_DATABASES = [
