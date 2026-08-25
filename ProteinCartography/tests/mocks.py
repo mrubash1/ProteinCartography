@@ -208,10 +208,51 @@ def mock_foldseek_api_responses(method, url):
     return mock_response
 
 
+#: Accessions whose TED payload is deliberately unusable, and how.
+#:
+#: NEW ENTRIES, NEVER A CHANGE TO THE DEFAULT ONE-DOMAIN BRANCH. That default is
+#: what keeps the query gate OFF inside parity's four pipeline runs and inside
+#: the two other pipeline integration tests; editing it to make a domain test
+#: convenient would turn the gate on everywhere at once.
+#:
+#: Both parse as two domains, so each would pass the multi-domain gate if it
+#: parsed at all -- which is the only way to reach the code under test.
+UNUSABLE_TED_PAYLOADS = {
+    # A chopping string that is not a range. `parse_chopping` raises
+    # `DomainChoppingError`, from inside `domain_row`, while the ROW is built.
+    "P90001": ("1-80", "not-a-range"),
+    # A chopping whose second span runs past the end of the staged FASTA.
+    # `slice_fasta_sequence` raises `ValueError` during the crop, one layer
+    # further out than the case above and through a different call path.
+    "P90002": ("1-80", "81-99999"),
+}
+
+
 def mock_ted_api_responses(url):
-    """TED summary API. Default: one domain (gate off). P99999: two domains (gate on)."""
+    """TED summary API. Default: one domain (gate off). P99999: two domains (gate on).
+
+    `UNUSABLE_TED_PAYLOADS` adds the two failure shapes PC-021 phase 1 is about.
+    """
     mock_response = mock.Mock(spec=requests.Response)
     accession = url.rstrip("/").split("/")[-1].split("?")[0]
+    if accession in UNUSABLE_TED_PAYLOADS:
+        mock_response.status_code = 200
+        mock_response.ok = True
+        mock_response.json.return_value = {
+            "data": [
+                {
+                    "ted_id": f"AF-{accession}-F1-model_v4_TED{i:02d}",
+                    "uniprot_acc": accession,
+                    "chopping": chopping,
+                    "nres_domain": 80,
+                    "cath_label": "1.10.10.10",
+                }
+                for i, chopping in enumerate(UNUSABLE_TED_PAYLOADS[accession], start=1)
+            ],
+            "count": 2,
+        }
+        return mock_response
+
     if accession == "P99999":
         mock_response.status_code = 200
         mock_response.ok = True

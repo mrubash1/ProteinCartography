@@ -175,7 +175,7 @@ The protein search and map always run as described above. If a **query** protein
 - **Single-domain queries:** the domain path does not run. There is no extra BLAST/Foldseek, no `*_domain.html`, and the protein map is unchanged. Set `domain_map: off` to force this skip even for multi-domain queries.
 - **When gated on:** each query domain is cropped (`{accession}__d01`, …) and searched with BLAST and Foldseek independently. Hits are unioned, downloaded, and TED-cropped. Clustering uses the same Foldseek/Leiden/plot scripts on those domain PDBs.
 - **Outputs:** `{analysis_name}_*_domain.html` / `.tsv` / `.pdf` in `final_results/`, plus `domain_path/` and `foldseek_clustering_results_domain/`. Protein `final_results` names are unchanged.
-- TED HTTP failures on a query are treated as “not multi-domain” and do not fail the protein pipeline. Hit accessions with no TED assignment are omitted from the domain map only.
+- A TED failure on a query — an HTTP error, or boundaries this cohort's files cannot satisfy — is treated as “not multi-domain” and does not fail the protein pipeline; the accession and the reason are printed on stderr. Hit accessions with no TED assignment are omitted from the domain map only.
 
 TED: Lau et al., Science 386, eadq4946 (2024). https://doi.org/10.1126/science.adq4946
 

@@ -396,3 +396,146 @@ def test_ted_paginates_until_short_page(tmp_path: Path, monkeypatch: pytest.Monk
     assert payload["data"][0]["chopping"] == "1-80"
     assert payload["data"][1]["chopping"] == "81-160"
     assert len(session.urls) == 3
+
+
+# ==========================================================================
+# PC-021 phase 1 -- no TED payload can fail the run
+# ==========================================================================
+
+
+def _unusable_payload(accession: str) -> dict:
+    """A TED payload built from `mocks.UNUSABLE_TED_PAYLOADS`, so the two failure
+    shapes have one spelling between the unit tests here and the pipeline
+    integration tests that go through `mocks.mock_ted_api_responses`."""
+    from mocks import UNUSABLE_TED_PAYLOADS
+
+    return {
+        "data": [
+            {
+                "ted_id": f"AF-{accession}-F1-model_v4_TED{i:02d}",
+                "uniprot_acc": accession,
+                "chopping": chopping,
+                "nres_domain": 80,
+                "cath_label": "1.10.10.10",
+            }
+            for i, chopping in enumerate(UNUSABLE_TED_PAYLOADS[accession], start=1)
+        ],
+        "count": 2,
+    }
+
+
+@pytest.mark.parametrize(
+    ("accession", "what"),
+    [
+        ("P90001", "a chopping string that is not a range"),
+        ("P90002", "a chopping that overruns the staged FASTA"),
+    ],
+)
+def test_an_unusable_ted_payload_leaves_the_protein_path_green(
+    tmp_path: Path, capsys, accession, what
+):
+    """`assign_parent`'s docstring said "Never raises" and it could.
+
+    `parse_chopping` raises `DomainChoppingError` -- a `ValueError` -- from
+    inside `domain_row`, while the row is being BUILT, so every caller of
+    `rows_from_ted_payload` was a place a remote payload could fail the whole
+    protein pipeline for a defect in an optional domain map.
+
+    Both accessions parse as two domains, so each would pass the multi-domain
+    gate if it parsed at all; that is the only way to reach the code under test.
+    """
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    _write_query_files(input_dir, accession, 160)
+    session = FakeSession({accession: FakeResponse(200, _unusable_payload(accession))})
+    out = tmp_path / "domain"
+
+    gate = assign_domains.run_query_gate([accession], str(input_dir), str(out), session=session)
+
+    assert gate == "off", what
+    # All three outputs exist, because the checkpoint's consumers read them
+    # whatever the gate says.
+    assert (out / "gate.txt").read_text().strip() == "off"
+    assert (out / "query_domain_ids.txt").read_text() == ""
+    assert (out / "query_domains.tsv").is_file()
+    # And it says which accession and why, in the same shape as the existing
+    # miss messages.
+    stderr = capsys.readouterr().err
+    assert accession in stderr
+    assert "omitting" in stderr
+
+
+def test_a_failure_that_is_not_bad_data_still_surfaces(tmp_path: Path):
+    """The guard is a NAMED tuple, not `except Exception`.
+
+    A payload that is a list where a dict was expected makes `payload.get`
+    raise `AttributeError`. That is a bug in this file rather than bad data from
+    TED, and swallowing it would turn every future mistake here into a silent
+    "not multi-domain".
+    """
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    _write_query_files(input_dir, "P90003", 160)
+    session = FakeSession({"P90003": FakeResponse(200, ["not", "a", "dict"])})
+    with pytest.raises(AttributeError):
+        assign_domains.run_query_gate(
+            ["P90003"], str(input_dir), str(tmp_path / "domain"), session=session
+        )
+
+
+def test_one_bad_parent_does_not_take_the_others_with_it(tmp_path: Path, capsys):
+    """The guard is inside the per-parent loop, so the gate goes on.
+
+    Before it, one unparseable chopping ended the run; a cohort with one bad
+    accession and one good one produced no domain map at all rather than a map
+    of the good one.
+    """
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    _write_query_files(input_dir, "P90001", 160)
+    _write_query_files(input_dir, "P99999", 160)
+    session = FakeSession(
+        {
+            "P90001": FakeResponse(200, _unusable_payload("P90001")),
+            "P99999": FakeResponse(200, TWO_DOMAIN_PAYLOAD),
+        }
+    )
+    out = tmp_path / "domain"
+
+    gate = assign_domains.run_query_gate(
+        ["P90001", "P99999"], str(input_dir), str(out), session=session
+    )
+
+    assert gate == "on"
+    assert (out / "query_domain_ids.txt").read_text().splitlines() == [
+        "P99999__d01",
+        "P99999__d02",
+    ]
+    assert "P90001" in capsys.readouterr().err
+
+
+def test_a_crop_that_cannot_read_its_files_omits_the_parent(tmp_path: Path, capsys, monkeypatch):
+    """`OSError` is in the crop guard's set and not in the parse guard's.
+
+    The crop branch touches the filesystem, and an unreadable PDB is the same
+    kind of event as an unparseable chopping -- neither is a reason to fail the
+    protein pipeline. Asserted separately because it reaches a different
+    `except` from every test above.
+    """
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    _write_query_files(input_dir, "P99999", 160)
+
+    def explode(*args, **kwargs):
+        raise OSError("Input/output error")
+
+    monkeypatch.setattr(assign_domains, "_crop_query_files", explode)
+    out = tmp_path / "domain"
+    session = FakeSession({"P99999": FakeResponse(200, TWO_DOMAIN_PAYLOAD)})
+
+    gate = assign_domains.run_query_gate(["P99999"], str(input_dir), str(out), session=session)
+
+    assert gate == "off"
+    stderr = capsys.readouterr().err
+    assert "omitting P99999" in stderr
+    assert "crop failed" in stderr

@@ -39,7 +39,17 @@ TED_MAX_429_RETRIES = 5
 
 
 class DomainChoppingError(ValueError):
-    """Raised when a TED/user chopping string cannot be parsed."""
+    """Raised when a TED/user chopping string cannot be parsed.
+
+    **A chopping string is third-party data, and it is parsed while a ROW is
+    being built.** `domain_row` calls `parse_chopping`, so every caller of
+    `domain_row` -- `rows_from_ted_payload`, `rows_from_user_tsv_records` -- is
+    a place a remote payload or a user's TSV can raise. That is not a property
+    of this class that a reader can infer from the raise site, which is why it
+    is stated here rather than left to be discovered: `assign_domains` carries
+    `DOMAIN_DATA_ERRORS` for exactly this, and once failed the whole protein
+    pipeline for a malformed domain boundary in an optional map.
+    """
 
 
 def parse_chopping(chopping: str) -> list[tuple[int, int]]:

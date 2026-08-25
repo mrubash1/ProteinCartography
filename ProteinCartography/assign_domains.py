@@ -2,8 +2,10 @@
 """Assign TED/user domain boundaries and crop query or hit structures.
 
 Query-gate: TED (or a user TSV) on query proteins only. The domain DAG runs
-only when at least one query has two or more kept domains. TED failures on a
-query never fail the protein pipeline.
+only when at least one query has two or more kept domains. A TED failure on a
+query -- or boundaries this cohort's files cannot satisfy -- never fails the
+protein pipeline: the parent is omitted with its reason on stderr and the gate
+goes on to the next one.
 
 Hit assignment: TED on domain-path hit accessions; misses are omitted.
 """
@@ -183,6 +185,30 @@ def load_user_domains(path: str) -> dict[str, list[dict]]:
     return by_parent
 
 
+#: What a bad chopping string is allowed to raise, and nothing else.
+#:
+#: A chopping is THIRD-PARTY DATA. It arrives from TED over HTTP or from a user
+#: TSV, and it is parsed while a row is being built -- so every caller of
+#: `domain_utils.domain_row` is a place a payload can raise. `assign_parent`'s
+#: docstring said "Never raises" and it could: `DomainChoppingError` from
+#: `parse_chopping` is a `ValueError`, and it travelled all the way out of
+#: `run_query_gate` and failed the PROTEIN pipeline for a defect in an optional
+#: domain map.
+#:
+#: Named as a tuple rather than caught as `Exception`, deliberately. An
+#: `AttributeError` from a payload that is a list where a dict was expected is a
+#: bug in this file, not bad data, and it must still surface -- there is a test
+#: that it does.
+DOMAIN_DATA_ERRORS = (du.DomainChoppingError, ValueError, KeyError, TypeError)
+
+#: The same set plus `OSError`, for the branch that touches the filesystem.
+#: Spelled as its own tuple rather than concatenated at the `except`, because
+#: ruff's B030 will not accept an expression there -- and it is right to: an
+#: `except` clause that computes its own handler list is one edit away from
+#: catching something nobody intended.
+DOMAIN_CROP_ERRORS = DOMAIN_DATA_ERRORS + (OSError,)
+
+
 def assign_parent(
     parent_protid: str,
     session,
@@ -190,9 +216,22 @@ def assign_parent(
     user_by_parent: dict[str, list[dict]],
     min_domain_length: int,
 ) -> list[dict]:
-    """User TSV wins; else TED; else empty. Never raises."""
+    """User TSV wins; else TED; else empty.
+
+    Never raises on bad DATA -- see `DOMAIN_DATA_ERRORS` for what that means and
+    what it deliberately excludes. A parent whose boundaries cannot be parsed is
+    omitted with its reason on stderr, exactly as a TED miss is, and the query
+    gate goes on to the next parent.
+    """
     if parent_protid in user_by_parent:
-        return du.filter_domain_rows(user_by_parent[parent_protid], min_domain_length)
+        try:
+            return du.filter_domain_rows(user_by_parent[parent_protid], min_domain_length)
+        except DOMAIN_DATA_ERRORS as exc:
+            print(
+                f"[assign_domains] omitting {parent_protid}: user domains unusable ({exc})",
+                file=sys.stderr,
+            )
+            return []
 
     if not du.looks_like_uniprot_accession(parent_protid):
         return []
@@ -200,8 +239,15 @@ def assign_parent(
     payload = fetch_ted_summary(parent_protid, session, cache_dir)
     if not payload:
         return []
-    rows = du.rows_from_ted_payload(parent_protid, payload)
-    return du.filter_domain_rows(rows, min_domain_length)
+    try:
+        rows = du.rows_from_ted_payload(parent_protid, payload)
+        return du.filter_domain_rows(rows, min_domain_length)
+    except DOMAIN_DATA_ERRORS as exc:
+        print(
+            f"[assign_domains] omitting {parent_protid}: TED payload unusable ({exc})",
+            file=sys.stderr,
+        )
+        return []
 
 
 def _write_domains_tsv(path: Path, rows: list[dict]) -> None:
@@ -272,7 +318,17 @@ def run_query_gate(
         rows = assign_parent(parent, session, cache_dir, user_by_parent, min_domain_length)
         if not du.is_multidomain(len(rows)):
             continue
-        _crop_query_files(parent, rows, Path(input_dir), query_structures)
+        try:
+            _crop_query_files(parent, rows, Path(input_dir), query_structures)
+        except DOMAIN_CROP_ERRORS as exc:
+            # OSError as well, because this branch touches the filesystem: an
+            # unreadable PDB is the same kind of event as an unparseable
+            # chopping, and neither is a reason to fail the protein pipeline.
+            print(
+                f"[assign_domains] omitting {parent}: crop failed ({exc})",
+                file=sys.stderr,
+            )
+            continue
         cropped = [row for row in rows if int(row.get("nres_domain") or 0) > 0]
         if du.is_multidomain(len(cropped)):
             multi_rows.extend(cropped)
