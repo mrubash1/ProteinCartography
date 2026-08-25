@@ -418,14 +418,21 @@ def main() -> int:
             categorical_report[column] = detail
             rows.extend(column_rows)
         else:
-            values, unparseable = numeric_column(frame, column)
+            # NOT `unparseable`: that name already holds the register of
+            # columns that cannot be enriched at all, built above and written to
+            # the manifest below as `columns_unparseable`. Rebinding it here
+            # replaced a mapping with a per-column count, so the manifest
+            # recorded an int and `format_report`'s `sorted()` raised
+            # `TypeError: 'int' object is not iterable` as soon as that count
+            # was non-zero. Two different quantities, two names.
+            values, n_unparseable = numeric_column(frame, column)
             continuous_report[column] = {
                 "measured": int(np.count_nonzero(~np.isnan(values))),
-                "unparseable": unparseable,
+                "unparseable": n_unparseable,
             }
-            if unparseable:
+            if n_unparseable:
                 print(
-                    f"[enrich_clusters] {column}: {unparseable} value(s) are not "
+                    f"[enrich_clusters] {column}: {n_unparseable} value(s) are not "
                     "numbers and are treated as missing",
                     file=sys.stderr,
                 )

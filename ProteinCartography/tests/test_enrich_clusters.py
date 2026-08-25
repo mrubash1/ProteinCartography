@@ -386,6 +386,28 @@ def test_the_manifest_records_what_the_table_rests_on(default_run):
     assert manifest["extra"]["n_proteins"] == 400
 
 
+def test_the_unparseable_register_survives_a_continuous_column(default_run):
+    """`columns_unparseable` must stay the register it is named after.
+
+    It is built as a mapping of column -> why-it-cannot-be-enriched
+    (`enrich_clusters.py:399`) and `format_report` calls `sorted()` on it
+    (`:352`). The continuous branch reused the same name for a per-column COUNT,
+    so after any continuous column the manifest carried an int instead, and the
+    report line raised `TypeError: 'int' object is not iterable` the moment that
+    count was non-zero. `DEFAULT_ENRICHMENT` carries three continuous columns, so
+    this was never a hypothetical shape -- only a silent one, because a count of
+    zero is falsy and the report line skipped itself.
+    """
+    manifest = json.loads((default_run.output / "enrichment" / "manifest.json").read_text())
+    register = manifest["extra"]["columns_unparseable"]
+    assert isinstance(register, dict), (
+        "columns_unparseable is a mapping of column -> reason, not a count; " f"got {register!r}"
+    )
+    # The per-column count still exists, under the name that describes it.
+    for detail in manifest["extra"]["continuous"].values():
+        assert isinstance(detail["unparseable"], int)
+
+
 # ---------------------------------------------------------------------------
 # the correction
 # ---------------------------------------------------------------------------
