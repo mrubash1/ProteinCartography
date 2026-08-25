@@ -265,17 +265,44 @@ def _crop_query_files(parent: str, rows: list[dict], input_dir: Path, query_stru
     for row in rows:
         domain_id = row["protid"]
         chopping = row["chopping"]
-        if fasta.is_file():
-            du.crop_fasta_file(fasta, chopping, query_structures / f"{domain_id}.fasta", domain_id)
+        # THE PDB IS CROPPED FIRST, and the FASTA follows it.
+        #
+        # It used to be the other way round, which is why there was an unlink
+        # branch below: the sequence was written, then the structure came back
+        # empty, and the orphan had to be cleaned up afterwards. Ordering the
+        # two the way the data depends removes the branch instead of adding to
+        # it -- a file never written needs no cleanup.
+        n_ca, cropped_pdb = None, False
         if pdb.is_file():
+            cropped_pdb = True
             dest = query_structures / f"{domain_id}.pdb"
             n_ca = du.crop_pdb_file(pdb, chopping, dest)
             row["nres_domain"] = n_ca
             if n_ca <= 0:
                 dest.unlink(missing_ok=True)
-                fasta_out = query_structures / f"{domain_id}.fasta"
-                if fasta_out.is_file():
-                    fasta_out.unlink()
+        # No PDB at all is a different case from a PDB that cropped to nothing,
+        # and it keeps its old behaviour: `nres_domain` still carries whatever
+        # TED declared, so the row can still be kept, and the sequence is still
+        # written. Only a domain whose STRUCTURE came back empty loses its FASTA.
+        if fasta.is_file() and (not cropped_pdb or n_ca > 0):
+            _, overrun = du.crop_fasta_file(
+                fasta,
+                chopping,
+                query_structures / f"{domain_id}.fasta",
+                domain_id,
+                on_overrun="clip",
+            )
+            if overrun is not None:
+                # A silent clip is the failure this repository names. The two
+                # numbers are also what PC-022 (FOLLOWUPS #61) needs to say
+                # whether `min_domain_length` was applied to a span that exists.
+                print(
+                    f"[assign_domains] clipped {domain_id}: chopping declares residue "
+                    f"{overrun.declared_end} but the sequence has "
+                    f"{overrun.sequence_length}; {overrun.residues_lost} residue(s) and "
+                    f"{overrun.segments_dropped} whole segment(s) dropped",
+                    file=sys.stderr,
+                )
 
 
 def run_query_gate(

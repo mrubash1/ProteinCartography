@@ -9,6 +9,7 @@ import json
 import re
 from collections.abc import Iterable, Sequence
 from pathlib import Path
+from typing import NamedTuple
 
 DOMAIN_ID_SEP = "__d"
 DOMAIN_ID_PATTERN = re.compile(r"^(?P<parent>.+)" + DOMAIN_ID_SEP + r"(?P<index>\d+)$")
@@ -175,14 +176,77 @@ def parse_fasta(text: str) -> tuple[str, str]:
     return header, sequence
 
 
-def slice_fasta_sequence(sequence: str, chopping: str) -> str:
-    """Slice a protein sequence with 1-based inclusive UniProt numbering."""
-    parts = []
-    for start, end in parse_chopping(chopping):
-        if end > len(sequence):
-            raise ValueError(f"chopping {start}-{end} exceeds sequence length {len(sequence)}")
+class ChoppingOverrun(NamedTuple):
+    """What a crop lost because its chopping ran past the end of the sequence.
+
+    Returned rather than logged, so the caller decides whether this is a line on
+    stderr, a row in a report, or an error. A SILENT clip is the failure mode
+    this repository names over and over: a shorter answer that looks like a
+    complete one.
+
+    `declared_end` is the largest residue number the chopping asked for, which is
+    the number to compare against `sequence_length` -- and the pair PC-022
+    (FOLLOWUPS #61) needs in order to say whether `min_domain_length` was applied
+    to a span that exists.
+    """
+
+    declared_end: int
+    sequence_length: int
+    residues_lost: int
+    segments_dropped: int
+
+
+def _slice_with_loss(sequence: str, chopping: str, on_overrun: str) -> tuple:
+    """``(sliced, overrun_or_None)``. See `slice_fasta_sequence` for the modes."""
+    if on_overrun not in ("raise", "clip"):
+        raise ValueError(f"on_overrun must be 'raise' or 'clip', not {on_overrun!r}")
+
+    length = len(sequence)
+    spans = parse_chopping(chopping)
+    parts, lost, dropped = [], 0, 0
+    for start, end in spans:
+        if end > length:
+            if on_overrun == "raise":
+                raise ValueError(f"chopping {start}-{end} exceeds sequence length {length}")
+            if start > length:
+                # The whole segment is past the end. Dropped rather than clipped
+                # to nothing, because a zero-length span and a clipped span are
+                # different facts about the chopping.
+                dropped += 1
+                lost += end - start + 1
+                continue
+            lost += end - length
+            end = length
         parts.append(sequence[start - 1 : end])
-    return "".join(parts)
+    if not lost and not dropped:
+        return "".join(parts), None
+    return "".join(parts), ChoppingOverrun(
+        declared_end=max(end for _, end in spans),
+        sequence_length=length,
+        residues_lost=lost,
+        segments_dropped=dropped,
+    )
+
+
+def slice_fasta_sequence(sequence: str, chopping: str, on_overrun: str = "raise") -> str:
+    """Slice a protein sequence with 1-based inclusive UniProt numbering.
+
+    ``on_overrun`` decides what happens when a span asks for residues the
+    sequence does not have:
+
+    * ``"raise"`` -- the default, and unchanged behaviour. Every existing caller
+      and the pure-function test keep exactly what they had.
+    * ``"clip"`` -- truncate each span at the end of the sequence, and drop a
+      span that starts past it. Use `_slice_with_loss` if you need to know that
+      it happened; this function cannot tell you, which is why the crop path
+      does not use it.
+
+    The PDB crop has always behaved like ``"clip"``: `crop_pdb_text` keeps the
+    records that exist and returns the count. The two halves of one domain
+    disagreeing about that is what made an overrunning chopping fail the whole
+    run rather than produce a shorter domain.
+    """
+    return _slice_with_loss(sequence, chopping, on_overrun)[0]
 
 
 def write_fasta(path: Path, seq_id: str, sequence: str) -> None:
@@ -238,11 +302,29 @@ def crop_pdb_file(pdb_path: Path, chopping: str, output_path: Path) -> int:
     return n_ca
 
 
-def crop_fasta_file(fasta_path: Path, chopping: str, output_path: Path, seq_id: str) -> str:
+def crop_fasta_file(
+    fasta_path: Path,
+    chopping: str,
+    output_path: Path,
+    seq_id: str,
+    on_overrun: str = "raise",
+) -> tuple:
+    """``(sliced, overrun_or_None)``, writing the FASTA unless the slice is empty.
+
+    The return SHAPE changed when `on_overrun` was added, and that was checked
+    rather than assumed: `grep -rn crop_fasta_file` over the package returns
+    three call sites -- `assign_domains._crop_query_files` and two in
+    `test_aggregate_domain_hits` -- and NONE of them used the old return value.
+
+    Nothing is written when the slice comes back empty. A FASTA carrying a
+    header and no residues is a file every downstream reader would accept and
+    none would flag.
+    """
     _, sequence = parse_fasta(fasta_path.read_text())
-    sliced = slice_fasta_sequence(sequence, chopping)
-    write_fasta(output_path, seq_id, sliced)
-    return sliced
+    sliced, overrun = _slice_with_loss(sequence, chopping, on_overrun)
+    if sliced:
+        write_fasta(output_path, seq_id, sliced)
+    return sliced, overrun
 
 
 def ted_cache_path(cache_dir: Path, accession: str) -> Path:

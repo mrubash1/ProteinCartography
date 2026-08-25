@@ -428,7 +428,11 @@ def _unusable_payload(accession: str) -> dict:
     ("accession", "what"),
     [
         ("P90001", "a chopping string that is not a range"),
-        ("P90002", "a chopping that overruns the staged FASTA"),
+        # P90002 -- a chopping that overruns the staged FASTA -- USED to belong
+        # here and moved to the phase-2 section below. It no longer needs
+        # omitting: the crop clips it and keeps the domain. Left as a comment
+        # rather than deleted, because "this case moved" is the fact a reader of
+        # the phase-1 commit will be looking for.
     ],
 )
 def test_an_unusable_ted_payload_leaves_the_protein_path_green(
@@ -539,3 +543,121 @@ def test_a_crop_that_cannot_read_its_files_omits_the_parent(tmp_path: Path, caps
     stderr = capsys.readouterr().err
     assert "omitting P99999" in stderr
     assert "crop failed" in stderr
+
+
+# ==========================================================================
+# PC-021 phase 2 -- clip a FASTA crop the way a PDB crop is clipped
+# ==========================================================================
+
+
+def test_an_overrunning_chopping_clips_instead_of_failing(tmp_path: Path, capsys):
+    """The behaviour change, stated as a test rather than left in a message.
+
+    Before phase 2 this accession was OMITTED -- phase 1 caught the `ValueError`
+    and the gate went off. Now the sequence follows the structure: the PDB crop
+    has always kept the residues that exist, and the FASTA does too.
+
+    `nres_domain` for the overrunning domain is 80, not the 99999 the chopping
+    declared and not the 80 TED reported -- it is the CA count of the crop that
+    actually happened.
+    """
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    _write_query_files(input_dir, "P90002", 160)
+    session = FakeSession({"P90002": FakeResponse(200, _unusable_payload("P90002"))})
+    out = tmp_path / "domain"
+
+    gate = assign_domains.run_query_gate(["P90002"], str(input_dir), str(out), session=session)
+
+    assert gate == "on"
+    structures = out / "query_structures"
+    sequence = "".join((structures / "P90002__d02.fasta").read_text().splitlines()[1:])
+    assert len(sequence) == 80, "the FASTA must carry the residues that exist, 81-160"
+    # The two halves of the domain agree, which is the whole point of the reorder.
+    atoms = (structures / "P90002__d02.pdb").read_text().splitlines()
+    assert sum(1 for line in atoms if line.startswith("ATOM")) == len(sequence)
+
+    stderr = capsys.readouterr().err
+    assert "clipped P90002__d02" in stderr
+    assert "declares residue 99999" in stderr
+    assert "the sequence has 160" in stderr
+
+
+def test_only_the_overrunning_segment_of_a_discontinuous_chopping_is_clipped(tmp_path: Path):
+    """A domain built from two spans loses only what runs past the end.
+
+    Clipping the whole chopping, or dropping it, would quietly change which
+    residues the domain is made of rather than how many.
+    """
+    sequence = "".join(chr(65 + (i % 26)) for i in range(100))
+    sliced, overrun = du._slice_with_loss(sequence, "1-20_90-150", on_overrun="clip")
+    assert sliced == sequence[0:20] + sequence[89:100]
+    assert overrun.declared_end == 150
+    assert overrun.sequence_length == 100
+    assert overrun.residues_lost == 50
+    assert overrun.segments_dropped == 0
+
+
+def test_a_segment_that_starts_past_the_end_is_dropped_not_clipped_to_nothing(tmp_path: Path):
+    """A zero-length span and a dropped span are different facts about the
+    chopping, and the report says which happened."""
+    sequence = "A" * 50
+    sliced, overrun = du._slice_with_loss(sequence, "1-20_80-120", on_overrun="clip")
+    assert sliced == "A" * 20
+    assert overrun.segments_dropped == 1
+    assert overrun.residues_lost == 41
+
+
+def test_a_chopping_entirely_past_the_end_writes_no_fasta(tmp_path: Path):
+    """A FASTA carrying a header and no residues is a file every downstream
+    reader would accept and none would flag."""
+    source = tmp_path / "P.fasta"
+    source.write_text(">P\n" + "A" * 50 + "\n")
+    out = tmp_path / "P__d01.fasta"
+    sliced, overrun = du.crop_fasta_file(source, "80-120", out, "P__d01", on_overrun="clip")
+    assert sliced == ""
+    assert overrun.segments_dropped == 1
+    assert not out.exists()
+
+
+def test_the_default_still_raises(tmp_path: Path):
+    """`on_overrun` defaults to `raise`, so every existing caller and the
+    pure-function test at the top of `test_domain_utils.py` are untouched."""
+    with pytest.raises(ValueError, match="exceeds sequence length"):
+        du.slice_fasta_sequence("A" * 50, "1-80")
+    with pytest.raises(ValueError, match="exceeds sequence length"):
+        du.slice_fasta_sequence("A" * 50, "1-80", on_overrun="raise")
+    with pytest.raises(ValueError, match="on_overrun must be"):
+        du.slice_fasta_sequence("A" * 50, "1-10", on_overrun="truncate")
+
+
+def test_a_domain_whose_pdb_crops_to_nothing_leaves_no_fasta_behind(tmp_path: Path):
+    """The reorder deletes the orphan-FASTA unlink branch rather than adding to
+    it: a file never written needs no cleanup.
+
+    The PDB here covers residues 1-80 only, so the second domain's crop returns
+    no CA atoms at all.
+    """
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    _write_query_files(input_dir, "P99999", 160)
+    # Truncate the PDB to the first domain's residues, leaving the FASTA whole.
+    pdb = input_dir / "P99999.pdb"
+    kept = [
+        line
+        for line in pdb.read_text().splitlines()
+        if not line.startswith("ATOM") or int(line[22:26]) <= 80
+    ]
+    pdb.write_text("\n".join(kept) + "\n")
+
+    session = FakeSession({"P99999": FakeResponse(200, TWO_DOMAIN_PAYLOAD)})
+    out = tmp_path / "domain"
+    gate = assign_domains.run_query_gate(["P99999"], str(input_dir), str(out), session=session)
+
+    structures = out / "query_structures"
+    assert (structures / "P99999__d01.fasta").is_file()
+    assert not (structures / "P99999__d02.pdb").exists()
+    assert not (
+        structures / "P99999__d02.fasta"
+    ).exists(), "the second domain has no structure, so it must have no sequence either"
+    assert gate == "off", "one kept domain is not multi-domain"
