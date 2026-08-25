@@ -146,6 +146,12 @@ def cross_cluster_edge_retention(matrix: LabeledMatrix, clusters: Mapping) -> tu
     it approaches zero, the clusters are still real but their *positions
     relative to each other* are increasingly determined by the handful of
     cross-cluster edges that happened to survive.
+
+    Any of the three summary ratios is ``None`` when its denominator is zero,
+    which is the honest answer and also the only one that survives ``json.dumps``
+    as valid JSON. A one-cluster space has no between-cluster pair, so
+    ``between_retention`` and ``between_over_within`` are ``None`` there by
+    construction rather than by accident.
     """
     _values, censored = _pair_state(matrix)
     protids = list(matrix.protids)
@@ -198,12 +204,27 @@ def cross_cluster_edge_retention(matrix: LabeledMatrix, clusters: Mapping) -> tu
     between_possible = int(possible.sum() - within_possible)
     between_observed = int(observed.sum() - within_observed)
 
-    within_retention = within_observed / within_possible if within_possible else float("nan")
-    between_retention = between_observed / between_possible if between_possible else float("nan")
+    # `None`, not NaN and NOT 0.0, when the denominator is zero.
+    #
+    # A space with ONE cluster has no between-cluster pair at all, so
+    # `between_possible` is 0 and the ratio is 0/0. It used to be `float("nan")`,
+    # which is right about the mathematics and wrong about the encoding:
+    # `json.dumps` writes NaN BARE, the explorer page is a JavaScript literal
+    # (`const PAYLOAD = ...`) rather than parsed JSON, and `NaN` is an ordinary
+    # JavaScript identifier -- so the non-number travelled all the way to a
+    # reader's screen and nothing raised anywhere on the way. Measured on the
+    # multispace demo, which is the DEFAULT path: `fused_late` is k=1.
+    #
+    # 0.0 would be worse than the NaN rather than better. It reads as "nothing
+    # was retained" for a space where the question does not arise, which is
+    # FOLLOWUPS #34's defect -- a synthetic zero standing in for an untested
+    # quantity and becoming indistinguishable from a real null result.
+    within_retention = within_observed / within_possible if within_possible else None
+    between_retention = between_observed / between_possible if between_possible else None
     ratio = (
         between_retention / within_retention
-        if within_retention and within_retention == within_retention and within_retention > 0
-        else float("nan")
+        if between_retention is not None and within_retention
+        else None
     )
 
     summary = {
@@ -286,7 +307,14 @@ def _interpret(report: dict) -> list:
         )
 
     retention = report.get("cross_cluster_edge_retention")
-    if retention and retention["between_over_within"] == retention["between_over_within"]:
+    # `is not None`, not `x == x`. That idiom was a NaN test -- NaN is the only
+    # value not equal to itself -- and it stopped being one the moment the
+    # undefined ratio became `None`, because `None == None` is True and the
+    # comparison two lines down then raised. The unit suite could not see it:
+    # every test here calls `cross_cluster_edge_retention` directly, and this
+    # branch is only reached through `censoring_report`. The DEMO caught it, on
+    # the k=1 space that motivated the change.
+    if retention and retention["between_over_within"] is not None:
         ratio = retention["between_over_within"]
         if ratio < 0.5:
             notes.append(

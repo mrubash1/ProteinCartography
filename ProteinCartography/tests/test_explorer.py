@@ -3495,11 +3495,29 @@ def test_the_ratio_refuses_rather_than_printing_nan():
     A space with no measured within-cluster pair yields Infinity or NaN, and
     "NaN" printed beside two real fractions reads as a measurement that failed
     rather than one that could not be formed.
+
+    Sliced to 3200 rather than 2200: the k=1 branch below lengthened this
+    function, and a fixed slice that stops short reports a missing guard when
+    the guard is simply further down.
     """
     html = EMPTY_PAGE
-    cell = html[html.index("function retentionCell(space)") :][:2200]
+    cell = html[html.index("function retentionCell(space)") :][:3200]
     assert "Number.isFinite(within)" in cell
     assert "no ratio: nothing was measured within a cluster" in cell
+
+
+def test_a_one_cluster_space_is_refused_in_its_own_words():
+    """Two refusals, not one sentence used for both.
+
+    A space with ONE cluster has a real `within_retention` and no between-cluster
+    pair at all, so telling that reader "nothing was measured within a cluster"
+    is false about their data. FOLLOWUPS #87.
+    """
+    html = EMPTY_PAGE
+    cell = html[html.index("function retentionCell(space)") :][:3200]
+    assert "retention.n_clusters === 1" in cell
+    assert "this space has one cluster, so there is " in cell
+    assert "no between-cluster pair for the cap to have removed" in cell
 
 
 def test_the_per_space_censoring_is_named_apart_from_the_cohorts():

@@ -229,6 +229,86 @@ def test_self_pairs_are_excluded_from_retention(tmp_path):
     assert summary["within_retention"] == pytest.approx(0.0)
 
 
+def test_a_one_cluster_space_reports_none_and_not_nan(tmp_path):
+    """FOLLOWUPS #87. With one cluster there is no between-cluster pair at all,
+    so `between_possible` is 0 and the ratio is 0/0.
+
+    It used to be `float("nan")`, which is right about the mathematics and wrong
+    about the encoding. `json.dumps` writes NaN BARE, and the explorer page is a
+    JavaScript literal rather than parsed JSON, so `NaN` is an ordinary
+    identifier there: the non-number reached a reader's screen and nothing
+    raised anywhere on the way. Measured on the multispace demo, which is the
+    DEFAULT path -- `fused_late` is k=1.
+    """
+    import json
+
+    lbl = [f"P{i}" for i in range(4)]
+    clusters = dict.fromkeys(lbl, "A")
+    matrix = dense_matrix(tmp_path, lbl)
+    _table, summary = cross_cluster_edge_retention(matrix, clusters)
+
+    assert summary["n_clusters"] == 1
+    assert summary["between_possible"] == 0
+    assert summary["between_retention"] is None
+    assert summary["between_over_within"] is None
+    # Within IS measured here, which is why 0.0 would be the wrong substitute:
+    # it would read as "nothing was retained" for a space where the question
+    # does not arise, which is FOLLOWUPS #34's defect.
+    assert summary["within_retention"] == pytest.approx(1.0)
+
+    # The encoding is the whole point, so it is asserted rather than implied.
+    written = json.dumps(summary)
+    assert "NaN" not in written
+    assert json.loads(written)["between_retention"] is None
+
+
+def test_no_summary_ratio_can_reach_a_reader_as_a_non_number(tmp_path):
+    """The general form of #87, so a fourth ratio added later is covered.
+
+    `json.dumps` accepts NaN and Infinity and writes them bare, and every
+    consumer downstream of this function is either a JSON file or a JavaScript
+    literal. Neither raises. This is the only place that can.
+    """
+    import json
+    import math
+
+    lbl = [f"P{i}" for i in range(4)]
+    for name, clusters in (
+        ("one cluster", dict.fromkeys(lbl, "A")),
+        ("two clusters", {"P0": "A", "P1": "A", "P2": "B", "P3": "B"}),
+        ("all singletons", {p: p for p in lbl}),
+    ):
+        _table, summary = cross_cluster_edge_retention(dense_matrix(tmp_path, lbl), clusters)
+        for key, value in summary.items():
+            assert value is None or not isinstance(value, float) or math.isfinite(value), (
+                f"{name}: {key} is {value!r}, which json.dumps writes bare and "
+                "the explorer page reads as a JavaScript identifier"
+            )
+        assert "NaN" not in json.dumps(summary), name
+        assert "Infinity" not in json.dumps(summary), name
+
+
+def test_the_whole_report_survives_a_one_cluster_space(tmp_path):
+    """The level the pipeline actually calls, which is not the level the tests
+    above call.
+
+    Everything else in this section drives `cross_cluster_edge_retention`
+    directly. `diagnose_space` calls `censoring_report`, whose `_interpret` step
+    reads the ratio -- and its guard was written as `x == x`, a NaN test, which
+    silently stopped being one when the undefined ratio became `None`. The unit
+    suite was green and the demo died at `diagnose_space` on `fused_late`.
+    """
+    lbl = [f"P{i}" for i in range(4)]
+    report = censoring_report(dense_matrix(tmp_path, lbl), dict.fromkeys(lbl, "A"))
+    retention = report["cross_cluster_edge_retention"]
+    assert retention["between_over_within"] is None
+    # It must produce notes rather than raise, and must not claim a cross-cluster
+    # finding it has no number for.
+    notes = report["interpretation"]
+    assert notes
+    assert not any("Cross-cluster relationships survived" in note for note in notes)
+
+
 def test_missing_cluster_assignment_raises(tmp_path, labels):
     matrix = dense_matrix(tmp_path, labels)
     with pytest.raises(ValueError, match="no cluster assignment"):

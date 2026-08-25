@@ -2296,10 +2296,24 @@ function retentionCell(space) {
   }
   const within = retention.within_retention;
   const between = retention.between_retention;
-  // Refuse rather than print NaN. `between_over_within` divides by the within
-  // figure, so a space with no measured within-cluster pair yields Infinity or
-  // NaN -- and a ratio printed as "NaN" beside two real fractions reads as a
-  // measurement that failed rather than one that could not be formed.
+  // Refuse rather than print a non-number, and SAY WHICH refusal this is.
+  //
+  // There are two, and this branch used to give both of them the same sentence.
+  // A space with exactly ONE cluster has no between-cluster pair to measure, so
+  // `between_retention` is null while `within_retention` is a real fraction --
+  // and telling that reader "nothing was measured within a cluster" is simply
+  // false about their data. The other case, no measured within-cluster pair, is
+  // the one that leaves `between_over_within` without a denominator.
+  //
+  // `Number.isFinite(null)` is false, which is what catches the null the
+  // payload now carries where it used to carry a bare `NaN` (FOLLOWUPS #87).
+  if (retention.n_clusters === 1) {
+    return (
+      `${fmtValue(within)} within` +
+      `<span class="sweep">no ratio: this space has one cluster, so there is ` +
+      `no between-cluster pair for the cap to have removed</span>`
+    );
+  }
   if (!Number.isFinite(within) || !Number.isFinite(between) || !within) {
     return (
       `${fmtValue(between)} between / ${fmtValue(within)} within` +
