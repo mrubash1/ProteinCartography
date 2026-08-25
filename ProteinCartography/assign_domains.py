@@ -13,6 +13,7 @@ Hit assignment: TED on domain-path hit accessions; misses are omitted.
 from __future__ import annotations
 import argparse
 import csv
+import json
 import os
 import sys
 from pathlib import Path
@@ -209,12 +210,31 @@ DOMAIN_DATA_ERRORS = (du.DomainChoppingError, ValueError, KeyError, TypeError)
 DOMAIN_CROP_ERRORS = DOMAIN_DATA_ERRORS + (OSError,)
 
 
+def _filtered(rows: list[dict], min_domain_length: int, counts: dict | None) -> list[dict]:
+    """`filter_domain_rows`, counting what the length floor removed.
+
+    The count cannot be recovered afterwards -- `filter_domain_rows` renumbers,
+    so the rows that come back carry no trace of the ones that did not. A
+    mutable `counts` rather than a wider return type because `assign_parent` has
+    two callers and only one of them wants the number; changing its return shape
+    for the other would be a change every reader has to evaluate.
+    """
+    kept = du.filter_domain_rows(rows, min_domain_length)
+    if counts is not None:
+        counts["domains_declared"] = counts.get("domains_declared", 0) + len(rows)
+        counts["domains_below_declared_floor"] = counts.get("domains_below_declared_floor", 0) + (
+            len(rows) - len(kept)
+        )
+    return kept
+
+
 def assign_parent(
     parent_protid: str,
     session,
     cache_dir: Path,
     user_by_parent: dict[str, list[dict]],
     min_domain_length: int,
+    counts: dict | None = None,
 ) -> list[dict]:
     """User TSV wins; else TED; else empty.
 
@@ -225,7 +245,7 @@ def assign_parent(
     """
     if parent_protid in user_by_parent:
         try:
-            return du.filter_domain_rows(user_by_parent[parent_protid], min_domain_length)
+            return _filtered(user_by_parent[parent_protid], min_domain_length, counts)
         except DOMAIN_DATA_ERRORS as exc:
             print(
                 f"[assign_domains] omitting {parent_protid}: user domains unusable ({exc})",
@@ -241,7 +261,7 @@ def assign_parent(
         return []
     try:
         rows = du.rows_from_ted_payload(parent_protid, payload)
-        return du.filter_domain_rows(rows, min_domain_length)
+        return _filtered(rows, min_domain_length, counts)
     except DOMAIN_DATA_ERRORS as exc:
         print(
             f"[assign_domains] omitting {parent_protid}: TED payload unusable ({exc})",
@@ -367,6 +387,80 @@ def run_query_gate(
     return gate
 
 
+def _rate(numerator: int, denominator: int, of: str) -> dict:
+    """A rate that carries its own denominator, because a bare one lies.
+
+    "36.6 % asymmetry" was retracted on this branch for exactly this: a
+    percentage whose denominator nobody stated. `of` names the population in
+    words, so a reader does not have to infer it from a key.
+    """
+    return {
+        "n": numerator,
+        "of": denominator,
+        "population": of,
+        "fraction": round(numerator / denominator, 6) if denominator else None,
+    }
+
+
+def _write_assignment_report(directory: Path, tally: dict, min_domain_length: int) -> None:
+    """What the hit assignment queried, covered and discarded.
+
+    NOT DECLARED AS A SNAKEMAKE OUTPUT, deliberately. `assign-hits` runs inside
+    `checkpoint domain_prepare_structures`, and FOLLOWUPS #47 records what an
+    unconsumed output on a CHECKPOINT does: the checkpoint never re-runs,
+    `checkpoints.<name>.get()` raises, and every dependent job vanishes. The
+    protein side's cohort report can be conditional because its rule is plain;
+    this one cannot, so it is written beside `domain_features.tsv` and tracked
+    by nothing.
+
+    The cost of that is stated rather than hidden: DELETING THIS FILE DOES NOT
+    REBUILD IT. It is a diagnostic, not an input to anything, and the checkpoint
+    that writes it is guaranteed to run by its real outputs.
+    """
+    parents = tally.get("parents_queried", 0)
+    declared = tally.get("domains_declared", 0)
+    kept = tally.get("domains_kept", 0)
+    payload = {
+        "min_domain_length": min_domain_length,
+        "parents": {
+            "queried": parents,
+            "with_usable_domains": _rate(
+                tally.get("parents_with_domains", 0), parents, "hit parents queried"
+            ),
+            "omitted_no_domains": _rate(
+                tally.get("parents_omitted_no_domains", 0), parents, "hit parents queried"
+            ),
+            "omitted_missing_pdb": _rate(
+                tally.get("parents_omitted_missing_pdb", 0), parents, "hit parents queried"
+            ),
+        },
+        "domains": {
+            "declared_by_ted": declared,
+            "dropped_below_declared_floor": _rate(
+                tally.get("domains_below_declared_floor", 0), declared, "domains TED declared"
+            ),
+            "dropped_empty_crop": _rate(
+                tally.get("domains_dropped_empty_crop", 0), declared, "domains TED declared"
+            ),
+            "kept": _rate(kept, declared, "domains TED declared"),
+            # The population FOLLOWUPS #61 is about: the DECLARED span cleared
+            # `min_domain_length` and the CROPPED structure did not. These are
+            # kept -- only an empty crop is dropped -- so this number is the only
+            # place they are visible.
+            "cropped_below_floor": _rate(
+                tally.get("domains_cropped_below_floor", 0), kept, "domains kept"
+            ),
+            "discontinuous": _rate(tally.get("domains_discontinuous", 0), kept, "domains kept"),
+        },
+    }
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / "domain_assignment_report.json"
+    with path.open("w") as handle:
+        json.dump(payload, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+    print(f"[assign_domains] wrote {path}", file=sys.stderr)
+
+
 def assign_and_crop_hits(
     accessions_file: str,
     pdb_dir: str,
@@ -413,29 +507,54 @@ def assign_and_crop_hits(
                 dest.write_text(src.read_text())
 
     hit_rows: list[dict] = []
+    counts: dict = {}
+    tally = {
+        "parents_queried": 0,
+        "parents_with_domains": 0,
+        "parents_omitted_no_domains": 0,
+        "parents_omitted_missing_pdb": 0,
+        "domains_dropped_empty_crop": 0,
+        "domains_cropped_below_floor": 0,
+        "domains_discontinuous": 0,
+    }
     for acc in accessions:
         if acc in query_parents:
             continue
-        rows = assign_parent(acc, session, cache, user_by_parent, min_domain_length)
+        tally["parents_queried"] += 1
+        rows = assign_parent(acc, session, cache, user_by_parent, min_domain_length, counts)
         if not rows:
+            tally["parents_omitted_no_domains"] += 1
             print(f"[assign_domains] omitting hit {acc}: no TED/user domains", file=sys.stderr)
             continue
         pdb_path = pdb_dir_path / f"{acc}.pdb"
         if not pdb_path.is_file():
+            tally["parents_omitted_missing_pdb"] += 1
             print(f"[assign_domains] omitting hit {acc}: missing PDB", file=sys.stderr)
             continue
+        tally["parents_with_domains"] += 1
         for row in rows:
             dest = out_dir / f"{row['protid']}.pdb"
             n_ca = du.crop_pdb_file(pdb_path, row["chopping"], dest)
             if n_ca <= 0:
+                tally["domains_dropped_empty_crop"] += 1
                 dest.unlink(missing_ok=True)
                 print(
                     f"[assign_domains] omitting {row['protid']}: empty crop for {acc}",
                     file=sys.stderr,
                 )
                 continue
+            # FOLLOWUPS #61's population, counted where it happens. The declared
+            # chopping passed `min_domain_length`; the CROP did not. These
+            # domains are KEPT -- the code only drops an empty one -- so this is
+            # the only record that they are shorter than the floor says.
+            if n_ca < min_domain_length:
+                tally["domains_cropped_below_floor"] += 1
+            if len(du.parse_chopping(row["chopping"])) > 1:
+                tally["domains_discontinuous"] += 1
             row["nres_domain"] = n_ca
             hit_rows.append(row)
+    tally["domains_kept"] = len(hit_rows)
+    tally.update(counts)
 
     all_rows = query_rows + hit_rows
     # DictReader values are strings; normalize types for the TSV writer.
@@ -452,6 +571,7 @@ def assign_and_crop_hits(
             }
         )
     _write_domains_tsv(Path(output_tsv), normalized)
+    _write_assignment_report(Path(output_tsv).parent, tally, min_domain_length)
     return normalized
 
 

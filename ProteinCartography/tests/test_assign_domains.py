@@ -1,6 +1,7 @@
 """TED gate, user TSV precedence, cache, and omit-on-miss behavior."""
 
 from __future__ import annotations
+import json
 from pathlib import Path
 
 import assign_domains
@@ -718,3 +719,140 @@ def test_a_hit_domain_gets_a_structure_and_no_sequence(tmp_path: Path):
     # And the parent's own sequence was not copied through either, which is a
     # different way the same file could appear.
     assert not (out_dir / "P99999.fasta").exists()
+
+
+# ==========================================================================
+# PC-023 phase 4 (second half) -- what the hit assignment discarded
+# ==========================================================================
+
+
+def _read_report(out_dir: Path) -> dict:
+    return json.loads((out_dir / "domain_assignment_report.json").read_text())
+
+
+def test_the_assignment_report_names_a_denominator_on_every_rate(tmp_path: Path):
+    """A bare percentage lies. This branch retracted a 36.6% asymmetry figure for
+    exactly that, so every rate here carries `of` and `population`."""
+    pdb_dir = tmp_path / "pdbs"
+    pdb_dir.mkdir()
+    _write_query_files(pdb_dir, "P99999", 160)
+    hits = tmp_path / "hits.txt"
+    hits.write_text("P99999\n")
+    out_dir = tmp_path / "structures"
+    tsv = tmp_path / "features" / "domain_features.tsv"
+    assign_domains.assign_and_crop_hits(
+        accessions_file=str(hits),
+        pdb_dir=str(pdb_dir),
+        output_dir=str(out_dir),
+        output_tsv=str(tsv),
+        cache_dir=str(tmp_path / "cache"),
+        session=FakeSession({"P99999": FakeResponse(200, TWO_DOMAIN_PAYLOAD)}),
+    )
+
+    report = _read_report(tsv.parent)
+    # By key, not by position: the report is written with `sort_keys=True`, so
+    # "queried" is not the first entry and slicing would pick up an int.
+    rates = [v for k, v in report["parents"].items() if k != "queried"]
+    rates += [v for k, v in report["domains"].items() if k != "declared_by_ted"]
+    for rate in rates:
+        assert set(rate) == {"n", "of", "population", "fraction"}
+        assert isinstance(rate["population"], str) and rate["population"]
+    assert report["parents"]["queried"] == 1
+    assert report["domains"]["declared_by_ted"] == 2
+    assert report["domains"]["kept"]["n"] == 2
+    assert report["domains"]["kept"]["of"] == 2
+
+
+def test_the_report_counts_what_the_length_floor_removed(tmp_path: Path):
+    """`filter_domain_rows` RENUMBERS, so the rows that survive carry no trace of
+    the ones that did not. The count has to be taken where the filter runs, and
+    that is why `assign_parent` takes a `counts` mapping."""
+    pdb_dir = tmp_path / "pdbs"
+    pdb_dir.mkdir()
+    _write_query_files(pdb_dir, "P99999", 160)
+    hits = tmp_path / "hits.txt"
+    hits.write_text("P99999\n")
+    tsv = tmp_path / "features" / "domain_features.tsv"
+    # The payload declares 80 and 80; a floor of 100 drops both.
+    assign_domains.assign_and_crop_hits(
+        accessions_file=str(hits),
+        pdb_dir=str(pdb_dir),
+        output_dir=str(tmp_path / "structures"),
+        output_tsv=str(tsv),
+        cache_dir=str(tmp_path / "cache"),
+        min_domain_length=100,
+        session=FakeSession({"P99999": FakeResponse(200, TWO_DOMAIN_PAYLOAD)}),
+    )
+
+    report = _read_report(tsv.parent)
+    assert report["min_domain_length"] == 100
+    assert report["domains"]["declared_by_ted"] == 2
+    assert report["domains"]["dropped_below_declared_floor"]["n"] == 2
+    assert report["domains"]["dropped_below_declared_floor"]["fraction"] == 1.0
+    assert report["domains"]["kept"]["n"] == 0
+    # No domains kept, so the parent had none either.
+    assert report["parents"]["omitted_no_domains"]["n"] == 1
+
+
+def test_the_report_counts_the_crop_that_is_shorter_than_its_declaration(tmp_path: Path):
+    """FOLLOWUPS #61's population, and the reason it needs a number.
+
+    The DECLARED span clears `min_domain_length`; the CROPPED structure does not.
+    These domains are KEPT -- only an empty crop is dropped -- so without this
+    count nothing anywhere records that they are shorter than the floor says.
+    """
+    pdb_dir = tmp_path / "pdbs"
+    pdb_dir.mkdir()
+    # A 100-residue model against a payload declaring 1-80 and 81-160: the second
+    # domain's crop yields 20 CA atoms where its declaration promised 80.
+    _write_query_files(pdb_dir, "P99999", 100)
+    hits = tmp_path / "hits.txt"
+    hits.write_text("P99999\n")
+    tsv = tmp_path / "features" / "domain_features.tsv"
+    assign_domains.assign_and_crop_hits(
+        accessions_file=str(hits),
+        pdb_dir=str(pdb_dir),
+        output_dir=str(tmp_path / "structures"),
+        output_tsv=str(tsv),
+        cache_dir=str(tmp_path / "cache"),
+        min_domain_length=30,
+        session=FakeSession({"P99999": FakeResponse(200, TWO_DOMAIN_PAYLOAD)}),
+    )
+
+    report = _read_report(tsv.parent)
+    assert (
+        report["domains"]["dropped_below_declared_floor"]["n"] == 0
+    ), "both declarations clear a floor of 30, so nothing is dropped before cropping"
+    assert report["domains"]["kept"]["n"] == 2
+    assert report["domains"]["cropped_below_floor"]["n"] == 1
+    assert report["domains"]["cropped_below_floor"]["population"] == "domains kept"
+
+
+def test_a_parent_with_no_pdb_is_counted_apart_from_one_with_no_domains(tmp_path: Path):
+    """Two different reasons a parent is omitted, and the stderr lines have always
+    distinguished them. The report does too, rather than reporting one number for
+    'omitted'."""
+    pdb_dir = tmp_path / "pdbs"
+    pdb_dir.mkdir()
+    hits = tmp_path / "hits.txt"
+    # P00698 is deliberately NOT in the responses below, so the fake session
+    # 404s it and it has no domains at all. Giving it a single-domain payload
+    # would put it in the missing-PDB branch instead -- `assign_and_crop_hits`
+    # takes any rows, not only multi-domain ones -- and the two reasons would
+    # stop being distinguishable, which is what this test is about.
+    hits.write_text("P99999\nP00698\n")
+    tsv = tmp_path / "features" / "domain_features.tsv"
+    assign_domains.assign_and_crop_hits(
+        accessions_file=str(hits),
+        pdb_dir=str(pdb_dir),  # empty: no PDB for either
+        output_dir=str(tmp_path / "structures"),
+        output_tsv=str(tsv),
+        cache_dir=str(tmp_path / "cache"),
+        session=FakeSession({"P99999": FakeResponse(200, TWO_DOMAIN_PAYLOAD)}),
+    )
+
+    report = _read_report(tsv.parent)
+    assert report["parents"]["queried"] == 2
+    assert report["parents"]["omitted_missing_pdb"]["n"] == 1, "P99999 has domains and no PDB"
+    assert report["parents"]["omitted_no_domains"]["n"] == 1, "P00698 is single-domain"
+    assert report["parents"]["with_usable_domains"]["n"] == 0
