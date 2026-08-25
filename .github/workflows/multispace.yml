@@ -296,6 +296,40 @@ jobs:
           fi
         shell: micromamba-shell {0}
 
+      - name: The reducers must run somewhere, and this is the only job that can
+        # `tests/test_reducers.py` gates on scikit-learn at MODULE level, so in
+        # the driver environment the whole file collapses to a single skip and
+        # its 19 tests execute NOWHERE: `test.yml` cannot run them and no other
+        # step here reaches them. Measured 2026-08-25 -- of 61 test files, this
+        # one and `test_live_ted.py` ran in no CI job at all, and `test_live_ted`
+        # is deselected by `-m "not live_ted"` on purpose.
+        #
+        # It belongs in THIS job because this job already installs
+        # `envs/analysis.yml`, which carries scikit-learn 1.2.2, umap-learn and
+        # scanpy. That makes it one pytest path rather than a new job -- worth
+        # saying, because this PR already asks upstream to accept a second
+        # workflow file and should not ask for a third.
+        #
+        # A separate step from the determinism run above, deliberately: that
+        # step's SKIPPED check carries a message about determinism, and folding
+        # a second file into it would make that message wrong for half of what
+        # it guards.
+        #
+        # No `--runslow`: nothing in the file is marked slow, and the whole file
+        # is ~9 s.
+        run: |
+          set +e
+          python -m pytest ProteinCartography/tests/test_reducers.py \
+            -q -rs -p no:cacheprovider > /tmp/reducers.txt 2>&1
+          status=$?
+          cat /tmp/reducers.txt
+          if [ $status -ne 0 ]; then exit $status; fi
+          if grep -q "SKIPPED" /tmp/reducers.txt; then
+            echo "::error::a reducer test skipped; this environment no longer carries the stack this step exists to exercise"
+            exit 1
+          fi
+        shell: micromamba-shell {0}
+
   parity:
     # The evidence for this PR's central claim -- that the default configuration
     # produces byte-identical output -- is `test_parity.py`. Every test in it
