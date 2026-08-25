@@ -93,9 +93,16 @@ uniprot_additional_fields: []
 #
 # When there are more hits than this, the rest are discarded, and *which* ones
 # survive decides what the map is about. See docs/adr/0008-cohort-selection.md.
-# Every run now writes protein_features/cohort_report.json saying how many
-# candidates were dropped and whether the discarded set was taxonomically
-# different from the one that was kept.
+#
+# A run with a `spaces:` block ALSO writes protein_features/cohort_report.json,
+# saying how many candidates were dropped and whether the discarded set was
+# taxonomically different from the one that was kept. A run WITHOUT one -- which
+# is this file as it stands -- does not, and its output tree is unchanged.
+# The report is a second output on the `download_pdbs` checkpoint, and adding
+# one unconditionally silently drops `copy_pdb` on every output tree produced
+# before this branch; the Snakefile explains that where it makes the output
+# conditional, and `test_parity.py` asserts the file is ABSENT from a default
+# run rather than trusting the gate.
 #
 # To choose the rule, add a `cohort:` block. The default reproduces exactly what
 # the pipeline has always done, and is not reproducible run to run:
