@@ -246,6 +246,17 @@ def main() -> int:
         # and this file is the only place they are written down.
         extra={"steps": provenance, "fusion": fused.to_dict()},
     )
+    # ADR 0013 §2 applies ADR 0011 §1 inside a space, and §1's reason is that the
+    # loss is ENUMERATED rather than counted. Between spaces that holds --
+    # `coregister` writes every dropped protid to `coregistration/index.json`.
+    # Inside a space it did not: `features_for` prints the first five per block
+    # and a count, so above five the identities were unrecoverable from the run.
+    # `derived` rather than `extra`, because what a space dropped is a fact
+    # about its output and `cache_key` folds `extra` in (FOLLOWUPS #92).
+    _, dropped = shared_index(space, blocks)
+    manifest.derived["dropped_by_block"] = {
+        block_id: list(missing) for block_id, missing in sorted(dropped.items())
+    }
     manifest.write(os.path.join(space_dir, layout.manifest_filename(args.reducer)))
 
     print(

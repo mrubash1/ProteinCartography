@@ -50,7 +50,9 @@ orders.
 
 So `reduce_space` takes the intersection, in the first listed block's order,
 aligns every block to it through `ProteinIndex.align`, and reports the dropped
-proteins on stderr, naming the first five per block and counting the rest. This
+proteins twice: on stderr, naming the first five per block and counting the rest,
+and in full in the space manifest under `derived.dropped_by_block`, because a
+truncated list is a count and §1's guarantee is that the loss is enumerated. This
 is ADR 0011 §1 applied *inside* a space rather than between spaces, and for the
 same reason: a fused geometry conditioned on an overlap nobody chose looks
 exactly like one that is not.

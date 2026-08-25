@@ -397,6 +397,43 @@ def test_main_still_reduces_a_single_block_space(store_root, monkeypatch, cohort
     assert manifest["extra"]["fusion"]["contributions"][0]["share"] == 1.0
 
 
+def test_main_records_every_protein_the_intersection_dropped(store_root, monkeypatch, cohort):
+    """ADR 0013 §2 inherits ADR 0011 §1's guarantee: enumerated, not counted.
+
+    stderr prints five per block and a `(+N more)` count, so on a cohort where
+    two blocks disagree about hundreds of proteins the identities were
+    unrecoverable from the run. Between spaces the same loss is written out in
+    full, to `coregistration/index.json`; inside a space it was written nowhere.
+
+    Ten dropped here against a truncation at five, deliberately: five would pass
+    on the stderr line alone.
+    """
+    pytest.importorskip("sklearn")
+    from spaces.base import BlockResult
+
+    store = BlockStore(str(store_root))
+    store.write_block(
+        BlockResult(
+            spec=cohort.block_spec(NARROW_BLOCK),
+            protids=cohort.protids[:50],
+            features=cohort.blocks[NARROW_BLOCK][:50],
+        )
+    )
+    config_path = _config_file(
+        store_root,
+        {"fused": {"blocks": [WIDE_BLOCK, NARROW_BLOCK], "strategy": "late"}},
+    )
+    assert _run(monkeypatch, config_path, store_root, "fused") == 0
+
+    manifest = json.loads((store_root / "spaces" / "fused" / "manifest_pca.json").read_text())
+    assert manifest["derived"]["dropped_by_block"] == {WIDE_BLOCK: cohort.protids[50:]}
+    assert len(manifest["derived"]["dropped_by_block"][WIDE_BLOCK]) == 10
+    assert "dropped_by_block" not in manifest["extra"], (
+        "`cache_key` folds `extra` in: recording what a space dropped there would "
+        "change the identity of every space that drops anything"
+    )
+
+
 # --- dim_reduction's I/O envelope ---------------------------------------------
 
 
