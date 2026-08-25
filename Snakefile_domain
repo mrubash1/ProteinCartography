@@ -25,6 +25,8 @@ checkpoint domain_query_gate:
         user_file=USER_DOMAINS_FILE,
     conda:
         "envs/web_apis.yml"
+    benchmark:
+        BENCHMARKS_DIR / "domain_query_gate.txt"
     shell:
         """
         python ProteinCartography/assign_domains.py query-gate \
@@ -82,6 +84,8 @@ if MODE == config_utils.Mode.SEARCH:
             blast_results=DOMAIN_BLAST_DIR / "{domain_id}.blast_results.tsv",
         conda:
             "envs/blast.yml"
+        benchmark:
+            BENCHMARKS_DIR / "{domain_id}.domain_run_blast.txt"
         shell:
             """
             python ProteinCartography/run_blast.py \
@@ -103,6 +107,8 @@ if MODE == config_utils.Mode.SEARCH:
             blast_hits=DOMAIN_BLAST_DIR / "{domain_id}.blast_hits.refseq.txt",
         conda:
             "envs/pandas.yml"
+        benchmark:
+            BENCHMARKS_DIR / "{domain_id}.domain_extract_blast_hits.txt"
         shell:
             """
             python ProteinCartography/extract_blast_hits.py \
@@ -117,6 +123,8 @@ if MODE == config_utils.Mode.SEARCH:
             blast_hits_uniprot_ids=DOMAIN_BLAST_DIR / "{domain_id}.blast_hits.uniprot.txt",
         conda:
             "envs/web_apis.yml"
+        benchmark:
+            BENCHMARKS_DIR / "{domain_id}.domain_map_refseq_ids.txt"
         shell:
             """
             python ProteinCartography/map_refseq_ids.py \
@@ -136,6 +144,8 @@ if MODE == config_utils.Mode.SEARCH:
             ),
         conda:
             "envs/web_apis.yml"
+        benchmark:
+            BENCHMARKS_DIR / "{domain_id}.domain_run_foldseek.txt"
         shell:
             """
             python ProteinCartography/foldseek_apiquery.py \
@@ -154,6 +164,8 @@ if MODE == config_utils.Mode.SEARCH:
             foldseek_hits=DOMAIN_FOLDSEEK_DIR / "{domain_id}.foldseek_hits.txt",
         conda:
             "envs/pandas.yml"
+        benchmark:
+            BENCHMARKS_DIR / "{domain_id}.domain_extract_foldseek_hits.txt"
         shell:
             """
             python ProteinCartography/extract_foldseek_hits.py \
@@ -178,6 +190,8 @@ if MODE == config_utils.Mode.SEARCH:
             found_by=DOMAIN_FEATURES_DIR / "found_by.tsv",
         conda:
             "envs/pandas.yml"
+        benchmark:
+            BENCHMARKS_DIR / "domain_aggregate_hits.txt"
         shell:
             """
             python ProteinCartography/aggregate_domain_hits.py \
@@ -193,6 +207,8 @@ if MODE == config_utils.Mode.SEARCH:
             uniprot_features=DOMAIN_FEATURES_DIR / "uniprot_features.tsv",
         conda:
             "envs/web_apis.yml"
+        benchmark:
+            BENCHMARKS_DIR / "domain_fetch_uniprot_metadata.txt"
         shell:
             """
             python ProteinCartography/fetch_uniprot_metadata.py \
@@ -208,6 +224,8 @@ if MODE == config_utils.Mode.SEARCH:
             filtered_hits=DOMAIN_FEATURES_DIR / "filtered_hits.txt",
         conda:
             "envs/pandas.yml"
+        benchmark:
+            BENCHMARKS_DIR / "domain_filter_hits.txt"
         shell:
             """
             python ProteinCartography/filter_aggregated_hits.py \
@@ -225,6 +243,8 @@ if MODE == config_utils.Mode.SEARCH:
             hit_structures=directory(DOMAIN_HIT_STRUCTURES_DIR),
         conda:
             "envs/web_apis.yml"
+        benchmark:
+            BENCHMARKS_DIR / "domain_download_pdbs.txt"
         shell:
             """
             python ProteinCartography/download_pdbs.py \
@@ -245,6 +265,8 @@ if MODE == config_utils.Mode.SEARCH:
             features=DOMAIN_FEATURES_DIR / "domain_features.tsv",
         conda:
             "envs/web_apis.yml"
+        benchmark:
+            BENCHMARKS_DIR / "domain_prepare_structures.txt"
         shell:
             """
             python ProteinCartography/assign_domains.py assign-hits \
@@ -267,6 +289,8 @@ else:
         output:
             accessions=DOMAIN_FEATURES_DIR / "cluster_accessions.txt",
             found_by=DOMAIN_FEATURES_DIR / "found_by.tsv",
+        benchmark:
+            BENCHMARKS_DIR / "domain_cluster_accessions.txt"
         shell:
             """
             mkdir -p {DOMAIN_FEATURES_DIR}
@@ -284,6 +308,8 @@ else:
             features=DOMAIN_FEATURES_DIR / "domain_features.tsv",
         conda:
             "envs/web_apis.yml"
+        benchmark:
+            BENCHMARKS_DIR / "domain_prepare_structures.txt"
         shell:
             """
             python ProteinCartography/assign_domains.py assign-hits \
@@ -311,6 +337,8 @@ rule domain_assess_pdbs:
         pdb_features=DOMAIN_FEATURES_DIR / "pdb_features.tsv",
     conda:
         "envs/plotting.yml"
+    benchmark:
+        BENCHMARKS_DIR / "domain_assess_pdbs.txt"
     shell:
         """
         python ProteinCartography/assess_pdbs.py \
@@ -331,6 +359,8 @@ rule domain_foldseek_clustering:
     resources:
         mem_mb=32 * 1000,
     threads: 16
+    benchmark:
+        BENCHMARKS_DIR / "domain_foldseek_clustering.txt"
     shell:
         """
         python ProteinCartography/foldseek_clustering.py \
@@ -346,6 +376,8 @@ rule domain_copy_key_pdbs:
         dirpath=directory(DOMAIN_TMSCORES_DIR),
     params:
         domain_ids=lambda wildcards: " ".join(get_query_domain_ids(wildcards)),
+    benchmark:
+        BENCHMARKS_DIR / "domain_copy_key_pdbs.txt"
     shell:
         """
         mkdir -p "{output.dirpath}"
@@ -363,6 +395,8 @@ rule domain_calculate_key_tmscores:
         key_tmscores=DOMAIN_FEATURES_DIR / "key_protid_tmscore_features.tsv",
     conda:
         "envs/foldseek.yml"
+    benchmark:
+        BENCHMARKS_DIR / "domain_calculate_key_tmscores.txt"
     shell:
         """
         python ProteinCartography/calculate_key_protid_tmscores.py \
@@ -380,6 +414,8 @@ rule domain_dim_reduction:
         all_by_all_tmscores=DOMAIN_CLUSTERING_DIR / "all_by_all_tmscore_pivoted_{plotting_mode}.tsv",
     conda:
         "envs/analysis.yml"
+    benchmark:
+        BENCHMARKS_DIR / "{plotting_mode}.domain_dim_reduction.txt"
     shell:
         """
         python ProteinCartography/dim_reduction.py --input {input} --mode {wildcards.plotting_mode}
@@ -393,6 +429,8 @@ rule domain_leiden_clustering:
         leiden_features=DOMAIN_CLUSTERING_DIR / "leiden_features.tsv",
     conda:
         "envs/analysis.yml"
+    benchmark:
+        BENCHMARKS_DIR / "domain_leiden_clustering.txt"
     shell:
         """
         python ProteinCartography/leiden_clustering.py \
@@ -424,6 +462,8 @@ rule domain_join_features:
         joined=DOMAIN_FEATURES_DIR / "domain_uniprot_features.tsv",
     conda:
         "envs/pandas.yml"
+    benchmark:
+        BENCHMARKS_DIR / "domain_join_features.txt"
     shell:
         """
         python ProteinCartography/join_domain_features.py \
@@ -445,6 +485,8 @@ rule domain_aggregate_features:
         aggregated_features=FINAL_RESULTS_DIR / f"{ANALYSIS_NAME}_aggregated_features_domain.tsv",
     conda:
         "envs/pandas.yml"
+    benchmark:
+        BENCHMARKS_DIR / "domain_aggregate_features.txt"
     shell:
         """
         python ProteinCartography/aggregate_features.py \
@@ -465,6 +507,8 @@ rule domain_plot_interactive:
         "envs/plotting.yml"
     params:
         keyids=lambda wildcards: " ".join(get_query_domain_ids(wildcards)),
+    benchmark:
+        BENCHMARKS_DIR / "{plotting_mode}.domain_plot_interactive.txt"
     shell:
         """
         python ProteinCartography/plot_interactive.py \
@@ -486,6 +530,8 @@ rule domain_plot_similarity_leiden:
         html=FINAL_RESULTS_DIR / f"{ANALYSIS_NAME}_leiden_similarity_domain.html",
     conda:
         "envs/plotting.yml"
+    benchmark:
+        BENCHMARKS_DIR / "domain_plot_similarity_leiden.txt"
     shell:
         """
         python ProteinCartography/plot_cluster_similarity.py \
@@ -506,6 +552,8 @@ rule domain_plot_similarity_strucluster:
         html=FINAL_RESULTS_DIR / f"{ANALYSIS_NAME}_strucluster_similarity_domain.html",
     conda:
         "envs/plotting.yml"
+    benchmark:
+        BENCHMARKS_DIR / "domain_plot_similarity_strucluster.txt"
     shell:
         """
         python ProteinCartography/plot_cluster_similarity.py \
@@ -525,6 +573,8 @@ rule domain_plot_semantic_analysis:
         html=FINAL_RESULTS_DIR / f"{ANALYSIS_NAME}_semantic_analysis_domain.html",
     conda:
         "envs/plotting.yml"
+    benchmark:
+        BENCHMARKS_DIR / "domain_plot_semantic_analysis.txt"
     shell:
         """
         python ProteinCartography/semantic_analysis.py \
@@ -544,6 +594,8 @@ rule domain_plot_cluster_distributions:
         svg=FINAL_RESULTS_DIR / (ANALYSIS_NAME + "_{domain_id}_distribution_analysis_domain.svg"),
     conda:
         "envs/plotting.yml"
+    benchmark:
+        BENCHMARKS_DIR / "{domain_id}.domain_plot_cluster_distributions.txt"
     shell:
         """
         python ProteinCartography/plot_cluster_distributions.py \
