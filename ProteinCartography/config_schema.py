@@ -307,6 +307,17 @@ class BlockConfig:
     normalization: str | None = None
     metric: str = "euclidean"
     representation: str | None = None
+    #: A file of one vocabulary token per line, pinning the columns this block
+    #: is built over instead of taking whatever this cohort happened to show.
+    #:
+    #: A NAMED FIELD RATHER THAN A PARAM, and the distinction is the whole
+    #: reason it is here: `from_dict` folds every unknown key into `params`, and
+    #: `params` is hashed into `Manifest.cache_key`. A path in params would make
+    #: the cache key depend on where the file sits, so the same vocabulary in
+    #: two directories would be two different blocks. The file's DIGEST goes
+    #: into the manifest's `inputs`, which is what identity should rest on;
+    #: `test_compute_block.py` already pins that rule for `features_file`.
+    vocabulary_file: str | None = None
 
     def __post_init__(self):
         path = f"blocks.{self.id}"
@@ -318,6 +329,13 @@ class BlockConfig:
         if self.normalization is not None:
             _require_choice(f"{path}.normalization", self.normalization, NORMALIZATIONS)
         _require_choice(f"{path}.metric", self.metric, METRICS)
+        if self.vocabulary_file is not None:
+            _require_str(f"{path}.vocabulary_file", self.vocabulary_file)
+            _require(
+                f"{path}.vocabulary_file",
+                bool(str(self.vocabulary_file).strip()),
+                "must not be blank",
+            )
         if self.representation is not None:
             _require_choice(f"{path}.representation", self.representation, REPRESENTATIONS)
         if not self.fusable and not self.not_fusable_reason:
@@ -342,6 +360,7 @@ class BlockConfig:
             "metric",
             "representation",
             "fusable_override_reason",
+            "vocabulary_file",
         }
         # Provider-specific keys are common in the wild, so anything not in
         # `known` is folded into params rather than rejected -- but only for a
@@ -403,6 +422,7 @@ class BlockConfig:
             normalization=data.get("normalization"),
             metric=data.get("metric", "euclidean"),
             representation=data.get("representation"),
+            vocabulary_file=data.get("vocabulary_file"),
         )
 
     def to_spec(self, *, kind: str, **overrides):

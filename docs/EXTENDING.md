@@ -34,6 +34,54 @@ stable: it goes into every manifest.
 
 ---
 
+## Pinning a block's vocabulary
+
+A `threedi` or `domains` block is built over whatever vocabulary this cohort
+happened to show — every 3Di k-mer that occurs, every Pfam family that is
+annotated. That makes two runs over two cohorts incomparable: the columns are
+not the same columns, so a distance between them means nothing.
+
+Name a file to pin it:
+
+```yaml
+blocks:
+  threedi:
+    provider: threedi
+    k: 3
+    vocabulary_file: vocabularies/3di_k3.txt
+```
+
+One token per line, in the order you want the columns. Blank lines and `#`
+comments are skipped, so the file can carry its own provenance. Duplicates are
+dropped. An empty or unreadable file is refused by name rather than producing a
+block of all-zero rows, which is a result that looks like a finding.
+
+**`vocabulary_file` is a provider INPUT, not a param, and that distinction is
+load-bearing.** Everything a block config does not name explicitly is folded
+into `params`, and `params` is hashed into `Manifest.cache_key`. A path in the
+cache key would make the same vocabulary in two directories two different
+blocks. So the FILE'S DIGEST goes into the manifest's `inputs`, the token count
+and the file's basename go into `extra`, and the path goes into neither. The
+Snakefile also declares the file as a rule input, which is what makes snakemake
+rebuild the block when you edit it — passing a path in a shell command it has
+not declared would leave a stale block in place.
+
+What the manifest then records, and why each part is worth having:
+
+* `inputs.vocabulary` — the digest. Change the tokens and the block is a
+  different block. Move the file and it is the same block.
+* `extra.vocabulary_pinned` — the basename and the token count, for a person
+  reading the manifest.
+* `extra.out_of_vocabulary` (threedi) — how much of each protein's k-mer mass
+  fell outside. Zero everywhere for an unpinned block, by construction.
+* `extra.proteins_annotated_outside_vocabulary` (domains) — proteins that ARE
+  annotated and whose every family is outside the vocabulary. Their rows are
+  zeros, exactly like an unannotated protein's, and this is the only place the
+  difference survives.
+
+Pinning nothing leaves the manifest exactly as it was: both keys are absent
+rather than null, so the cache key of an unpinned block does not move.
+
 ## 2. Write the provider
 
 A provider is a plain object with four members. There is no base class to

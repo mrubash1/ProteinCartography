@@ -868,15 +868,24 @@ def uniprot_features_table():
 
 
 def get_block_extra_inputs(wildcards):
-    """Inputs a specific block's provider needs beyond the similarity matrix."""
+    """Inputs a specific block's provider needs beyond the similarity matrix.
+
+    A pinned `vocabulary_file` is DECLARED here, not merely passed. Snakemake
+    reruns the block when a declared input changes and knows nothing about one
+    that is only mentioned in a shell command -- so a vocabulary passed without
+    being declared would let an edited file leave a stale block in place.
+    """
     block = MULTISPACE_CONFIG.blocks.get(wildcards.block_id)
     if block is None:
         return []
+    inputs = []
     if block.provider == "threedi":
-        return [PROTEIN_FEATURES_DIR / THREEDI_DESCRIPTORS_FILENAME]
-    if block.provider in FEATURES_TABLE_PROVIDERS:
-        return [uniprot_features_table()]
-    return []
+        inputs.append(PROTEIN_FEATURES_DIR / THREEDI_DESCRIPTORS_FILENAME)
+    elif block.provider in FEATURES_TABLE_PROVIDERS:
+        inputs.append(uniprot_features_table())
+    if block.vocabulary_file:
+        inputs.append(block.vocabulary_file)
+    return inputs
 
 
 def get_block_provider_inputs(wildcards):
@@ -888,9 +897,14 @@ def get_block_provider_inputs(wildcards):
     the same defect as reading a labeled matrix by position (ADR 0007).
     """
     block = MULTISPACE_CONFIG.blocks.get(wildcards.block_id)
-    if block is not None and block.provider in FEATURES_TABLE_PROVIDERS:
-        return "--provider-input features_file=" + str(uniprot_features_table())
-    return ""
+    if block is None:
+        return ""
+    args = []
+    if block.provider in FEATURES_TABLE_PROVIDERS:
+        args.append("--provider-input features_file=" + str(uniprot_features_table()))
+    if block.vocabulary_file:
+        args.append("--provider-input vocabulary_file=" + str(block.vocabulary_file))
+    return " ".join(args)
 
 
 rule compute_block:

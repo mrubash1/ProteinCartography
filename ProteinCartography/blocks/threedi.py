@@ -35,7 +35,7 @@ import os
 from collections import Counter
 
 import numpy as np
-from spaces.base import BlockResult, BlockSpec
+from spaces.base import BlockResult, BlockSpec, read_vocabulary
 from spaces.manifest import Manifest, file_digest
 
 __all__ = ["DESCRIPTORS_FILENAME", "ThreeDiProvider", "kmer_profile", "read_descriptors"]
@@ -288,7 +288,16 @@ class ThreeDiProvider:
             raise DescriptorError(f"{path} contains no 3Di descriptors.")
         return list(descriptors)
 
-    def _manifest(self, ctx, params: dict, path: str, protids, extra=None):
+    def _vocabulary_path(self, ctx):
+        """The pinned vocabulary file, or None.
+
+        Through `ctx.extras`, which is what `--provider-input` fills, and NOT
+        through params: a path in params is hashed into the cache key, so the
+        same vocabulary in two directories would be two different blocks.
+        """
+        return (getattr(ctx, "extras", None) or {}).get("vocabulary_file")
+
+    def _manifest(self, ctx, params: dict, path: str, protids, extra=None, vocabulary_path=None):
         """The ONE place this provider builds a manifest.
 
         Both `plan` and `compute` come through here, which is the whole point:
@@ -305,7 +314,17 @@ class ThreeDiProvider:
             params.get("block_id", "threedi"),
             provider="threedi",
             params=params,
-            inputs={"descriptors": file_digest(path)},
+            # The vocabulary's DIGEST, and only when one was pinned. Absent
+            # otherwise, so a run that pins nothing has exactly the manifest it
+            # had before this key existed.
+            inputs=(
+                {"descriptors": file_digest(path)}
+                if vocabulary_path is None
+                else {
+                    "descriptors": file_digest(path),
+                    "vocabulary": file_digest(vocabulary_path),
+                }
+            ),
             protids=protids,
             seed=getattr(ctx, "seed", 123456),
             extra=extra,
@@ -333,7 +352,9 @@ class ThreeDiProvider:
             # this method existed. `compute` will raise the real error, with its
             # own message, on the very next line of the caller.
             return None
-        return self._manifest(ctx, params, path, protids)
+        return self._manifest(
+            ctx, params, path, protids, vocabulary_path=self._vocabulary_path(ctx)
+        )
 
     def compute(self, ctx, params: dict) -> BlockResult:
         params = validate_params(params)
@@ -348,9 +369,20 @@ class ThreeDiProvider:
         if not descriptors:
             raise DescriptorError(f"{path} contains no 3Di descriptors.")
 
+        vocabulary_path = self._vocabulary_path(ctx)
+        pinned = read_vocabulary(vocabulary_path) if vocabulary_path else None
         protids, features, vocabulary, too_short, out_of_vocabulary = kmer_profile(
-            descriptors, k=params["k"], scaling=params["scaling"]
+            descriptors, k=params["k"], scaling=params["scaling"], vocabulary=pinned
         )
+        if pinned is not None:
+            wrong_length = [kmer for kmer in pinned if len(kmer) != params["k"]]
+            if wrong_length:
+                raise DescriptorError(
+                    f"{vocabulary_path} holds {len(wrong_length)} token(s) that are not "
+                    f"{params['k']} characters long, starting with {wrong_length[:5]}. A "
+                    f"vocabulary of k-mers has to match the block's k, or every protein "
+                    f"gets an all-zero row."
+                )
 
         manifest = self._manifest(
             ctx,
@@ -381,7 +413,27 @@ class ThreeDiProvider:
                     ),
                     "n_proteins_affected": sum(1 for v in out_of_vocabulary if v > 0),
                 },
+                # Only when one was pinned, so an unpinned run's manifest -- and
+                # therefore its cache key -- is exactly what it was.
+                **(
+                    {
+                        "vocabulary_pinned": {
+                            # NOT the path. `extra` is hashed into `cache_key`,
+                            # so a path here would make the same vocabulary in
+                            # two directories two different blocks -- which is
+                            # FOLLOWUPS #90, one file over. Identity is the
+                            # digest, and that is in `inputs`. The basename is
+                            # kept because it is what a person reading the
+                            # manifest needs to recognise the file.
+                            "name": os.path.basename(str(vocabulary_path)),
+                            "n_tokens": len(pinned),
+                        }
+                    }
+                    if pinned is not None
+                    else {}
+                ),
             },
+            vocabulary_path=vocabulary_path,
         )
         spec = BlockSpec(
             id=params.get("block_id", "threedi"),

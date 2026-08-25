@@ -35,7 +35,7 @@ import os
 import re
 
 import numpy as np
-from spaces.base import BlockResult, BlockSpec
+from spaces.base import BlockResult, BlockSpec, read_vocabulary
 from spaces.manifest import Manifest, file_digest
 
 __all__ = [
@@ -280,7 +280,13 @@ class DomainsProvider:
             raise DomainsError(f"{path} lists no proteins.")
         return list(domains)
 
-    def _manifest(self, ctx, params: dict, path: str, protids, extra=None):
+    def _vocabulary_path(self, ctx):
+        """The pinned family vocabulary, or None. Through `ctx.extras`, which is
+        what `--provider-input` fills, and NOT through params: a path in params
+        is hashed into the cache key."""
+        return (getattr(ctx, "extras", None) or {}).get("vocabulary_file")
+
+    def _manifest(self, ctx, params: dict, path: str, protids, extra=None, vocabulary_path=None):
         """The ONE place this provider builds a manifest.
 
         Both `plan` and `compute` come through here, which is the whole point:
@@ -297,7 +303,17 @@ class DomainsProvider:
             params.get("block_id", "domains"),
             provider="domains",
             params=params,
-            inputs={"features": file_digest(path)},
+            # The vocabulary's DIGEST, and only when one was pinned. Absent
+            # otherwise, so a run that pins nothing has exactly the manifest it
+            # had before this key existed.
+            inputs=(
+                {"features": file_digest(path)}
+                if vocabulary_path is None
+                else {
+                    "features": file_digest(path),
+                    "vocabulary": file_digest(vocabulary_path),
+                }
+            ),
             protids=protids,
             seed=getattr(ctx, "seed", 123456),
             extra=extra,
@@ -324,7 +340,9 @@ class DomainsProvider:
             # this method existed. `compute` will raise the real error, with its
             # own message, on the very next line of the caller.
             return None
-        return self._manifest(ctx, params, path, protids)
+        return self._manifest(
+            ctx, params, path, protids, vocabulary_path=self._vocabulary_path(ctx)
+        )
 
     def compute(self, ctx, params: dict) -> BlockResult:
         params = validate_params(params)
@@ -340,7 +358,11 @@ class DomainsProvider:
         if not domains:
             raise DomainsError(f"{path} lists no proteins.")
 
-        protids, features, vocabulary, without_domains, outside_vocabulary = domain_matrix(domains)
+        vocabulary_path = self._vocabulary_path(ctx)
+        pinned = read_vocabulary(vocabulary_path) if vocabulary_path else None
+        protids, features, vocabulary, without_domains, outside_vocabulary = domain_matrix(
+            domains, vocabulary=pinned
+        )
         if not vocabulary:
             raise DomainsError(
                 f"none of the {len(protids)} proteins in {path} carry a "
@@ -369,8 +391,28 @@ class DomainsProvider:
                 # in the vocabulary. Empty while the vocabulary is observed from
                 # these same annotations, which is every call today.
                 "proteins_annotated_outside_vocabulary": outside_vocabulary,
+                # Only when one was pinned, so an unpinned run's manifest -- and
+                # therefore its cache key -- is exactly what it was.
+                **(
+                    {
+                        "vocabulary_pinned": {
+                            # NOT the path. `extra` is hashed into `cache_key`,
+                            # so a path here would make the same vocabulary in
+                            # two directories two different blocks -- which is
+                            # FOLLOWUPS #90, one file over. Identity is the
+                            # digest, and that is in `inputs`. The basename is
+                            # kept because it is what a person reading the
+                            # manifest needs to recognise the file.
+                            "name": os.path.basename(str(vocabulary_path)),
+                            "n_tokens": len(pinned),
+                        }
+                    }
+                    if pinned is not None
+                    else {}
+                ),
                 "annotated_fraction": round(1.0 - len(without_domains) / len(protids), 6),
             },
+            vocabulary_path=vocabulary_path,
         )
         spec = BlockSpec(
             id=params.get("block_id", "domains"),

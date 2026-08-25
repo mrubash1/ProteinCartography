@@ -328,3 +328,150 @@ def test_a_provider_without_a_plan_still_works(monkeypatch, run_dir, capsys):
     monkeypatch.delattr(type(provider), "plan")
     run(monkeypatch, config, "biophys", output)
     assert "wrote 'biophys'" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# PC-012 phase 2 -- a pinned vocabulary arrives as an input, not as a param
+# ---------------------------------------------------------------------------
+
+
+def _vocabulary_run(tmp_path, families=("PF00022",)):
+    output = tmp_path / "output"
+    features = output / "protein_features"
+    features.mkdir(parents=True)
+    (features / "uniprot_features.tsv").write_text("protid\tPfam\nP1\tPF00022\nP2\tPF99999\nP3\t\n")
+    vocabulary = tmp_path / "families.txt"
+    vocabulary.write_text(
+        "# a pinned vocabulary can carry its own provenance\n" + "\n".join(families) + "\n"
+    )
+    return output, vocabulary
+
+
+def test_a_pinned_vocabulary_reaches_the_provider_and_is_not_a_param(monkeypatch, tmp_path):
+    """The rule `test_a_named_input_does_not_enter_the_cache_key` already pins
+    for `features_file`, asserted again for the one that decides a block's
+    COLUMNS: identity rests on the file's digest, never on where it sits."""
+    output, vocabulary = _vocabulary_run(tmp_path)
+    config = write_config(
+        tmp_path, {"domains": {"provider": "domains", "vocabulary_file": str(vocabulary)}}
+    )
+    assert run(monkeypatch, config, "domains", output) == 0
+
+    manifest = manifest_of(output, "domains")
+    assert manifest["inputs"]["vocabulary"].startswith("sha256:")
+    assert str(vocabulary) not in json.dumps(manifest["params"]), (
+        "the vocabulary PATH reached params, which is hashed into the cache key -- "
+        "the same vocabulary in two directories would be two different blocks"
+    )
+    assert manifest["extra"]["vocabulary_pinned"] == {"name": "families.txt", "n_tokens": 1}
+    # And the block was actually built over the pinned column set.
+    assert manifest["extra"]["n_families"] == 1
+    assert manifest["extra"]["proteins_annotated_outside_vocabulary"] == ["P2"]
+
+
+def test_moving_the_vocabulary_file_does_not_change_the_cache_key(monkeypatch, tmp_path):
+    """Identity is the digest. Two runs of the same tokens from two paths must
+    be the same block."""
+    import shutil
+
+    output, vocabulary = _vocabulary_run(tmp_path)
+    config = write_config(
+        tmp_path, {"domains": {"provider": "domains", "vocabulary_file": str(vocabulary)}}
+    )
+    run(monkeypatch, config, "domains", output)
+    first = manifest_of(output, "domains")["cache_key"]
+
+    elsewhere = tmp_path / "somewhere else" / "families.txt"
+    elsewhere.parent.mkdir()
+    shutil.copy(vocabulary, elsewhere)
+    moved = write_config(
+        tmp_path, {"domains": {"provider": "domains", "vocabulary_file": str(elsewhere)}}
+    )
+    second_out = tmp_path / "output2"
+    (second_out / "protein_features").mkdir(parents=True)
+    shutil.copy(
+        output / "protein_features" / "uniprot_features.tsv",
+        second_out / "protein_features" / "uniprot_features.tsv",
+    )
+    run(monkeypatch, moved, "domains", second_out)
+    assert manifest_of(second_out, "domains")["cache_key"] == first
+
+
+def test_changing_the_vocabulary_contents_does_change_the_cache_key(monkeypatch, tmp_path):
+    """The other half. A different column set is a different block, and the
+    freshness check added in phase 1 has to see that."""
+    output, vocabulary = _vocabulary_run(tmp_path)
+    config = write_config(
+        tmp_path, {"domains": {"provider": "domains", "vocabulary_file": str(vocabulary)}}
+    )
+    run(monkeypatch, config, "domains", output)
+    first = manifest_of(output, "domains")["cache_key"]
+
+    vocabulary.write_text("PF00022\nPF99999\n")
+    run(monkeypatch, config, "domains", output, "--force")
+    assert manifest_of(output, "domains")["cache_key"] != first
+
+
+def test_pinning_nothing_leaves_the_manifest_exactly_as_it_was(monkeypatch, tmp_path):
+    """The keys are ABSENT rather than null when no vocabulary is named, so a
+    run that pins nothing has the manifest -- and therefore the cache key -- it
+    had before any of this existed."""
+    output, _ = _vocabulary_run(tmp_path)
+    config = write_config(tmp_path, {"domains": {"provider": "domains"}})
+    run(monkeypatch, config, "domains", output)
+    manifest = manifest_of(output, "domains")
+    assert "vocabulary" not in manifest["inputs"]
+    assert "vocabulary_pinned" not in manifest["extra"]
+
+
+@pytest.mark.parametrize(
+    ("contents", "match"),
+    [("", "no tokens in it"), ("# only a comment\n\n", "no tokens in it")],
+)
+def test_an_unusable_vocabulary_is_refused_by_name(monkeypatch, tmp_path, contents, match):
+    """A vocabulary that silently came back empty would give every protein an
+    all-zero row, which is a result that looks like a finding."""
+    from spaces.base import VocabularyError, read_vocabulary
+
+    path = tmp_path / "empty.txt"
+    path.write_text(contents)
+    with pytest.raises(VocabularyError, match=match) as excinfo:
+        read_vocabulary(path)
+    assert str(path) in str(excinfo.value), "the message must name the file"
+
+
+def test_a_missing_vocabulary_file_is_refused_by_name(tmp_path):
+    from spaces.base import VocabularyError, read_vocabulary
+
+    with pytest.raises(VocabularyError, match="does not exist"):
+        read_vocabulary(tmp_path / "nope.txt")
+
+
+def test_a_vocabulary_keeps_file_order_and_drops_duplicates(tmp_path):
+    """File ORDER, not sorted: the vocabulary is the block's column order, and
+    sorting it here would reorder every column against the file the user wrote.
+    Deduplicated because a repeated token would give one feature two columns."""
+    from spaces.base import read_vocabulary
+
+    path = tmp_path / "v.txt"
+    path.write_text("PF00099\n# comment\n\nPF00011\nPF00099\n")
+    assert read_vocabulary(path) == ["PF00099", "PF00011"]
+
+
+def test_a_kmer_vocabulary_that_does_not_match_k_is_refused(monkeypatch, tmp_path):
+    """Every token would miss, every protein would get an all-zero row, and the
+    only signal would be an out-of-vocabulary fraction of 1.0 that nobody reads."""
+    output = tmp_path / "output"
+    features = output / "protein_features"
+    features.mkdir(parents=True)
+    (features / "3di_descriptors.tsv").write_text(
+        "P1.pdb\tMDDDIAALV\tABCABCABC\t0,0,0\nP2.pdb\tMKKKKKAAA\tAABBCCAAB\t0,0,0\n"
+    )
+    vocabulary = tmp_path / "kmers.txt"
+    vocabulary.write_text("ABC\nBCA\n")
+    config = write_config(
+        tmp_path,
+        {"threedi": {"provider": "threedi", "k": 2, "vocabulary_file": str(vocabulary)}},
+    )
+    with pytest.raises(Exception, match="are not 2 characters long"):
+        run(monkeypatch, config, "threedi", output)

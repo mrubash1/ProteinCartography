@@ -33,7 +33,9 @@ __all__ = [
     "BlockSpecError",
     "NotFusableError",
     "SpaceSpec",
+    "VocabularyError",
     "block_spec_error",
+    "read_vocabulary",
 ]
 
 BLOCK_KINDS = ("features", "pairwise", "pairwise_directed")
@@ -417,6 +419,54 @@ class BlockResult:
                 "in every geometry built from this block."
             )
         return replace(self, protids=protids)
+
+
+class VocabularyError(ValueError):
+    """Raised when a pinned vocabulary file cannot be used as one."""
+
+
+def read_vocabulary(path) -> list:
+    """One vocabulary token per line, in file order, deduplicated.
+
+    File ORDER, not sorted: the vocabulary is the block's column order, so
+    sorting it here would silently reorder every column of a pinned block
+    against the file the user wrote. Deduplicated because a repeated token would
+    otherwise give one feature two columns, and a distance would then count it
+    twice.
+
+    Blank lines and `#` comments are skipped, so a vocabulary can carry its own
+    provenance in the file that defines it.
+
+    Refuses an empty or unreadable file, NAMING THE FILE. A vocabulary that
+    silently comes back empty gives every protein an all-zero row, which is a
+    result that looks like a finding.
+    """
+    import os
+
+    path = str(path)
+    if not os.path.exists(path):
+        raise VocabularyError(f"the vocabulary file {path} does not exist.")
+    try:
+        text = open(path).read()
+    except OSError as exc:
+        raise VocabularyError(f"the vocabulary file {path} could not be read: {exc}") from None
+
+    tokens, seen = [], set()
+    for line in text.splitlines():
+        token = line.strip()
+        if not token or token.startswith("#"):
+            continue
+        if token in seen:
+            continue
+        seen.add(token)
+        tokens.append(token)
+    if not tokens:
+        raise VocabularyError(
+            f"the vocabulary file {path} has no tokens in it. Every protein would "
+            "get an all-zero row, which is a result that looks like a finding "
+            "rather than an error."
+        )
+    return tokens
 
 
 @runtime_checkable

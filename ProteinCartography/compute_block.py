@@ -112,10 +112,19 @@ def main() -> int:
 
     from blocks.tmscore import PipelineContext
 
-    ctx = PipelineContext(
-        output_dir=args.output_dir,
-        extras=parse_provider_inputs(args.provider_input),
-    )
+    extras = parse_provider_inputs(args.provider_input)
+    # A `vocabulary_file` named in the CONFIG is honoured even when the caller
+    # did not pass it as a `--provider-input`.
+    #
+    # The Snakefile passes it explicitly AND declares it as a rule input, which
+    # is what makes snakemake rerun the block when the file changes. But a
+    # config that names a vocabulary and a run that quietly ignores it is a
+    # divergence between what the config says and what happened, and this entry
+    # point is reachable by hand. An explicit `--provider-input` still wins, so
+    # the Snakefile path is unchanged.
+    if block.vocabulary_file and "vocabulary_file" not in extras:
+        extras["vocabulary_file"] = block.vocabulary_file
+    ctx = PipelineContext(output_dir=args.output_dir, extras=extras)
     params = dict(block.params)
     params.setdefault("block_id", block.id)
     if block.representation is not None:
