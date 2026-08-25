@@ -190,6 +190,22 @@ jobs:
                  | awk '/^total/ {print $2}' )
           }
 
+          # The rule NAME SET, from the same job-stats table the count is read
+          # from. A COUNT IS NOT A SET: one rule added and one dropped nets to
+          # zero and passes the comparison below, and so does a rule renamed
+          # consistently -- measured, not argued. Renaming
+          # `plot_similarity_strucluster` and its one `rules.` reference leaves
+          # the cluster DAG at 17 jobs on both sides while changing the set,
+          # and a workflow's rule names are part of what a user can target.
+          # `total` is a JOB count, not a rule count, so this does not replace
+          # it -- a rule that runs twice moves one and not the other.
+          rule_set() {
+            ( cd "$1" \
+              && snakemake --configfile "$2" -n --quiet --rerun-incomplete 2>"$3" \
+                 | awk '/^-----/ {f=1; next} f && /^total/ {f=0} f && NF >= 2 {print $1}' \
+                 | sort )
+          }
+
           status=0
           for cfg in demo/cluster-mode/config.yml demo/search-mode/config_actin_small.yml; do
             want=$(count_rules ../pc-baseline "$cfg" /tmp/dag_base.err)
@@ -203,7 +219,20 @@ jobs:
               echo "::error::$cfg resolves to $got rules on this branch but $want at $base"
               status=1
             else
-              echo "$cfg: $got rules, unchanged from the fork point"
+              echo "$cfg: $got jobs, unchanged from the fork point"
+            fi
+
+            rule_set ../pc-baseline "$cfg" /tmp/set_base.err > /tmp/set_base.txt
+            rule_set . "$cfg" /tmp/set_head.err > /tmp/set_head.txt
+            if [ ! -s /tmp/set_base.txt ] || [ ! -s /tmp/set_head.txt ]; then
+              echo "::error::$cfg produced no rule NAME set on one side"
+              status=1
+            elif ! diff -u /tmp/set_base.txt /tmp/set_head.txt > /tmp/set.diff; then
+              echo "::error::$cfg resolves a DIFFERENT SET of rules than the fork point"
+              cat /tmp/set.diff
+              status=1
+            else
+              echo "$cfg: $(wc -l < /tmp/set_head.txt | tr -d ' ') rule names, set unchanged"
             fi
           done
           exit $status
