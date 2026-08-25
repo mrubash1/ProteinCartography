@@ -4401,3 +4401,96 @@ def test_a_page_with_no_domain_links_renders_no_domain_ui(tmp_path):
     html = EMPTY_PAGE
     assert "const links = active.domain_links;" in html
     assert 'if (!links) { return ""; }' in html
+
+
+# ==========================================================================
+# PC-012 phase 2 -- the page stops saying "this cohort" when it is pinned
+# ==========================================================================
+
+
+def test_the_threedi_description_says_two_cohorts_cannot_be_compared_when_unpinned():
+    """The paragraph that carries the warning, and the reason it has to change:
+    with a pinned vocabulary it is FALSE, and it is the sentence a reader would
+    use to decide not to compare two maps."""
+    from explorer.descriptions import describe_block
+
+    text = " ".join(describe_block("threedi", {"k": 3, "n_kmers": 4982}, {})["paragraphs"])
+    assert "observed somewhere in this cohort" in text
+    assert "cannot be" in text and "compared" in text
+    assert "Pin `vocabulary_file`" in text, "the warning must name its remedy"
+
+
+def test_the_threedi_description_reverses_that_claim_when_a_vocabulary_is_pinned():
+    from explorer.descriptions import describe_block
+
+    facts = {
+        "k": 3,
+        "n_kmers": 900,
+        "vocabulary_pinned": {"name": "3di_k3.txt", "n_tokens": 900},
+        "out_of_vocabulary": {
+            "max_fraction": 0.25,
+            "mean_fraction": 0.02,
+            "n_proteins_affected": 7,
+        },
+    }
+    text = " ".join(describe_block("threedi", facts, {})["paragraphs"])
+    assert "PINNED from `3di_k3.txt`" in text
+    assert "ARE embedded in the same feature space" in text
+    assert (
+        "observed somewhere in this cohort" not in text
+    ), "the unpinned sentence is false here and must not survive"
+    # The loss, and that it is dropped rather than redistributed -- which is the
+    # whole point of the denominator change.
+    assert "7 protein(s)" in text
+    assert "25.0%" in text
+    assert "dropped, not redistributed" in text
+
+
+def test_a_pinned_vocabulary_nothing_falls_outside_of_says_so():
+    """Zero is a result. Saying nothing would leave a reader unable to tell it
+    from a run where the question was never asked."""
+    from explorer.descriptions import describe_block
+
+    facts = {
+        "k": 3,
+        "vocabulary_pinned": {"name": "v.txt", "n_tokens": 12},
+        "out_of_vocabulary": {"max_fraction": 0.0, "mean_fraction": 0.0, "n_proteins_affected": 0},
+    }
+    text = " ".join(describe_block("threedi", facts, {})["paragraphs"])
+    assert "No protein carries a k-mer outside it." in text
+
+
+def test_the_domains_description_separates_the_two_unannotated_counts():
+    """Both produce an all-zero row. The description is the only place the
+    difference lands, and before this the provider did not even compute it."""
+    from explorer.descriptions import describe_block
+
+    facts = {
+        "n_families": 3,
+        "proteins_without_domains": ["P3", "P4"],
+        "proteins_annotated_outside_vocabulary": ["P2"],
+        "vocabulary_pinned": {"name": "families.txt", "n_tokens": 3},
+    }
+    text = " ".join(describe_block("domains", facts, {"source": "pfam"})["paragraphs"])
+    assert "PINNED from `families.txt`" in text
+    assert "2 protein(s) carry no annotation at all" in text
+    assert "1 protein(s) ARE annotated but carry no family in this vocabulary" in text
+    assert "which is a different thing" in text
+
+
+def test_an_unpinned_domains_block_reads_exactly_as_it_did():
+    """The no-op half. No vocabulary, nothing outside it, so the sentence is the
+    one that shipped before."""
+    from explorer.descriptions import describe_block
+
+    facts = {
+        "n_families": 3,
+        "proteins_without_domains": ["P3"],
+        "proteins_annotated_outside_vocabulary": [],
+    }
+    text = " ".join(describe_block("domains", facts, {"source": "pfam"})["paragraphs"])
+    assert "This cohort has 3 distinct Pfam families as columns" in text
+    assert "1 protein(s) carry no annotation at all." in text
+    assert (
+        "ARE annotated but" not in text
+    ), "with nothing outside the vocabulary there is no second count to report"

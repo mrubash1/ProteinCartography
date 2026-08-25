@@ -166,19 +166,49 @@ def _threedi(facts: dict, params: dict) -> dict:
         if isinstance(n_kmers, int)
         else "one column per observed k-mer"
     )
-    return _description(
-        paragraphs=[
-            "Foldseek's 3Di structural alphabet, read as text. Each protein "
-            f"becomes the profile of its 3Di {k}-mers, with `scaling="
-            f'"{scaling}"`, so a row is relative frequencies rather than counts '
-            "and a long protein is not automatically far from a short one.",
+    # A PINNED vocabulary makes the second paragraph false, and it is the
+    # paragraph that tells a reader two cohorts cannot be compared. The manifest
+    # says which case this is; nothing here guesses.
+    pinned = facts.get("vocabulary_pinned")
+    if isinstance(pinned, dict):
+        columns = pinned.get("n_tokens")
+        origin = pinned.get("name") or "a pinned vocabulary"
+        lost = facts.get("out_of_vocabulary") or {}
+        affected = lost.get("n_proteins_affected")
+        worst = lost.get("max_fraction")
+        second = (
+            f"The columns are PINNED from `{origin}` -- {columns} of them -- "
+            "rather than taken from what this cohort happens to show. Two "
+            "cohorts built over the same vocabulary ARE embedded in the same "
+            "feature space, which is what pinning it is for."
+        )
+        if isinstance(affected, int) and affected:
+            second += (
+                f" {affected} protein(s) carry 3Di {k}-mers that fall outside it; "
+                f"at worst {worst:.1%} of one protein's k-mers were dropped. That "
+                "mass is dropped, not redistributed -- the frequencies divide by "
+                "every k-mer the protein has, so a partly-described protein does "
+                "not look like a fully described one."
+            )
+        elif isinstance(affected, int):
+            second += " No protein carries a k-mer outside it."
+    else:
+        second = (
             "Only k-mers observed somewhere in this cohort become columns, "
             f"which is {width}. The width is therefore a property of the "
             "cohort and not a constant: the same provider gives 4982 columns "
             "for the 367-protein chymotrypsin cohort and 4594 for the "
             "308-protein actin one. Two cohorts' 3Di spaces are not embedded "
             "in the same feature space and their coordinates cannot be "
-            "compared.",
+            "compared. Pin `vocabulary_file` on the block to change that."
+        )
+    return _description(
+        paragraphs=[
+            "Foldseek's 3Di structural alphabet, read as text. Each protein "
+            f"becomes the profile of its 3Di {k}-mers, with `scaling="
+            f'"{scaling}"`, so a row is relative frequencies rather than counts '
+            "and a long protein is not automatically far from a short one.",
+            second,
         ],
         sources=["blocks/threedi.py:69", "blocks/threedi.py:152"],
     )
@@ -193,15 +223,34 @@ def _domains(facts: dict, params: dict) -> dict:
     unannotated = facts.get("proteins_without_domains")
     if not isinstance(unannotated, int) and isinstance(unannotated, list):
         unannotated = len(unannotated)
-    counted = (
-        f"This cohort has {families} distinct {source.title()} families as columns"
-        if isinstance(families, int)
-        else f"One column per {source.title()} family seen in this cohort"
-    )
-    if isinstance(unannotated, int):
-        counted += f", and {unannotated} protein(s) carry no annotation at all."
+    # A DIFFERENT count from the one above, and the page used to have no way to
+    # say so because the provider folded the two together. These proteins ARE
+    # annotated; their families are not in the vocabulary. Both produce an
+    # all-zero row, so the description is the only place the difference lands.
+    outside = facts.get("proteins_annotated_outside_vocabulary")
+    if not isinstance(outside, int) and isinstance(outside, list):
+        outside = len(outside)
+    pinned = facts.get("vocabulary_pinned")
+    if isinstance(pinned, dict):
+        origin = pinned.get("name") or "a pinned vocabulary"
+        counted = (
+            f"The columns are PINNED from `{origin}` -- {pinned.get('n_tokens')} "
+            f"{source.title()} families -- rather than taken from what this cohort "
+            "happens to carry"
+        )
+    elif isinstance(families, int):
+        counted = f"This cohort has {families} distinct {source.title()} families as columns"
     else:
-        counted += "."
+        counted = f"One column per {source.title()} family seen in this cohort"
+    clauses = []
+    if isinstance(unannotated, int):
+        clauses.append(f"{unannotated} protein(s) carry no annotation at all")
+    if isinstance(outside, int) and outside:
+        clauses.append(
+            f"{outside} protein(s) ARE annotated but carry no family in this "
+            "vocabulary, which is a different thing"
+        )
+    counted += (", and " + ", and ".join(clauses) + ".") if clauses else "."
     return _description(
         paragraphs=[
             f"Binary {source.title()} domain presence: one column per family, 1 "
