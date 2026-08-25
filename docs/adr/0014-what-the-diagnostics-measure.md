@@ -37,8 +37,11 @@ that reader will not enable a diagnostics flag.
 **Cost, stated:** every space costs one extra rule and one extra pass over its
 distance matrix, which is `O(N²)` in memory and `O(N² log N)` for the sorts.
 On the largest matrix measured (2530 proteins) that is 51 MB and a few seconds.
-At the ADR 0004 ceiling of N≈15,000 it is 1.8 GB, which is the same order as
-the map itself and is the point at which this decision should be revisited.
+Nothing in the code measures a cohort's size or refuses one, so the point where
+that stops being affordable is unmeasured rather than bounded. It is quadratic:
+six times that cohort is 1.8 GB, the same order as the map itself, and that is
+where this decision should be revisited. The figure is arithmetic on the shape
+of the array, not a ceiling anything enforces.
 
 **Rejected:** a `diagnostics.enabled` flag defaulting to true. It is the same
 thing with an escape hatch, and the escape hatch would be used by exactly the

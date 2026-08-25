@@ -245,8 +245,14 @@ Behavior is stated, not hidden. Full numbers in ADR 0004.
 | 50,000 | ~98% | ~10.3 GB | not loadable |
 
 The dense matrix grows as O(N²) while the information in it grows as O(1000·N).
-`float32` + condensed storage buys roughly 8× over the dense float64 TSV
-equivalent, moving the ceiling toward N≈15,000. A sparse backend is deliberately
+`float32` + condensed storage buys exactly **4×** against a dense `float64`
+array — `float32` halves it and the condensed upper triangle halves it again — so
+the N=2,530 pairwise block is 12.8 MB where the dense `float64` array of the same
+matrix is 51.2 MB. That is a factor on the stored block and not a ceiling:
+nothing in the code measures a cohort's size or refuses one, and the dense PCA
+in the table above is untouched by how a block is stored. This paragraph used to
+say 8× and to move a ceiling to N≈15,000; both are withdrawn (ADR 0004).
+A sparse backend is deliberately
 not built yet; the mask is what makes it possible later, behind `store.py`.
 
 ---

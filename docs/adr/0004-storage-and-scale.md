@@ -62,8 +62,10 @@ Specifically:
   row/column identity. Consistent with ADR 0007: identity lives in labels, never
   in position.
 
-Combined, a pairwise block is ~8× smaller in memory than the dense float64 TSV
-equivalent, before any sparsity is exploited.
+Combined, a pairwise block is 4× smaller in memory than the dense float64
+equivalent, before any sparsity is exploited: the two halves above are 2× each,
+not 4× each. On the N=2,530 row of the table above, 51.2 MB dense float64
+against `4·N(N−1)/2` = 12.8 MB condensed float32 — a factor of 4.0.
 
 **Existing TSV outputs are untouched.** `all_by_all_tmscore_pivoted.tsv` and
 every `final_results/` artifact keep their current format and filenames. The
@@ -84,8 +86,11 @@ the measured memory estimate rather than dying in an allocator.
 
 ## Consequences
 
-- Memory headroom improves roughly 8× for pairwise blocks; the working ceiling
-  moves from N≈5,000 to somewhere near N≈15,000 without further work.
+- Memory headroom improves 4× for pairwise blocks. That is a factor on the
+  stored array and it moves no ceiling by itself: the O(N³) dense PCA above is
+  untouched by how a block is stored, and nothing in the code measures or
+  enforces a ceiling. The N≈15,000 figure this bullet used to give followed from
+  the 8× arithmetic corrected above and is withdrawn.
 - `.npy` is not human-inspectable. Mitigated by `manifest.json` beside every
   array carrying shape, dtype, checksum, and provenance, and by keeping the
   legacy TSV outputs unchanged for anyone who wants to read numbers by eye.
