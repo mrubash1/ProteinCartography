@@ -23,6 +23,7 @@ you have to open is read by exactly the people who already suspected it.
 """
 
 from __future__ import annotations
+import html
 
 __all__ = ["render"]
 
@@ -3032,5 +3033,5 @@ def render(payload: dict, plotly_js: str, title: str) -> str:
     return (
         _TEMPLATE.replace("__PLOTLY__", plotly_js)
         .replace("__PAYLOAD__", _script_safe_json(payload))
-        .replace("__TITLE__", title)
+        .replace("__TITLE__", html.escape(title))
     )

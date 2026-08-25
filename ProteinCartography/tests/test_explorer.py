@@ -4555,3 +4555,16 @@ def test_the_payload_escaping_is_at_the_serialisation_boundary_not_field_by_fiel
     html = render(document, plotly_js="", title="t")
     assert html.count("</script>") == 2
     assert _embedded_payload(html)["comparisons"][0]["a_column_added_upstream"] == "</script>x"
+
+
+def test_the_page_title_cannot_carry_markup():
+    """`__TITLE__` lands raw twice: in `<title>` at :33 and in `<h1>` at :309.
+
+    The value is `args.analysis_name or raw.get("analysis_name")`
+    (`build_explorer.py:148`), so it is the operator's own string and this is
+    hygiene rather than the threat model -- but it is one `html.escape` call
+    and the alternative is explaining at review why it was left.
+    """
+    html = render({"spaces": []}, plotly_js="", title="A<img src=x onerror=alert(2)>")
+    assert "<img src=x" not in html
+    assert "&lt;img src=x onerror=alert(2)&gt;" in html
