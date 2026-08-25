@@ -17,8 +17,13 @@ and the small-N short circuit.
 """
 
 from __future__ import annotations
+import json
+import pathlib
+import sys
+import types
 
 import numpy as np
+import pandas as pd
 import pytest
 from clustering import (
     DEFAULT_N_NEIGHBORS,
@@ -29,6 +34,9 @@ from clustering import (
     leiden_partition,
     sweep_resolutions,
 )
+from diagnostics.partition import adjusted_rand_index
+from fusion_cohort import NARROW_BLOCK, WIDE_BLOCK, fusion_cohort
+from parity import synthetic_matrix
 
 AVAILABLE, EXPLANATION = is_available()
 needs_scanpy = pytest.mark.skipif(not AVAILABLE, reason=EXPLANATION)
@@ -97,9 +105,7 @@ def test_a_space_and_the_legacy_path_return_the_same_partition(tmp_path):
     rather than importing it, because importing it would pull scanpy in at
     module scope.
     """
-    import pandas as pd
     from leiden_clustering import scanpy_leiden_cluster
-    from parity import synthetic_matrix
 
     matrix = synthetic_matrix(tmp_path / "matrix.tsv", n=250)
     legacy = scanpy_leiden_cluster(str(matrix))
@@ -116,9 +122,7 @@ def test_the_two_paths_still_agree_above_five_hundred_proteins(tmp_path):
     """N > 500 is where the reducers' solver switches; the graph build is a
     different code path in scanpy too, so the agreement is checked on both
     sides of it rather than assumed to carry."""
-    import pandas as pd
     from leiden_clustering import scanpy_leiden_cluster
-    from parity import synthetic_matrix
 
     matrix = synthetic_matrix(tmp_path / "matrix.tsv", n=750)
     legacy = scanpy_leiden_cluster(str(matrix))
@@ -137,9 +141,6 @@ def test_it_recovers_a_planted_partition():
     evidence. ``fusion_cohort``'s `wide` block was built to show `fold` and to
     be blind to `chemistry`; recovering the first and not the second is the
     only result that cannot be produced by accident."""
-    from diagnostics.partition import adjusted_rand_index
-    from fusion_cohort import WIDE_BLOCK, fusion_cohort
-
     cohort = fusion_cohort()
     partition = leiden_partition(cohort.values(WIDE_BLOCK), cohort.protids)
     assert adjusted_rand_index(partition.labels, cohort.partitions["fold"].labels) > 0.9
@@ -150,8 +151,6 @@ def test_it_recovers_a_planted_partition():
 def test_the_same_seed_gives_the_same_partition():
     """Leiden is stochastic. A diagnostic that moved between two runs of one
     input would be indistinguishable from the instability it measures."""
-    from fusion_cohort import WIDE_BLOCK, fusion_cohort
-
     cohort = fusion_cohort()
     first = leiden_partition(cohort.values(WIDE_BLOCK), cohort.protids)
     second = leiden_partition(cohort.values(WIDE_BLOCK), cohort.protids)
@@ -160,8 +159,6 @@ def test_the_same_seed_gives_the_same_partition():
 
 @needs_scanpy
 def test_a_higher_resolution_never_returns_fewer_clusters():
-    from fusion_cohort import WIDE_BLOCK, fusion_cohort
-
     cohort = fusion_cohort()
     counts = [
         leiden_partition(cohort.values(WIDE_BLOCK), cohort.protids, resolution=r).n_clusters
@@ -175,8 +172,6 @@ def test_a_higher_resolution_never_returns_fewer_clusters():
 def test_the_clamped_settings_are_recorded_not_the_requested_ones():
     """A run at N=20 that asked for 30 principal components and got 19 should
     say so, for the reason ``ReducerResult.params_used`` exists."""
-    from fusion_cohort import NARROW_BLOCK, fusion_cohort
-
     cohort = fusion_cohort(n=24)
     partition = leiden_partition(cohort.values(NARROW_BLOCK), cohort.protids)
     assert partition.n_pcs < DEFAULT_N_PCS
@@ -185,8 +180,6 @@ def test_the_clamped_settings_are_recorded_not_the_requested_ones():
 
 @needs_scanpy
 def test_sweep_resolutions_is_keyed_and_ordered_by_resolution():
-    from fusion_cohort import WIDE_BLOCK, fusion_cohort
-
     cohort = fusion_cohort()
     swept = sweep_resolutions(cohort.values(WIDE_BLOCK), cohort.protids, [2.0, 0.5, 1.0])
     assert list(swept) == [0.5, 1.0, 2.0]
@@ -210,10 +203,7 @@ def test_the_manifest_records_the_parameters_actually_used(tmp_path):
     things (FOLLOWUPS #79). A manifest echoing the request would have recorded
     nothing worth having.
     """
-    import json
-
     from leiden_clustering import scanpy_leiden_cluster
-    from parity import synthetic_matrix
 
     matrix = synthetic_matrix(tmp_path / "matrix.tsv", n=250)
     out = tmp_path / "leiden_features.tsv"
@@ -239,10 +229,7 @@ def test_the_manifest_names_the_resolution_nobody_passes(tmp_path):
     identical from the command line, and the one that would have explained the
     archives. Recording that it was NOT set is the honest entry.
     """
-    import json
-
     from leiden_clustering import scanpy_leiden_cluster
-    from parity import synthetic_matrix
 
     matrix = synthetic_matrix(tmp_path / "matrix.tsv", n=60)
     manifest = tmp_path / "m.json"
@@ -261,7 +248,6 @@ def test_no_manifest_is_written_unless_one_is_asked_for(tmp_path):
     default path byte-identical.
     """
     from leiden_clustering import scanpy_leiden_cluster
-    from parity import synthetic_matrix
 
     matrix = synthetic_matrix(tmp_path / "matrix.tsv", n=60)
     scanpy_leiden_cluster(str(matrix), str(tmp_path / "o.tsv"))
@@ -270,8 +256,6 @@ def test_no_manifest_is_written_unless_one_is_asked_for(tmp_path):
 
 def test_the_snakefile_does_not_pass_manifest_on_the_default_path():
     """Pinned against the Snakefile, so the parity guarantee is not just a habit."""
-    import pathlib
-
     root = pathlib.Path(__file__).resolve().parents[2]
     snakefile = (root / "Snakefile").read_text()
     block = snakefile[snakefile.index("leiden_clustering.py") :][:600]
@@ -290,11 +274,7 @@ def test_the_manifest_records_leidenalg_which_does_not_have_a_dunder_version(tmp
     actually chose the partition -- which is the one thing the manifest exists to
     stop happening (FOLLOWUPS #78), and the disagreement FOLLOWUPS #42 is about.
     """
-    import json
-
-    import leidenalg  # noqa: F401  -- the test is only meaningful if it is installed
     from leiden_clustering import scanpy_leiden_cluster
-    from parity import synthetic_matrix
 
     matrix = synthetic_matrix(tmp_path / "matrix.tsv", n=60)
     manifest = tmp_path / "m.json"
@@ -307,9 +287,6 @@ def test_the_manifest_records_leidenalg_which_does_not_have_a_dunder_version(tmp
 @needs_scanpy
 def test_a_library_that_names_its_version_without_dunders_is_still_read(monkeypatch):
     """Pinned on a fake module, so it holds wherever leidenalg is absent too."""
-    import sys
-    import types
-
     from leiden_clustering import _module_version
 
     fake = types.ModuleType("pc_fake_versioned_lib")

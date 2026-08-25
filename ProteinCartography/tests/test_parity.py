@@ -22,19 +22,33 @@ The comparison logic and the reasoning behind each exclusion live in
 """
 
 from __future__ import annotations
+import fnmatch
+import json
 import os
 import shutil
 import subprocess
 from pathlib import Path
 
+import cohort
 import pytest
+from cohort import CohortReport, Selection
+from matrix_io import MatrixAlignmentError, load_labeled_matrix, summarize_censoring
 from parity import (
+    _FOLDSEEK_SLEEP_HOOK,
     ADDITIVE_OUTPUTS,
     CRITICAL_OUTPUTS,
+    FOLDSEEK_BENCHMARK_CEILING_SECONDS,
+    FOLDSEEK_POLLS_PER_QUERY_CEILING,
+    _assert_the_foldseek_polls_were_bounded,
+    _assert_the_foldseek_sleep_was_neutralised,
+    _normalized_by_stat,
+    _normalized_file_bytes,
     assert_critical_outputs_compared,
     compare_trees,
     normalize_bytes,
     run_pipeline,
+    run_reducer,
+    synthetic_matrix,
 )
 
 #: The upstream ref this branch's baseline is derived from. The parity reference
@@ -106,8 +120,6 @@ def assert_the_nonreproducibility_marker_is_current() -> str:
     this file can no longer match, and this says so instead of letting them
     quietly pass.
     """
-    from cohort import CohortReport, Selection
-
     probe = CohortReport(
         Selection(retained=("A",), discarded=("B",), rule="as_filtered", max_structures=1)
     )
@@ -356,8 +368,6 @@ def test_the_pivoted_matrix_is_self_consistent(runs):
     Matching a baseline that was itself wrong would be no comfort, so the header
     order, the label diagonal and the censoring semantics are checked directly.
     """
-    from matrix_io import load_labeled_matrix
-
     path = Path(runs["head_a"]) / "foldseek_clustering_results" / "all_by_all_tmscore_pivoted.tsv"
     matrix = load_labeled_matrix(path)  # raises unless header order == row order
     assert matrix.is_aligned
@@ -375,8 +385,6 @@ def test_the_cohort_report_records_the_truncation_the_baseline_hid(runs, cohort_
     filter, 10 admitted by `max_structures`. Half the candidates are dropped and
     before ADR 0008 no file recorded that.
     """
-    import json
-
     base = Path(runs["base_a"])
     relpath = "protein_features/cohort_report.json"
     assert not (base / relpath).exists(), "the baseline is not supposed to have this file"
@@ -400,8 +408,6 @@ def test_the_cohort_the_report_describes_is_the_cohort_that_was_built(cohort_rep
     The retained count has to match the structures actually downloaded, or the
     diagnostic is describing a decision the pipeline did not make.
     """
-    import json
-
     head = Path(cohort_report_run)
     payload = json.loads((head / "protein_features" / "cohort_report.json").read_text())
     matrix = head / "foldseek_clustering_results" / "all_by_all_tmscore_pivoted.tsv"
@@ -427,8 +433,6 @@ def test_significance_selection_produces_a_reproducible_cohort(
     rule selects -- a different cohort means most downloads fail, which is
     itself confirmation that the rule selects differently.
     """
-    import json
-
     work = tmp_path_factory.mktemp("significance")
     output = run_pipeline(
         Path(repo_dirpath),
@@ -514,8 +518,6 @@ def test_the_marker_guard_fails_when_the_warning_is_reworded(monkeypatch):
     Simulates the rewording by making `cohort.py` emit something else, and
     requires the guard to notice rather than return happily.
     """
-    import cohort
-
     monkeypatch.setattr(
         cohort.CohortReport, "warnings", lambda self: ["the cohort may not be reproducible"]
     )
@@ -665,8 +667,6 @@ def test_no_additive_pattern_can_swallow_a_critical_output():
     "the baseline produced this and we do not" into an allowed difference for
     exactly the files whose byte-identity is the promise.
     """
-    import fnmatch
-
     for pattern, _reason in ADDITIVE_OUTPUTS:
         for critical in CRITICAL_OUTPUTS:
             relpath = critical.format(name="parity")
@@ -708,8 +708,6 @@ def test_a_tree_compared_against_itself_is_clean(tmp_path):
 
 @pytest.fixture(scope="module")
 def big_matrix(tmp_path_factory):
-    from parity import synthetic_matrix
-
     return synthetic_matrix(tmp_path_factory.mktemp("big") / "all_by_all_tmscore_pivoted.tsv")
 
 
@@ -736,8 +734,6 @@ def test_reduction_at_n750_matches_the_baseline(
     mode, runs, big_matrix, baseline_repo, repo_dirpath, analysis_python, tmp_path_factory
 ):
     """The port must preserve the reduction at a size where clamping does not hide it."""
-    from parity import compare_trees, run_reducer
-
     work = tmp_path_factory.mktemp(f"reduce_{mode}")
     head = run_reducer(
         Path(repo_dirpath), big_matrix, work / "head", mode=mode, python=analysis_python
@@ -764,8 +760,6 @@ def test_reduction_at_n750_is_deterministic(
     big_matrix, repo_dirpath, analysis_python, tmp_path_factory
 ):
     """Above 500 rows is exactly where determinism used to fail."""
-    from parity import compare_trees, run_reducer
-
     work = tmp_path_factory.mktemp("reduce_det")
     a = run_reducer(
         Path(repo_dirpath), big_matrix, work / "a", mode="pca_umap", python=analysis_python
@@ -783,9 +777,6 @@ def test_the_synthetic_fixture_has_the_shape_it_claims(tmp_path):
     Cheap enough to run in the normal suite, and it fails loudly if a change to
     the generator quietly makes the N>500 tests test something else.
     """
-    from matrix_io import load_labeled_matrix, summarize_censoring
-    from parity import synthetic_matrix
-
     matrix = load_labeled_matrix(synthetic_matrix(tmp_path / "m.tsv", n=200, cap=80))
     summary = summarize_censoring(matrix)
 
@@ -801,9 +792,6 @@ def test_the_synthetic_fixture_has_the_shape_it_claims(tmp_path):
 
 
 def test_the_synthetic_fixture_can_reproduce_the_106_defect(tmp_path):
-    from matrix_io import MatrixAlignmentError, load_labeled_matrix
-    from parity import synthetic_matrix
-
     path = synthetic_matrix(tmp_path / "p.tsv", n=50, cap=20, permute_columns=True)
     with pytest.raises(MatrixAlignmentError):
         load_labeled_matrix(path)
@@ -814,8 +802,6 @@ def test_the_synthetic_fixture_can_reproduce_the_106_defect(tmp_path):
 
 
 def test_the_synthetic_fixture_is_reproducible(tmp_path):
-    from parity import synthetic_matrix
-
     a = synthetic_matrix(tmp_path / "a.tsv", n=40, cap=10).read_bytes()
     b = synthetic_matrix(tmp_path / "b.tsv", n=40, cap=10).read_bytes()
     assert a == b
@@ -834,10 +820,6 @@ def test_the_normalization_memo_notices_a_same_size_same_mtime_rewrite(tmp_path)
     `tar -x` and a coarse-mtime filesystem all preserve mtime, and "no caller
     currently does that" is a convention rather than a property.
     """
-    import os
-
-    from parity import _normalized_file_bytes
-
     path = tmp_path / "f.html"
     path.write_bytes(b"<div>AAAA</div>")
     before = _normalized_file_bytes("f.html", path)
@@ -853,8 +835,6 @@ def test_the_normalization_memo_notices_a_same_size_same_mtime_rewrite(tmp_path)
 
 def test_the_normalization_memo_still_serves_a_repeat_read(tmp_path):
     """The other half: it has to actually cache, or it is pure overhead."""
-    from parity import _normalized_by_stat, _normalized_file_bytes
-
     path = tmp_path / "g.html"
     path.write_bytes(b"<div>hello</div>")
     _normalized_file_bytes("g.html", path)
@@ -871,8 +851,6 @@ def test_the_sleep_guard_refuses_a_header_only_benchmark(tmp_path):
     silent mode is otherwise satisfied by silence" -- and the header-only case
     is silence wearing a file.
     """
-    from parity import _assert_the_foldseek_sleep_was_neutralised
-
     benchmarks = tmp_path / "benchmarks"
     benchmarks.mkdir()
     (benchmarks / "P60709.run_foldseek.txt").write_text("s\th:m:s\tmax_rss\n")
@@ -883,11 +861,6 @@ def test_the_sleep_guard_refuses_a_header_only_benchmark(tmp_path):
 def test_the_sleep_guard_accepts_a_fast_run_and_refuses_a_slow_one(tmp_path):
     """Both halves. A guard that cannot fail is decoration; one that always
     fails is noise."""
-    from parity import (
-        FOLDSEEK_BENCHMARK_CEILING_SECONDS,
-        _assert_the_foldseek_sleep_was_neutralised,
-    )
-
     benchmarks = tmp_path / "benchmarks"
     benchmarks.mkdir()
     path = benchmarks / "P60709.run_foldseek.txt"
@@ -904,8 +877,6 @@ def test_the_sleep_guard_accepts_a_fast_run_and_refuses_a_slow_one(tmp_path):
 
 
 def test_the_sleep_guard_refuses_a_missing_benchmark(tmp_path):
-    from parity import _assert_the_foldseek_sleep_was_neutralised
-
     (tmp_path / "benchmarks").mkdir()
     with pytest.raises(RuntimeError, match="no benchmarks"):
         _assert_the_foldseek_sleep_was_neutralised(tmp_path)
@@ -924,8 +895,6 @@ def test_the_poll_counter_accepts_about_one_poll_per_query(tmp_path):
     """The working figure, measured rather than assumed: the mocked ticket
     answers COMPLETE on the first GET, so a real run records exactly one line
     per query protein."""
-    from parity import _assert_the_foldseek_polls_were_bounded
-
     benchmarks = tmp_path / "benchmarks"
     benchmarks.mkdir()
     (benchmarks / "P60709.run_foldseek.txt").write_text("s\th:m:s\n1.3253\t0:00:01\n")
@@ -938,8 +907,6 @@ def test_the_poll_counter_refuses_a_loop_that_spun(tmp_path):
     """Sixty polls is what a never-completing ticket costs: the 1800 s timeout
     over the 30 s public-server interval. The wall-clock ceiling cannot see it,
     which is why this exists."""
-    from parity import FOLDSEEK_POLLS_PER_QUERY_CEILING, _assert_the_foldseek_polls_were_bounded
-
     benchmarks = tmp_path / "benchmarks"
     benchmarks.mkdir()
     (benchmarks / "P60709.run_foldseek.txt").write_text("s\th:m:s\n1.0448\t0:00:01\n")
@@ -957,8 +924,6 @@ def test_a_missing_poll_counter_raises_rather_than_passes(tmp_path):
     that treats "no evidence" as "no problem" is satisfied by silence -- the
     same shape as an absence assertion whose phrase has drifted out of date.
     """
-    from parity import _assert_the_foldseek_polls_were_bounded
-
     benchmarks = tmp_path / "benchmarks"
     benchmarks.mkdir()
     (benchmarks / "P60709.run_foldseek.txt").write_text("s\th:m:s\n1.3253\t0:00:01\n")
@@ -975,8 +940,6 @@ def test_the_sleep_hook_source_is_valid_python():
     being added -- a `\\n` inside the enclosing triple-quoted literal became a
     real newline and left the child with an unterminated string.
     """
-    from parity import _FOLDSEEK_SLEEP_HOOK
-
     compile(_FOLDSEEK_SLEEP_HOOK, "usercustomize.py", "exec")
 
 
@@ -989,8 +952,6 @@ def test_the_wall_clock_failure_names_the_poll_evidence_rather_than_a_cause(tmp_
     green. What is checked here is that the message reports what the counter
     saw and says outright that this measurement cannot separate the two cases.
     """
-    from parity import _assert_the_foldseek_sleep_was_neutralised
-
     benchmarks = tmp_path / "benchmarks"
     benchmarks.mkdir()
     (benchmarks / "P60709.run_foldseek.txt").write_text("s\th:m:s\n31.4\t0:00:31\n")
@@ -1009,8 +970,6 @@ def test_the_wall_clock_failure_names_the_poll_evidence_rather_than_a_cause(tmp_
 def test_the_wall_clock_failure_says_the_hook_never_loaded_when_it_did_not(tmp_path):
     """The other branch of the same message, and the case the old wording
     assumed was always true."""
-    from parity import _assert_the_foldseek_sleep_was_neutralised
-
     benchmarks = tmp_path / "benchmarks"
     benchmarks.mkdir()
     (benchmarks / "P60709.run_foldseek.txt").write_text("s\th:m:s\n31.4\t0:00:31\n")
@@ -1031,6 +990,4 @@ def test_the_wall_clock_ceiling_did_not_move(tmp_path):
     sleeping process burns no CPU. Wall time is the only signal that separates
     them, and 15 s is where it was.
     """
-    from parity import FOLDSEEK_BENCHMARK_CEILING_SECONDS
-
     assert FOLDSEEK_BENCHMARK_CEILING_SECONDS == 15.0

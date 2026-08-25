@@ -16,10 +16,23 @@ from __future__ import annotations
 import json
 import sys
 
+import diagnose_space
 import numpy as np
+import pandas as pd
 import pytest
+from clustering import is_available
+from config_schema import ConfigError, from_legacy
+from diagnose_space import SECTIONS
 from embedding_cohort import FOLD, ISOMETRIC, SPLIT, embedding_cohort
-from fusion_cohort import NARROW_BLOCK, RESCALED_BLOCK, WIDE_BLOCK, fusion_cohort
+from fusion_cohort import (
+    NARROW_BLOCK,
+    RESCALED_BLOCK,
+    WIDE_BLOCK,
+    fusion_cohort,
+    write_fusion_cohort,
+)
+from spaces.base import BlockResult, BlockSpec
+from spaces.store import BlockStore
 
 
 def _write_config(path, spaces, blocks):
@@ -28,8 +41,6 @@ def _write_config(path, spaces, blocks):
 
 
 def _run(argv):
-    import diagnose_space
-
     original = sys.argv
     try:
         sys.argv = ["diagnose_space.py", *argv]
@@ -49,8 +60,6 @@ def _report(output_dir, space_id="structure") -> dict:
 @pytest.fixture(scope="module")
 def fusion(tmp_path_factory):
     """Two redundant blocks and one independent one, on disk."""
-    from fusion_cohort import write_fusion_cohort
-
     root = tmp_path_factory.mktemp("diagnose_fusion")
     output_dir = root / "output"
     cohort = fusion_cohort()
@@ -147,8 +156,6 @@ def test_the_manifest_names_only_sections_that_are_sections(independent):
     it, and listing them as sections would tell a reader that four diagnostics
     ran when two did. A section's *absence* is information -- this space has no
     embedding passed in and no cohort report -- so the set has to be accurate."""
-    from diagnose_space import SECTIONS
-
     output_dir, _ = independent
     path = output_dir / "spaces" / "independent" / "manifest_diagnostics.json"
     sections = json.loads(path.read_text())["extra"]["sections"]
@@ -165,8 +172,6 @@ def test_the_manifest_names_only_sections_that_are_sections(independent):
 def test_a_section_that_could_not_be_answered_is_absent_from_the_manifest(single, tmp_path):
     """The other direction: a single-block space cannot report redundancy, and
     the manifest has to say so by omission rather than by listing an empty one."""
-    from diagnose_space import SECTIONS
-
     root, output_dir, config, cohort = single
     path = tmp_path / "iso.tsv"
     cohort.write_embedding(path, ISOMETRIC)
@@ -194,8 +199,6 @@ def test_a_section_that_could_not_be_answered_is_absent_from_the_manifest(single
 @pytest.fixture(scope="module")
 def single(tmp_path_factory):
     """One block, with a planted-faithfulness embedding to score."""
-    from spaces.store import BlockStore
-
     root = tmp_path_factory.mktemp("diagnose_single")
     output_dir = root / "output"
     cohort = embedding_cohort()
@@ -282,8 +285,6 @@ def test_a_distorted_layout_is_reported_in_the_right_direction(single, tmp_path,
 
 
 def test_a_per_protein_table_is_written_beside_the_report(single, tmp_path):
-    import pandas as pd
-
     root, output_dir, config, cohort = single
     path = tmp_path / "fold.tsv"
     cohort.write_embedding(path, FOLD)
@@ -333,9 +334,6 @@ def test_an_embedding_missing_proteins_is_refused(single, tmp_path):
 @pytest.fixture(scope="module")
 def censored(tmp_path_factory):
     """A profile block carrying a censoring channel, as `tmscore` produces."""
-    from spaces.base import BlockResult, BlockSpec
-    from spaces.store import BlockStore
-
     root = tmp_path_factory.mktemp("diagnose_censored")
     output_dir = root / "output"
     rng = np.random.RandomState(0)
@@ -390,8 +388,6 @@ def test_censoring_is_reported_for_a_block_that_carries_a_mask(censored):
     until now every space got the structural one. The section is therefore
     present exactly when the space could be clustered.
     """
-    from clustering import is_available
-
     root, output_dir, config, _ = censored
     assert _run(["-c", config, "-s", "structure", "-o", str(output_dir)]) == 0
     report = _report(output_dir)
@@ -543,8 +539,6 @@ def crossed(tmp_path_factory):
     """A space fusing both blocks of ``fusion_cohort``, so its right answer is
     the twelve cells of the crossed partition rather than either block's four
     or three."""
-    from fusion_cohort import write_fusion_cohort
-
     root = tmp_path_factory.mktemp("diagnose_8c")
     output_dir = root / "output"
     cohort = fusion_cohort()
@@ -611,8 +605,6 @@ def test_the_partition_section_records_which_partition_was_used(crossed):
     """Whether a space clustered in its own right or borrowed the legacy
     structural clustering changes what every partition-dependent number means,
     so it is recorded rather than inferable."""
-    from clustering import is_available
-
     root, output_dir, _ = crossed
     report = _run_crossed(root, output_dir, {"k": 10}, name="whichpart")
     available, _ = is_available()
@@ -633,7 +625,6 @@ def test_an_unclusterable_space_still_produces_the_other_sections(crossed):
         {"k": 10, "leiden_resolution_sweep": [0.5, 1.0], "negative_controls": ["shuffled_labels"]},
         name="degraded",
     )
-    from clustering import is_available
 
     assert "stability" in report and "redundancy" in report
     if not is_available()[0]:
@@ -698,8 +689,6 @@ def test_the_negative_controls_land_in_the_report(crossed):
 
 @pytest.mark.skipif(not __import__("clustering").is_available()[0], reason="needs scanpy")
 def test_the_manifest_lists_the_new_sections(crossed):
-    from diagnose_space import SECTIONS
-
     root, output_dir, _ = crossed
     _run_crossed(
         root,
@@ -718,8 +707,6 @@ def test_the_manifest_lists_the_new_sections(crossed):
 
 
 def test_an_unknown_negative_control_is_refused():
-    from config_schema import ConfigError, from_legacy
-
     with pytest.raises(ConfigError, match="unknown control"):
         from_legacy({"diagnostics": {"negative_controls": ["shufled_labels"]}})
 
@@ -727,21 +714,15 @@ def test_an_unknown_negative_control_is_refused():
 def test_a_sweep_of_one_resolution_is_refused():
     """It has no adjacent pair, so it measures nothing -- the same reasoning
     that makes a single-block space produce no redundancy section."""
-    from config_schema import ConfigError, from_legacy
-
     with pytest.raises(ConfigError, match="no adjacent pair"):
         from_legacy({"diagnostics": {"leiden_resolution_sweep": [1.0]}})
 
 
 def test_a_repeated_resolution_is_refused():
-    from config_schema import ConfigError, from_legacy
-
     with pytest.raises(ConfigError, match="distinct"):
         from_legacy({"diagnostics": {"leiden_resolution_sweep": [1.0, 1.0]}})
 
 
 def test_a_non_positive_resolution_is_refused():
-    from config_schema import ConfigError, from_legacy
-
     with pytest.raises(ConfigError, match="must be positive"):
         from_legacy({"diagnostics": {"leiden_resolution_sweep": [0.5, 0.0]}})

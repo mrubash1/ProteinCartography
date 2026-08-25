@@ -9,15 +9,24 @@ Two groups matter more than the rest:
   because the reason is the point.
 """
 
+import inspect
+import pathlib
+
 import pytest
+import pytest as _pytest
 import yaml
 from config_schema import (
     NOT_FUSABLE_REASONS,
     BlockConfig,
+    CohortConfig,
     ConfigError,
     MultispaceConfig,
+    SpaceConfig,
     from_legacy,
 )
+from config_utils import ProteinCartographyInputError, _get_foldseek_mode
+from foldseek_apiquery import SET_MODES
+from reduce_space import params_for
 from spaces.base import NotFusableError
 
 
@@ -56,8 +65,6 @@ def test_legacy_config_with_no_plotting_modes_still_works():
 
 def test_the_real_shipped_config_yml_loads(tmp_path):
     """The actual default config in the repo must pass the new validator."""
-    import pathlib
-
     repo = pathlib.Path(__file__).resolve().parents[2]
     with open(repo / "config.yml") as fh:
         legacy = yaml.safe_load(fh)
@@ -340,8 +347,6 @@ def test_negative_max_structures_rejected():
 
 def test_default_selection_is_the_honest_name_for_current_behavior():
     """ADR 0008: today's order is UniProt's response order, not accession order."""
-    from config_schema import CohortConfig
-
     assert CohortConfig().selection == "as_filtered"
 
 
@@ -477,8 +482,6 @@ def test_a_space_without_reducer_params_keeps_the_reducer_defaults():
     otherwise every existing map moves and the parity suite is the thing that
     finds out.
     """
-    from config_schema import SpaceConfig
-
     space = SpaceConfig(id="structure", blocks=("tmscore",))
     assert space.reducer_params == {}
 
@@ -490,8 +493,6 @@ def test_reducer_params_rejects_a_parameter_the_reducer_will_not_read():
     while the run used the default -- and the cheap place to catch it is parse
     time. Same guard as `params`/STRATEGY_PARAMS, deliberately.
     """
-    from config_schema import ConfigError, SpaceConfig
-
     with pytest.raises(ConfigError) as excinfo:
         SpaceConfig(
             id="structure",
@@ -508,8 +509,6 @@ def test_reducer_params_rejects_a_reducer_this_space_does_not_run():
 
     It would otherwise sit in the config looking effective forever.
     """
-    from config_schema import ConfigError, SpaceConfig
-
     with pytest.raises(ConfigError):
         SpaceConfig(
             id="structure",
@@ -525,8 +524,6 @@ def test_params_for_reports_what_each_pipeline_reads():
     A new pipeline built from existing steps inherits the right parameters
     without anyone remembering to update a second table.
     """
-    from reduce_space import params_for
-
     assert "n_neighbors" in params_for("pca_umap")
     assert "n_neighbors" in params_for("umap")
     assert "perplexity" in params_for("pca_tsne")
@@ -541,8 +538,6 @@ def test_params_for_reports_what_each_pipeline_reads():
 
 
 def test_the_foldseek_mode_defaults_to_the_mode_the_pipeline_runs():
-    from config_utils import _get_foldseek_mode
-
     assert _get_foldseek_mode({}) == "3diaa"
     assert _get_foldseek_mode({"foldseek_mode": "tmalign"}) == "tmalign"
     assert _get_foldseek_mode({"foldseek_mode": "  3diaa  "}) == "3diaa"
@@ -552,9 +547,6 @@ def test_an_unknown_foldseek_mode_fails_at_config_parse_time():
     """Before the search, not after it -- the argument `SIGNIFICANCE_MEASURES`
     makes. `foldseek_apiquery.py` does check the value, but inside the rule,
     once per query protein, after the DAG has been built."""
-    import pytest as _pytest
-    from config_utils import ProteinCartographyInputError, _get_foldseek_mode
-
     with _pytest.raises(ProteinCartographyInputError, match="foldseek_mode must be one of"):
         _get_foldseek_mode({"foldseek_mode": "3diAA"})
     with _pytest.raises(ProteinCartographyInputError, match="foldseek_mode must be one of"):
@@ -564,11 +556,6 @@ def test_an_unknown_foldseek_mode_fails_at_config_parse_time():
 def test_the_accepted_modes_come_from_the_script_rather_than_being_retyped():
     """One source of truth. If these ever disagree, a config the validator
     accepts is one the script rejects, inside the rule."""
-    import inspect
-
-    from config_utils import _get_foldseek_mode
-    from foldseek_apiquery import SET_MODES
-
     assert "from foldseek_apiquery import SET_MODES" in inspect.getsource(_get_foldseek_mode)
     assert SET_MODES == ["3diaa", "tmalign"]
 
@@ -576,7 +563,5 @@ def test_the_accepted_modes_come_from_the_script_rather_than_being_retyped():
 def test_the_shipped_config_states_the_mode():
     """`config.yml` is always loaded, so every existing user config inherits the
     key without editing anything."""
-    import pathlib
-
     root = pathlib.Path(__file__).resolve().parents[2]
     assert 'foldseek_mode: "3diaa"' in (root / "config.yml").read_text()

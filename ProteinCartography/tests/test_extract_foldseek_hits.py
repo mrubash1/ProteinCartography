@@ -16,8 +16,19 @@ import pytest
 
 pytest.importorskip("pandas")
 
+import ast  # noqa: E402
+import pathlib  # noqa: E402
+import sys  # noqa: E402
+from unittest import mock  # noqa: E402
+
 import constants  # noqa: E402
-from extract_foldseek_hits import extract_foldseekhits  # noqa: E402
+import extract_foldseek_hits  # noqa: E402
+import pandas as pd  # noqa: E402
+from extract_foldseek_hits import (  # noqa: E402
+    DEFAULT_EVALUE,
+    extract_foldseekhits,
+)
+from hit_significance import TmalignOutputError, looks_like_tmalign  # noqa: E402
 
 
 def m8_row(accession: str, evalue: float, bits: int = 500) -> str:
@@ -179,8 +190,6 @@ def test_a_tmalign_shaped_file_is_refused_rather_than_filtered(tmp_path):
     docstring -- e-values spanning 0.402 to 0.9999 with the best hit at the TOP
     of the range, which is the opposite of an e-value.
     """
-    from hit_significance import TmalignOutputError
-
     path = write_m8(
         tmp_path / "alis_afdb50.m8",
         [tmalign_row("P00001", 0.9999), tmalign_row("P00002", 0.402)],
@@ -191,8 +200,6 @@ def test_a_tmalign_shaped_file_is_refused_rather_than_filtered(tmp_path):
 
 def test_the_refusal_names_the_file_and_the_range_it_saw(tmp_path):
     """A refusal a reader cannot check is a refusal they will override."""
-    from hit_significance import TmalignOutputError
-
     path = write_m8(
         tmp_path / "alis_afdb50.m8",
         [tmalign_row("P00001", 0.9999), tmalign_row("P00002", 0.402)],
@@ -210,8 +217,6 @@ def test_the_refusal_names_the_file_and_the_range_it_saw(tmp_path):
 def test_one_tmalign_file_among_real_ones_fails_the_whole_run(tmp_path):
     """Silently dropping the bad file would produce a cohort from two databases
     of three, which is a different cohort reported as the same one."""
-    from hit_significance import TmalignOutputError
-
     good = write_m8(tmp_path / "alis_afdb50.m8", [m8_row("P00001", 1e-40)])
     bad = write_m8(
         tmp_path / "alis_afdb-swissprot.m8",
@@ -234,9 +239,6 @@ def test_the_guard_does_not_fire_on_the_real_fixture_ranges(tmp_path):
     from firing. A guard written with `bounded` alone would refuse the
     pipeline's own fixture.
     """
-    import pandas as pd
-    from hit_significance import looks_like_tmalign
-
     cases = {
         "afdb50": ([2.862e-76, 1e-20, 0.0009674], [3145, 900, 40]),
         "afdb-swissprot": ([9.138e-80, 1.0, 5.252], [3290, 200, 30]),
@@ -264,8 +266,6 @@ def test_a_3diaa_file_is_still_processed_normally(tmp_path):
 def test_the_evalue_default_and_filter_are_unchanged(tmp_path):
     """This phase adds a refusal and nothing else. Pinned, because the tempting
     next edit is to 'tidy' the threshold while the file is open."""
-    from extract_foldseek_hits import DEFAULT_EVALUE
-
     assert DEFAULT_EVALUE == 0.01
     path = write_m8(
         tmp_path / "alis_afdb50.m8",
@@ -287,9 +287,6 @@ def test_the_module_imports_nothing_its_rule_environment_lacks():
     rule, where the failure is a red job rather than a red test. Pinned here
     because the coupling is invisible from either file.
     """
-    import ast
-    import pathlib
-
     root = pathlib.Path(__file__).resolve().parents[1]
     allowed = {"argparse", "os", "re", "sys", "constants", "pandas", "__future__"}
     for name in ("extract_foldseek_hits.py", "hit_significance.py"):
@@ -329,8 +326,6 @@ def test_a_stated_tmalign_is_refused_before_anything_is_read(tmp_path):
     knows what it asked for -- and it does, from `foldseek_mode` -- saying so is
     better evidence than inspecting the result.
     """
-    from hit_significance import TmalignOutputError
-
     empty = write_m8(tmp_path / "alis_afdb50.m8", [])
     with pytest.raises(TmalignOutputError, match="only interpret '3diaa'"):
         extract_foldseekhits([empty], str(tmp_path / "hits.txt"), mode="tmalign")
@@ -347,8 +342,6 @@ def test_a_stated_3diaa_is_processed_normally(tmp_path):
 def test_an_unstated_mode_still_falls_back_to_the_heuristic(tmp_path):
     """Direct invocation, where nobody passed a mode. The shape check is what is
     left, and it must still fire."""
-    from hit_significance import TmalignOutputError
-
     path = write_m8(
         tmp_path / "alis_afdb50.m8",
         [tmalign_row("P00001", 0.9999), tmalign_row("P00002", 0.402)],
@@ -367,11 +360,6 @@ def test_the_command_line_parser_builds_without_a_flag_collision():
     end-to-end domain test caught it. This builds the parser, which is the
     cheap half of what that test does.
     """
-    import sys
-    from unittest import mock
-
-    import extract_foldseek_hits
-
     argv = [
         "extract_foldseek_hits.py",
         "--input",

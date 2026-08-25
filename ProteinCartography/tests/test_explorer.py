@@ -14,15 +14,132 @@ and nothing in a shape assertion would notice.
 """
 
 from __future__ import annotations
+import ast
+import base64
+import inspect
 import json
+import math
 import os
 import pathlib
 import re
+import subprocess
+import tempfile
+import textwrap
 
 import pytest
 from explorer.payload import space_verdict
 
 pytest.importorskip("pandas")
+
+# Hoisted here rather than repeated inside 297 test bodies. They sit BELOW
+# `importorskip` -- and carry the `noqa: E402` that costs -- because every
+# one of them needs pandas somewhere underneath it, and a module-level
+# import above the guard would turn a skip into a collection error in an
+# environment with no pandas. `tests/test_extract_foldseek_hits.py` uses the
+# same pattern for the same reason.
+#
+# Safe to hoist because nothing in this file reloads a module, edits
+# `sys.modules`, or monkeypatches an import: no test here can tell WHEN a
+# module was imported. That is a property of this file, not a general one --
+# `explorer/payload.py` and `diagnose_space.py` keep their lazy imports,
+# which are ADR 0006's optional-dependency contract and not boilerplate.
+import build_explorer  # noqa: E402
+import diagnose_space  # noqa: E402
+import numpy as np  # noqa: E402
+import pandas as pd  # noqa: E402
+from build_explorer import parse_cohort  # noqa: E402
+from compute_block import _register_builtins  # noqa: E402
+from config_schema import (  # noqa: E402
+    NOT_FUSABLE_PROVIDERS,
+    ConfigError,
+    DiagnosticsConfig,
+    from_legacy,
+)
+from diagnostics.stability import (  # noqa: E402
+    COIN_FLIP_THRESHOLD,
+    chance_jaccard,
+    neighborhood_stability,
+)
+from diagnostics.stability import chance_jaccard as library  # noqa: E402
+from domain_utils import UNIPROT_ACCESSION  # noqa: E402
+from explorer import payload  # noqa: E402
+from explorer import payload as payload_module  # noqa: E402
+from explorer.descriptions import (  # noqa: E402
+    AXES,
+    NOT_DETERMINABLE,
+    PANEL_DESCRIPTIONS,
+    describe_axes,
+    describe_block,
+    describe_late,
+    describe_space,
+)
+from explorer.panels import (  # noqa: E402
+    CATALOGUE,
+    CELL_KINDS,
+    DISCORDANCE_PATTERNS,
+    FLAVOUR_PLATES,
+    GRID_CELLS,
+    OBSERVABLES,
+    PERTURBATIONS,
+    PLATE_STATES,
+    PROVENANCE,
+    REPORT_SECTIONS,
+    SHEETS,
+    PanelSpec,
+    _perturbation_grid,
+    catalogue_for,
+    sheet_titles,
+)
+from explorer.payload import (  # noqa: E402
+    CENSORING_DROPPED_KEYS,
+    MAX_NAMED_BLOCK_COLUMNS,
+    PREFERRED_BUDGET_BYTES,
+    PRODUCIBLE_KEYS,
+    REDUCER_DISPLAY_ORDER,
+    SUMMARY_SECTIONS,
+    SUPERIMPOSABLE_THRESHOLD,
+    TM_MATRIX_MAX_BYTES,
+    TM_MATRIX_MAX_PROTEINS,
+    SpacePayload,
+    _block_column_overlays,
+    _censoring,
+    _censoring_rate_overlay,
+    _colour_frame,
+    _column_shares,
+    _contributions,
+    _hover_fields,
+    _matrix_path_for,
+    _overlays_from_features,
+    _pipeline,
+    _read_comparisons,
+    _readable_mask,
+    _records,
+    _reducer_axes,
+    _space_blocks,
+    _space_manifest,
+    _stability_series,
+    _structural_space,
+    _thresholds,
+    _tm_matrix,
+    build_payload,
+    ordered_reducers,
+    payload_bytes,
+)
+from explorer.template import _TEMPLATE, render  # noqa: E402
+from fusion_cohort import NARROW_BLOCK, WIDE_BLOCK, fusion_cohort, write_fusion_cohort  # noqa: E402
+from matrix_io import CENSORED_FILL_TOKEN, load_labeled_matrix  # noqa: E402
+from spaces import layout  # noqa: E402
+from spaces.registry import BLOCK_GROUP, available_providers  # noqa: E402
+from stability_cohort import chance_jaccard as fixture  # noqa: E402
+
+#: The page a config with no spaces renders to, built once.
+#:
+#: Sixty-six tests asked for it by writing the same `render` call, which made
+#: sixty-six chances for one of them to differ by a character and be testing a
+#: different page than its neighbours while reading as though it were not. It is
+#: also the page most of this file's template assertions are about: what the
+#: renderer emits before any data reaches it.
+EMPTY_PAGE = render({"spaces": []}, plotly_js="", title="t")
 
 
 def _matrix_fixture_dir():
@@ -31,9 +148,6 @@ def _matrix_fixture_dir():
     A plain `tmp_path` fixture cannot be reached from the helper that builds the
     config, and threading it through four tests obscured what each one is about.
     """
-    import pathlib
-    import tempfile
-
     return pathlib.Path(tempfile.mkdtemp(prefix="pc-matrix-"))
 
 
@@ -144,10 +258,6 @@ def test_a_healthy_space_is_not_warned_about():
 def test_the_bands_come_from_the_modules_that_compute_them():
     """Not re-declared here. If `embedding` or `stability` moves a threshold,
     the explorer moves with it and `docs/INTERPRETING.md` stays true."""
-    import inspect
-
-    from explorer import payload
-
     source = inspect.getsource(payload.space_verdict)
     assert "DISTORTED_THRESHOLD" in source
     assert "COIN_FLIP_THRESHOLD" in source
@@ -173,8 +283,6 @@ def test_an_unfaithful_protein_is_marked_unreadable(tmp_path):
     readable and the mechanism was silently inert while passing every shape
     check. Running it against the demo is what exposed it.
     """
-    from explorer.payload import _readable_mask
-
     protids = ["A", "B", "C"]
     _write_faithfulness(tmp_path, "pca", [("A", 0.95, 0.94), ("B", 0.10, 0.20), ("C", 0.9, 0.9)])
     mask = _readable_mask(str(tmp_path), {"faithfulness": [{"reducer": "pca"}]}, protids)
@@ -185,16 +293,12 @@ def test_either_direction_alone_makes_a_protein_unreadable(tmp_path):
     """Trustworthiness and continuity fail in opposite directions and are never
     averaged. A point in the wrong neighbourhood is as unreadable as one torn
     away from its own."""
-    from explorer.payload import _readable_mask
-
     _write_faithfulness(tmp_path, "pca", [("A", 0.99, 0.10), ("B", 0.10, 0.99)])
     mask = _readable_mask(str(tmp_path), {"faithfulness": [{"reducer": "pca"}]}, ["A", "B"])
     assert mask == [False, False]
 
 
 def test_a_protein_unfaithful_in_any_reducer_is_unreadable(tmp_path):
-    from explorer.payload import _readable_mask
-
     _write_faithfulness(tmp_path, "pca", [("A", 0.99, 0.99), ("B", 0.99, 0.99)])
     _write_faithfulness(tmp_path, "umap", [("A", 0.99, 0.99), ("B", 0.05, 0.05)])
     mask = _readable_mask(
@@ -209,8 +313,6 @@ def test_a_missing_faithfulness_table_marks_everything_unreadable(tmp_path):
     """The section claims the space was scored and the evidence is absent.
     Drawing every point as trustworthy on the strength of a missing file is the
     failure this whole module exists to prevent."""
-    from explorer.payload import _readable_mask
-
     mask = _readable_mask(str(tmp_path), {"faithfulness": [{"reducer": "pca"}]}, ["A", "B"])
     assert mask == [False, False]
 
@@ -218,8 +320,6 @@ def test_a_missing_faithfulness_table_marks_everything_unreadable(tmp_path):
 def test_no_faithfulness_section_leaves_everything_readable(tmp_path):
     """Distinct from the case above: nothing claimed to have scored this space,
     so there is no missing evidence, and the space-level verdict handles it."""
-    from explorer.payload import _readable_mask
-
     assert _readable_mask(str(tmp_path), {}, ["A", "B"]) == [True, True]
 
 
@@ -229,10 +329,6 @@ def test_no_faithfulness_section_leaves_everything_readable(tmp_path):
 @pytest.fixture(scope="module")
 def built(tmp_path_factory):
     """A real run directory, driven through `build_payload`."""
-    from config_schema import from_legacy
-    from explorer.payload import build_payload
-    from fusion_cohort import NARROW_BLOCK, WIDE_BLOCK, fusion_cohort, write_fusion_cohort
-
     root = tmp_path_factory.mktemp("explorer")
     output = root / "output"
     cohort = fusion_cohort(n=60)
@@ -290,9 +386,6 @@ def test_the_payload_has_one_entry_per_space_with_an_embedding(built):
 def test_a_space_without_an_embedding_is_absent_rather_than_empty(tmp_path):
     """A space skipped for a missing provider has nothing to draw, and an empty
     panel would suggest the run covered more than it did (ADR 0006)."""
-    from config_schema import from_legacy
-    from explorer.payload import build_payload
-
     config = from_legacy(
         {
             "blocks": {"t": {"provider": "tmscore"}},
@@ -349,8 +442,6 @@ def test_the_provenance_footer_finds_a_manifest_under_its_real_name(tmp_path):
     The footer collected `{}` for every space and rendered an empty list, and
     nothing failed -- the only symptom was a blank section in a 3.7 MB file.
     """
-    from explorer.payload import _space_manifest
-
     _write_space_manifest(tmp_path, "pca_umap")
     assert _space_manifest(str(tmp_path), ["pca_umap"])["cache_key"] == "deadbeef"
     # the name the code used to look for must not start working by accident
@@ -358,15 +449,11 @@ def test_the_provenance_footer_finds_a_manifest_under_its_real_name(tmp_path):
 
 
 def test_a_manifest_under_the_old_name_is_not_what_is_read(tmp_path):
-    from explorer.payload import _space_manifest
-
     (tmp_path / "manifest.json").write_text(json.dumps({"cache_key": "wrong"}))
     assert _space_manifest(str(tmp_path), ["pca_umap"]) == {}
 
 
 def test_the_diagnostics_manifest_is_the_fallback(tmp_path):
-    from explorer.payload import _space_manifest
-
     _write_space_manifest(tmp_path, "diagnostics")
     assert _space_manifest(str(tmp_path), ["pca_umap"])["cache_key"] == "deadbeef"
 
@@ -378,8 +465,6 @@ def test_a_fused_space_carries_both_the_asked_and_the_realized_share(tmp_path):
     blocks of unequal width realizes unevenly, and the demo's `fused_early`
     asks 50/50 and lands at 73/27.
     """
-    from explorer.payload import _contributions
-
     _write_space_manifest(
         tmp_path,
         "pca_umap",
@@ -396,8 +481,6 @@ def test_a_fused_space_carries_both_the_asked_and_the_realized_share(tmp_path):
 
 def test_a_single_block_space_apportions_nothing(tmp_path):
     """ "tmscore 100%" on every unfused panel is noise, not provenance."""
-    from explorer.payload import _contributions
-
     _write_space_manifest(
         tmp_path,
         "pca_umap",
@@ -412,8 +495,6 @@ def test_the_rendered_page_both_carries_and_draws_the_share():
     Two assertions, because they fail for different reasons: the payload can be
     right while the panel ignores it, which is the state this fixed.
     """
-    from explorer.template import render
-
     html = render(
         {
             "spaces": [
@@ -472,8 +553,6 @@ def test_each_comparison_row_carries_its_per_protein_detail(tmp_path):
     protein coloured `null` -- a headline feature (ADR 0005 item 4) that
     toggled a button and conveyed nothing.
     """
-    from explorer.payload import _read_comparisons
-
     directory = tmp_path / "coregistration"
     _write_coregistration(directory, [("a", "b", [("P1", 0.25), ("P2", 0.75)])])
     rows = _read_comparisons(str(directory / "summary.tsv"))
@@ -489,8 +568,6 @@ def test_a_protein_with_no_measurement_is_absent_rather_than_zero(tmp_path):
     disagreement for a pair that was never measured, which is the
     substituted-zero defect this codebase already has once (FOLLOWUPS #34).
     """
-    from explorer.payload import _read_comparisons
-
     directory = tmp_path / "coregistration"
     (directory).mkdir(parents=True)
     (directory / "summary.tsv").write_text("space_a\tspace_b\n a\tb\n".replace(" ", ""))
@@ -501,8 +578,6 @@ def test_a_protein_with_no_measurement_is_absent_rather_than_zero(tmp_path):
 
 
 def test_a_missing_pair_table_is_empty_rather_than_an_error(tmp_path):
-    from explorer.payload import _read_comparisons
-
     directory = tmp_path / "coregistration"
     directory.mkdir(parents=True)
     (directory / "summary.tsv").write_text("space_a\tspace_b\na\tb\n")
@@ -517,8 +592,6 @@ def test_the_template_reads_the_key_the_payload_writes():
     compared the two, which is the manifest-versus-honored pattern across a
     language boundary.
     """
-    from explorer.template import render
-
     html = render({"comparisons": [{"per_protein": {"P1": 0.5}}], "spaces": []}, "", "t")
     assert "row.per_protein" in html, "the template no longer reads per_protein"
     assert '"per_protein": {"P1": 0.5}' in html, "the payload no longer writes per_protein"
@@ -537,8 +610,6 @@ def test_panel_type_defaults_to_scatter_so_an_old_payload_is_unchanged():
     default keeps that true without the caller restating it, which is what
     makes the field additive rather than a migration.
     """
-    from explorer.payload import SpacePayload
-
     space = SpacePayload(
         space_id="structure",
         protids=["a"],
@@ -561,9 +632,7 @@ def test_the_template_dispatches_on_panel_type_rather_than_assuming_scatter():
     `draw()` must look the kind up; a `draw()` that still hardcodes the scatter
     body would pass every payload test above and render one kind forever.
     """
-    from explorer.template import render
-
-    html = render({"spaces": []}, plotly_js="", title="t")
+    html = EMPTY_PAGE
     assert "PANELS.scatter" in html, "the scatter kind is not registered"
     assert re.search(
         r"space\.panel_type", html
@@ -580,8 +649,6 @@ def test_an_unknown_panel_type_is_drawn_as_a_mismatch_not_dropped():
     show them, never blank them. A template older than its payload is exactly
     when a space would vanish silently, so the fallback has to be visible.
     """
-    from explorer.template import render
-
     html = render(
         {"spaces": [{"space_id": "s", "panel_type": "tanglegram"}]},
         plotly_js="",
@@ -608,8 +675,6 @@ def test_every_catalogue_panel_names_a_sheet_that_exists():
     it silently removes the panel from the page, which is the failure this
     whole catalogue exists to prevent.
     """
-    from explorer.panels import CATALOGUE, SHEETS
-
     known = {s for s, _ in SHEETS}
     for spec in CATALOGUE:
         assert spec.sheet in known, f"{spec.panel_id} is filed under unknown sheet {spec.sheet!r}"
@@ -622,8 +687,6 @@ def test_every_panel_that_needs_data_says_what_it_needs():
     rule (7.03 E2). A panel with `needs` and no `requires` would render an
     empty box, which is the thing being ruled out.
     """
-    from explorer.panels import CATALOGUE
-
     for spec in CATALOGUE:
         if spec.needs:
             assert spec.requires, f"{spec.panel_id} can be unmet but names no requirement"
@@ -681,9 +744,7 @@ def test_no_local_only_document_reaches_the_rendered_page():
     This renders the template and greps the result, which is the same thing a
     reader would receive.
     """
-    from explorer.template import render
-
-    html = render({"spaces": []}, plotly_js="", title="t")
+    html = EMPTY_PAGE
     offences = sorted(doc for doc in NON_SHIPPING_DOCUMENTS if doc in html)
     assert not offences, (
         f"the rendered page cites documents the PR does not ship: {offences}. "
@@ -728,8 +789,6 @@ def _tracked_text_files():
     re-deriving it from `.gitignore` plus `.git/info/exclude` -- a re-derivation
     is how the local-only set drifts.
     """
-    import subprocess
-
     root = pathlib.Path(__file__).resolve().parents[2]
     listing = subprocess.run(
         ["git", "ls-files"], cwd=root, capture_output=True, text=True, check=True
@@ -825,8 +884,6 @@ def test_no_panel_tells_the_reader_to_consult_a_document_the_pr_does_not_ship():
     did not: its evidence sentence asserted zero surviving references while
     eleven were on the built page.
     """
-    from explorer.panels import CATALOGUE
-
     offences = _document_offences(CATALOGUE)
     assert not offences, f"panels cite documents the PR does not ship: {offences}"
 
@@ -839,8 +896,6 @@ def test_the_guard_above_would_actually_catch_one():
     So the detector -- the same function, not a re-typed copy of its condition
     -- is run against a panel known to be bad.
     """
-    from explorer.panels import PanelSpec
-
     planted = PanelSpec(
         panel_id="planted",
         title="planted",
@@ -862,8 +917,6 @@ def test_every_panel_carries_a_provenance_tag_and_a_section():
     drawing of an argument, and the section number is what makes any claim in
     the catalogue checkable against the document.
     """
-    from explorer.panels import CATALOGUE, PROVENANCE
-
     for spec in CATALOGUE:
         assert spec.provenance in PROVENANCE, f"{spec.panel_id}: {spec.provenance!r}"
         assert spec.section, f"{spec.panel_id} cites no source section"
@@ -875,8 +928,6 @@ def test_catalogue_marks_panels_drawable_only_when_their_inputs_are_present():
     Splitting it across two languages is how a panel ends up judged drawable
     here and blank in the browser.
     """
-    from explorer.panels import catalogue_for
-
     with_nothing = {p["panel_id"]: p for p in catalogue_for(set())}
     assert with_nothing["comparisons"]["drawable"] is False
     assert with_nothing["comparisons"]["missing"] == ["comparisons"]
@@ -895,8 +946,6 @@ def test_six_panels_are_blocked_on_one_missing_input_not_six():
     says so by citing one shared input rather than six different ones. If that
     ever stops being true, this is where it shows.
     """
-    from explorer.panels import CATALOGUE
-
     tree_blocked = {s.panel_id for s in CATALOGUE if "reconciled gene/species tree" in s.requires}
     # An exact set, not `len >= 5`. A threshold cannot notice a panel quietly
     # joining or leaving the group, which is the only thing this test exists to
@@ -919,9 +968,6 @@ def test_the_page_builds_a_sheet_bar_and_can_render_an_awaiting_panel():
     -- which is exactly why this is the weakest test in the file and why the
     browser pass is not optional.
     """
-    from explorer.panels import catalogue_for, sheet_titles
-    from explorer.template import render
-
     html = render(
         {"spaces": [], "panels": catalogue_for(set()), "sheets": sheet_titles()},
         plotly_js="",
@@ -948,8 +994,6 @@ def test_a_single_cohort_page_carries_no_cohorts_key():
     grew a `cohorts` key the payload would change for every existing run, and
     the template's single-cohort path would stop being the one that is exercised.
     """
-    from explorer.template import render
-
     html = render({"spaces": [], "analysis_name": "one"}, plotly_js="", title="t")
     payload = _embedded_payload(html)
     assert "cohorts" not in payload, "a single-cohort page must not gain the key"
@@ -961,8 +1005,6 @@ def test_the_template_falls_back_to_one_cohort_when_the_key_is_absent():
 
     Without it, every existing page would need rebuilding to render at all.
     """
-    from explorer.template import render
-
     html = render({"spaces": [], "analysis_name": "one"}, plotly_js="", title="t")
     assert (
         "PAYLOAD.cohorts ||" in html
@@ -971,8 +1013,6 @@ def test_the_template_falls_back_to_one_cohort_when_the_key_is_absent():
 
 def test_a_multi_cohort_page_names_every_cohort():
     """The selector's labels come from the payload, so they have to be in it."""
-    from explorer.template import render
-
     document = {
         "spaces": [],
         "analysis_name": "first",
@@ -996,8 +1036,6 @@ def test_switching_cohorts_clears_the_cached_grid():
     subtly wrong rather than one that is visibly broken -- the worst failure
     mode this page has.
     """
-    from explorer.template import render
-
     html = render({"spaces": [], "analysis_name": "one"}, plotly_js="", title="t")
     assert re.search(
         r"delete\s+grid\.dataset\.built", html
@@ -1006,12 +1044,9 @@ def test_switching_cohorts_clears_the_cached_grid():
 
 def test_parse_cohort_rejects_a_spec_it_cannot_split():
     """A malformed --also-cohort must fail loudly, not build half a page."""
-    import pytest as _pytest
-    from build_explorer import parse_cohort
-
     assert parse_cohort("actin=/tmp/c.json:/tmp/out") == ("actin", "/tmp/c.json", "/tmp/out")
     for bad in ("no-equals", "name=", "=/tmp/c.json:/tmp/out", "name=/tmp/c.json"):
-        with _pytest.raises(SystemExit):
+        with pytest.raises(SystemExit):
             parse_cohort(bad)
 
 
@@ -1029,14 +1064,7 @@ def test_hover_fields_come_from_files_every_run_writes():
     sourcing the cursor from overlays would leave it showing an accession and
     nothing else -- which is what it did.
     """
-    import textwrap
-
-    import pytest as _pytest
-
-    _pytest.importorskip("pandas")
-    import tempfile
-
-    from explorer.payload import _hover_fields
+    pytest.importorskip("pandas")
 
     with tempfile.TemporaryDirectory() as out:
         os.makedirs(os.path.join(out, "protein_features"))
@@ -1067,12 +1095,7 @@ def test_hover_fields_survive_both_files_being_absent():
 
     Optional inputs stay optional -- the cursor loses two lines, not the page.
     """
-    import tempfile
-
-    import pytest as _pytest
-
-    _pytest.importorskip("pandas")
-    from explorer.payload import _hover_fields
+    pytest.importorskip("pandas")
 
     with tempfile.TemporaryDirectory() as out:
         assert _hover_fields(out, {"P1"}) == {}
@@ -1086,9 +1109,7 @@ def test_the_colour_domain_is_shared_by_every_panel():
     occupied in the space next to it. Asserted on the source, because the bug
     lived in how the domain was scoped, not in any value the payload carries.
     """
-    from explorer.template import render
-
-    html = render({"spaces": []}, plotly_js="", title="t")
+    html = EMPTY_PAGE
     assert "function rebuildColourDomain" in html, "there is no shared domain"
     assert (
         "colourDomain.levels.indexOf" in html
@@ -1101,9 +1122,7 @@ def test_the_colour_domain_is_shared_by_every_panel():
 
 def test_numbers_in_the_cursor_are_formatted_by_magnitude():
     """`toFixed(3)` rendered a chain length as 367.000."""
-    from explorer.template import render
-
-    html = render({"spaces": []}, plotly_js="", title="t")
+    html = EMPTY_PAGE
     assert "function fmtValue" in html
     # Assert the CALL SITE, not the absence of a substring. The first version of
     # this test searched for "toFixed(3)" and matched the comment that explains
@@ -1121,8 +1140,6 @@ def test_the_title_follows_the_cohort_selector():
     cohort's name after a switch while the subtitle updated -- header and
     subtitle disagreeing about which data was on screen.
     """
-    from explorer.template import render
-
     html = render({"spaces": [], "analysis_name": "one"}, plotly_js="", title="t")
     assert (
         'querySelector("h1").textContent = active.cohort_name' in html
@@ -1144,8 +1161,6 @@ def test_a_provider_with_no_description_says_so_rather_than_inventing_one():
     sentence: a reader can act on "the code does not say" and cannot act on
     someone's inference dressed as documentation.
     """
-    from explorer.descriptions import NOT_DETERMINABLE, describe_block
-
     text = " ".join(describe_block("some_future_provider")["paragraphs"])
     assert NOT_DETERMINABLE in text
     assert "some_future_provider" in text
@@ -1159,16 +1174,12 @@ def test_the_biophys_hazard_names_the_unapplied_normalization():
     A physicochemistry map read as "chemistry" rather than "pI" is the
     misreading this sentence exists to stop.
     """
-    from explorer.descriptions import describe_block
-
     hazards = " ".join(describe_block("biophys")["hazards"])
     assert "zscore_within" in hazards
     assert "isoelectric point" in hazards
 
 
 def test_the_domains_hazards_name_both_the_blank_row_and_the_ties():
-    from explorer.descriptions import describe_block
-
     hazards = " ".join(describe_block("domains")["hazards"])
     assert "nobody has annotated one" in hazards
     assert "PF00022" in hazards, "the tie degeneracy is why this space is unreadable"
@@ -1177,8 +1188,6 @@ def test_the_domains_hazards_name_both_the_blank_row_and_the_ties():
 def test_the_tmscore_description_says_the_row_is_the_feature_vector():
     """2.02's point, and the one most often skipped: distance in this space is
     between similarity PROFILES, not between two proteins' scores."""
-    from explorer.descriptions import describe_block
-
     described = describe_block("tmscore", params={"representation": "profile"})
     text = " ".join(described["paragraphs"])
     assert "whole row" in text
@@ -1194,8 +1203,6 @@ def test_a_cohort_dependent_number_is_read_from_the_cohort_not_typed_in():
     sentence that is wrong on one of the two panels it renders into, so the
     number has to come from that cohort's own block manifest.
     """
-    from explorer.descriptions import describe_block
-
     wide = " ".join(describe_block("threedi", facts={"n_kmers": 4982})["paragraphs"])
     narrow = " ".join(describe_block("threedi", facts={"n_kmers": 4594})["paragraphs"])
     assert "4982 columns for this cohort" in wide
@@ -1209,8 +1216,6 @@ def test_the_fused_description_quotes_this_cohort_s_own_realized_shares():
     0.4208/0.5792 on the actin one, from the same config. Either typed in would
     be wrong on the other panel.
     """
-    from explorer.descriptions import describe_late
-
     text = " ".join(
         describe_late(
             [
@@ -1226,8 +1231,6 @@ def test_the_fused_description_quotes_this_cohort_s_own_realized_shares():
 def test_a_fused_space_with_no_measured_shares_states_none():
     """Absent is absent. Falling back to the nominal weights would print a
     request as if it were a measurement, which is the thing #29/#32 are about."""
-    from explorer.descriptions import describe_late
-
     text = " ".join(describe_late([])["paragraphs"])
     assert "realized shares are" not in text
 
@@ -1236,8 +1239,6 @@ def test_every_space_description_ends_with_what_the_axes_are_not():
     """The single most common misreading of a UMAP costs one sentence to
     forestall, so it is appended to every space rather than left to the reader
     to remember from another panel."""
-    from explorer.descriptions import describe_space
-
     text = " ".join(describe_space("structure", blocks=[{"provider": "tmscore"}])["paragraphs"])
     assert "no units" in text
     assert "not interpretable" in text
@@ -1252,8 +1253,6 @@ def test_the_payload_carries_a_description_for_every_space(built):
 def test_a_space_payload_written_without_a_description_still_renders():
     """Additive, asserted rather than assumed: the field defaults to empty and
     the template draws nothing for an empty one."""
-    from explorer.payload import SpacePayload
-
     space = SpacePayload(
         space_id="structure",
         protids=["a"],
@@ -1273,9 +1272,6 @@ def test_the_description_is_built_from_the_block_manifest_on_disk(tmp_path):
     the manifest the sentence would quietly become generic, which no shape
     assertion would notice.
     """
-    from config_schema import from_legacy
-    from explorer.payload import _space_blocks
-
     blocks_dir = tmp_path / "blocks" / "td"
     blocks_dir.mkdir(parents=True)
     (blocks_dir / "manifest.json").write_text(json.dumps({"extra": {"n_kmers": 77}}))
@@ -1302,9 +1298,6 @@ def test_the_template_renders_the_fold_out_in_both_places():
     Two renderers is how a hazard ends up styled as body text in one of them,
     and the hazards are the half of this that matters.
     """
-    from explorer.panels import catalogue_for, sheet_titles
-    from explorer.template import render
-
     html = render(
         {"spaces": [], "panels": catalogue_for(set()), "sheets": sheet_titles()},
         plotly_js="",
@@ -1322,9 +1315,7 @@ def test_the_fold_out_escapes_before_it_marks_up():
     """The description is plain text with backticks, and it is inserted as
     innerHTML. Escaping after the markup pass would let a `<` in a description
     become live markup."""
-    from explorer.template import render
-
-    html = render({"spaces": []}, plotly_js="", title="t")
+    html = EMPTY_PAGE
     marker = html.index("function inlineMarkup")
     body = html[marker : marker + 400]
     assert body.index("escapeHtml(text)") < body.index("replace(/`([^`]+)`/g")
@@ -1344,8 +1335,6 @@ def test_the_records_key_is_restricted_to_the_proteins_on_the_maps(tmp_path):
     two counts being the same number is what tells a reader the table is of
     this cohort rather than of the feature file.
     """
-    from explorer.payload import _records
-
     features = tmp_path / "protein_features"
     features.mkdir()
     (features / "uniprot_features.tsv").write_text(
@@ -1372,9 +1361,6 @@ def test_a_run_with_no_uniprot_feature_table_advertises_no_records_panel(tmp_pat
     is a question someone can answer -- rather than draw an empty table, which
     reads as a cohort with no proteins in it.
     """
-    from explorer.panels import catalogue_for
-    from explorer.payload import _records
-
     assert _records(str(tmp_path), ["P1"]) == []
     entry = next(p for p in catalogue_for(set()) if p["panel_id"] == "records")
     assert entry["drawable"] is False
@@ -1388,8 +1374,6 @@ def test_the_template_reads_the_records_key_it_is_sent():
     Asserted on the page's own source: there is no browser here, and a
     `records` key nothing reads is exactly the shape of #29 and #32.
     """
-    from explorer.template import render
-
     html = render({"spaces": [], "records": []}, plotly_js="", title="t")
     assert "SHEET_PANELS.records" in html, "the records kind is not registered"
     assert "active.records" in html, "nothing on the page reads the records key"
@@ -1413,8 +1397,6 @@ def test_the_report_sections_are_in_the_source_s_fixed_order():
     source document is against, and a report that opened with the map would
     reproduce it while looking complete.
     """
-    from explorer.panels import REPORT_SECTIONS
-
     assert [s["section_id"] for s in REPORT_SECTIONS] == [
         "cohort",
         "coverage",
@@ -1429,8 +1411,6 @@ def test_the_report_panel_carries_its_sections_into_the_payload():
     """`content` was an unused field until this panel. A section list that
     does not travel is a section list the page cannot render, which is the
     same failure as #29: a value written where nothing reads it."""
-    from explorer.panels import REPORT_SECTIONS, catalogue_for
-
     entry = next(p for p in catalogue_for(set()) if p["panel_id"] == "report")
     assert entry["drawable"] is True, "the report needs no input it does not have"
     assert [s["section_id"] for s in entry["content"]["sections"]] == [
@@ -1446,8 +1426,6 @@ def test_every_refused_report_section_names_what_would_fill_it():
     said "no payload key carries it" while `active.censoring.summary` carried
     it, and the censoring panel drew the number two sheets away.
     """
-    from explorer.panels import REPORT_SECTIONS
-
     refused = [s for s in REPORT_SECTIONS if s.get("refused")]
     assert {s["section_id"] for s in refused} == {"rate"}
     for section in refused:
@@ -1466,8 +1444,6 @@ def test_no_report_section_refuses_on_a_key_the_payload_actually_supplies():
     sentence inside it rots. So this asserts the relationship instead: nothing
     may refuse while naming a payload key that `build_payload` advertises.
     """
-    from explorer.panels import REPORT_SECTIONS
-
     # section_id -> the payload key that would fill it. Kept here rather than on
     # the section so the mapping is a test's opinion about the pipeline, not
     # something the shipped catalogue asserts about itself.
@@ -1490,9 +1466,6 @@ def test_the_template_renders_the_report_in_payload_order_not_by_lookup():
     its keys would be free to put the map first, and no payload test would
     notice.
     """
-    from explorer.panels import catalogue_for, sheet_titles
-    from explorer.template import render
-
     html = render(
         {"spaces": [], "panels": catalogue_for(set()), "sheets": sheet_titles()},
         plotly_js="",
@@ -1512,10 +1485,7 @@ def test_every_fillable_report_section_has_a_filler_and_every_filler_a_section()
     """A section with no filler renders as a version mismatch, which is right
     for an old page and wrong for this one. Both directions are checked: an
     orphan filler is dead code that looks like coverage."""
-    from explorer.panels import REPORT_SECTIONS
-    from explorer.template import render
-
-    html = render({"spaces": []}, plotly_js="", title="t")
+    html = EMPTY_PAGE
     fillable = [s["section_id"] for s in REPORT_SECTIONS if not s.get("refused")]
     for section_id in fillable:
         assert f"REPORT_FILLERS.{section_id} =" in html, f"no filler for {section_id}"
@@ -1527,9 +1497,7 @@ def test_a_report_section_the_template_cannot_fill_says_so():
     """Same rule as the unknown panel_type, and for the same reason: a
     section that silently vanishes cannot be told apart from one nobody
     wrote."""
-    from explorer.template import render
-
-    html = render({"spaces": []}, plotly_js="", title="t")
+    html = EMPTY_PAGE
     assert "reportUnknownSection" in html
     assert "no filler for report section" in html
 
@@ -1539,9 +1507,7 @@ def test_the_report_never_prints_a_bare_blank_for_a_number_it_lacks():
     measurement of zero. The comparisons table already learned this; the
     report has more places to forget it -- a space with no negative control,
     a one-block space with no redundancy pair, an uninformative stability."""
-    from explorer.template import render
-
-    html = render({"spaces": []}, plotly_js="", title="t")
+    html = EMPTY_PAGE
     assert "function reportMissing" in html
     assert "not in this payload" in html
     body = html[html.index("const GEOMETRY_COLUMNS") : html.index("REPORT_FILLERS.cohort")]
@@ -1563,9 +1529,6 @@ def test_the_signal_inventory_is_read_from_the_guard_that_enforces_it():
     than no panel: it would look like a check. So every signal in
     `NOT_FUSABLE_PROVIDERS` has to appear, and nothing else may.
     """
-    from config_schema import NOT_FUSABLE_PROVIDERS
-    from explorer.panels import CATALOGUE
-
     entry = next(p for p in CATALOGUE if p.panel_id == "signal_inventory")
     shown = {row["signal"] for row in entry.content["rows"]}
     assert shown == set(NOT_FUSABLE_PROVIDERS.values())
@@ -1576,8 +1539,6 @@ def test_the_inventory_groups_by_signal_so_four_providers_of_one_circularity_are
     `iqtree`, `noveltree` and `phylogeny` are four ways to produce one
     circularity. Four rows repeating one sentence would hide that they are the
     same argument, so the row is per signal and names its providers."""
-    from explorer.panels import CATALOGUE
-
     entry = next(p for p in CATALOGUE if p.panel_id == "signal_inventory")
     row = next(r for r in entry.content["rows"] if r["signal"] == "phylogeny")
     for provider in ("iqtree", "noveltree", "patristic", "phylogeny"):
@@ -1589,9 +1550,6 @@ def test_every_signal_the_guard_names_carries_its_reason():
     panel prints `not determinable from the code` for it rather than an empty
     cell. This asserts there are none today, so adding one to the guard
     without its reason fails here rather than shipping a blank cell."""
-    from explorer.descriptions import NOT_DETERMINABLE
-    from explorer.panels import CATALOGUE
-
     entry = next(p for p in CATALOGUE if p.panel_id == "signal_inventory")
     holes = [r["signal"] for r in entry.content["rows"] if NOT_DETERMINABLE in r["reason"]]
     assert holes == [], f"these signals are enforced with no reason recorded: {holes}"
@@ -1602,12 +1560,9 @@ def test_one_table_renderer_serves_every_table_panel():
     knew one panel's column names would need a branch per panel after it, and
     each branch is a place for the page to disagree with its payload -- so the
     columns come from the payload."""
-    from explorer.panels import CATALOGUE
-    from explorer.template import render
-
     tables = [p.panel_id for p in CATALOGUE if p.panel_type == "table"]
     assert len(tables) > 1, "the shared renderer is only interesting if it is shared"
-    html = render({"spaces": []}, plotly_js="", title="t")
+    html = EMPTY_PAGE
     assert "SHEET_PANELS.table" in html, "the table kind is not registered"
     assert "content.columns" in html, "the renderer does not read the payload's columns"
     table_body = html[html.index("SHEET_PANELS.table") :][:1500]
@@ -1618,9 +1573,7 @@ def test_a_table_panel_with_no_rows_says_which_half_is_missing():
     """Declared as a table and handed no table. The two halves are different
     facts -- no columns is a template-side mistake and no rows is an empty
     source -- and collapsing them hides which."""
-    from explorer.template import render
-
-    html = render({"spaces": []}, plotly_js="", title="t")
+    html = EMPTY_PAGE
     body = html[html.index("SHEET_PANELS.table") :][:1500]
     assert "the payload declares the panel and does not carry its content" in body
     assert 'columns.length ? "rows" : "columns"' in body
@@ -1635,9 +1588,7 @@ def test_the_tab_count_asks_the_renderer_whether_a_panel_is_blank():
     two states have to stay distinguishable, so a renderer may answer for
     itself.
     """
-    from explorer.template import render
-
-    html = render({"spaces": []}, plotly_js="", title="t")
+    html = EMPTY_PAGE
     assert "function panelIsBlank" in html
     assert "renderer.isEmpty" in html, "the count cannot ask the renderer"
     assert re.search(
@@ -1655,8 +1606,6 @@ def test_all_six_flavours_are_present_and_in_the_source_s_order():
     """Ordered by how much each disturbs the existing geometry, which is the
     source's own ordering and the reason the list is worth showing at all.
     Dropping one would leave a reader thinking the taxonomy has five."""
-    from explorer.panels import FLAVOUR_PLATES
-
     assert [p["plate_id"] for p in FLAVOUR_PLATES] == ["A", "B", "C", "D", "E", "F"]
     for plate in FLAVOUR_PLATES:
         for field in ("name", "formula", "answers", "cannot", "cost", "failure"):
@@ -1670,8 +1619,6 @@ def test_a_plate_is_either_realized_by_a_payload_key_or_named_unimplemented():
     the "available, not used" branch and tell a reader this pipeline could
     build something it cannot.
     """
-    from explorer.panels import FLAVOUR_PLATES
-
     for plate in FLAVOUR_PLATES:
         realized = plate.get("realized_by")
         unimplemented = plate.get("unimplemented")
@@ -1688,10 +1635,6 @@ def test_the_three_unimplemented_flavours_have_no_provider_to_build_them():
     them those. The day one is added, this fails here rather than leaving a
     stale "not implemented" on the page.
     """
-    from compute_block import _register_builtins
-    from explorer.panels import FLAVOUR_PLATES
-    from spaces.registry import BLOCK_GROUP, available_providers
-
     _register_builtins()
     registered = {info.name for info in available_providers(BLOCK_GROUP)}
     # A subset assertion, not equality: the registry is process-global and other
@@ -1714,7 +1657,6 @@ def test_a_plate_reports_what_this_run_did_rather_than_a_general_claim():
     looking at, and only the second one can be wrong in a way they would
     notice.
     """
-    from explorer.panels import PLATE_STATES, catalogue_for
 
     def plate(available, plate_id):
         entry = next(p for p in catalogue_for(available) if p["panel_id"] == "flavours")
@@ -1735,8 +1677,6 @@ def test_a_plate_reports_what_this_run_did_rather_than_a_general_claim():
 def test_the_overlay_key_reaches_the_available_set():
     """`overlays` is new in `available` and the flavours panel is what reads
     it. A key nothing reads is #29 again."""
-    from explorer.panels import catalogue_for
-
     without = next(p for p in catalogue_for(set()) if p["panel_id"] == "flavours")
     with_it = next(p for p in catalogue_for({"overlays"}) if p["panel_id"] == "flavours")
     states = [
@@ -1752,8 +1692,6 @@ def test_the_c_plate_carries_the_hazard_its_own_failure_mode_describes():
     biophysical block declares `zscore_within` while nothing reads the field
     (FOLLOWUPS #32). A plate quoting the warning next to a geometry that does
     not implement it would be worse than not quoting it."""
-    from explorer.panels import FLAVOUR_PLATES
-
     plate = next(p for p in FLAVOUR_PLATES if p["plate_id"] == "C")
     assert "zscore_within" in plate["hazard"]
     assert "read by nothing" in plate["hazard"]
@@ -1762,9 +1700,7 @@ def test_the_c_plate_carries_the_hazard_its_own_failure_mode_describes():
 
 
 def test_the_cards_renderer_reads_the_plates_and_answers_the_blank_count():
-    from explorer.template import render
-
-    html = render({"spaces": []}, plotly_js="", title="t")
+    html = EMPTY_PAGE
     assert "SHEET_PANELS.cards" in html, "the cards kind is not registered"
     body = html[html.index("SHEET_PANELS.cards") :][:2600]
     assert "content.plates" in body
@@ -1781,8 +1717,6 @@ def test_all_seven_discordance_patterns_carry_a_test_that_separates_them():
     lets a reader pick whichever conclusion they were hoping for, which is
     worse than an empty panel.
     """
-    from explorer.panels import DISCORDANCE_PATTERNS
-
     assert len(DISCORDANCE_PATTERNS) == 7
     for seen, cause, test, effect in DISCORDANCE_PATTERNS:
         assert seen and cause and test and effect
@@ -1798,8 +1732,6 @@ def test_all_seven_discordance_patterns_carry_a_test_that_separates_them():
 def test_the_discordance_panel_reuses_the_shared_table_renderer():
     """No new renderer, which was the point of building the table kind
     generically: the second table panel is content only."""
-    from explorer.panels import CATALOGUE
-
     entry = next(p for p in CATALOGUE if p.panel_id == "discordance")
     assert entry.panel_type == "table"
     assert [c["key"] for c in entry.content["columns"]] == ["seen", "cause", "test", "effect"]
@@ -1818,8 +1750,6 @@ def test_the_grid_is_complete_and_every_cell_carries_one_of_four_kinds():
     """Five perturbations against five observables is twenty-five cells, and a
     grid with holes in it would be indistinguishable from a grid whose holes
     are the finding."""
-    from explorer.panels import CELL_KINDS, OBSERVABLES, PERTURBATIONS, _perturbation_grid
-
     content = _perturbation_grid()
     assert len(content["perturbations"]) == len(PERTURBATIONS) == 5
     assert len(content["observables"]) == len(OBSERVABLES) == 5
@@ -1833,8 +1763,6 @@ def test_the_cell_people_run_first_is_marked_flat_and_says_what_it_costs():
     """The source's whole point about this grid. One alanine against TM-score
     is the emptiest cell and the one most people pay for first, so the panel
     has to carry both halves: that it is flat, and that it is 126 folds."""
-    from explorer.panels import _perturbation_grid
-
     content = _perturbation_grid()
     cell = content["cells"]["ala1|tm"]
     assert cell["kind"] == "empty by construction"
@@ -1847,8 +1775,6 @@ def test_an_unannotated_cell_is_not_reported_as_an_empty_one():
     """The source not commenting on a combination is not the source calling it
     useless. Sixteen of the twenty-five are unannotated, and inventing the
     difference would be the exact failure this panel exists to point at."""
-    from explorer.panels import GRID_CELLS, _perturbation_grid
-
     cells = _perturbation_grid()["cells"]
     unannotated = [key for key, cell in cells.items() if cell["kind"] == "unannotated"]
     assert len(unannotated) == 25 - len(GRID_CELLS) == 16
@@ -1859,8 +1785,6 @@ def test_a_control_cell_is_not_classified_as_a_measurement():
     """A shuffled control tells you the floor of the score. Classified as
     informative it would be quoted as a result, which is how a noise floor
     ends up in a figure legend as a finding."""
-    from explorer.panels import _perturbation_grid
-
     cells = _perturbation_grid()["cells"]
     assert cells["shuffle|tm"]["kind"] == "control"
     assert cells["shuffle|esm"]["kind"] == "control"
@@ -1873,9 +1797,7 @@ def test_the_grid_renderer_draws_no_numbers():
     measurement of this cohort, which is the same misreading the synthetic
     provenance tag exists to prevent -- so the cells carry kinds and the notes
     carry the argument."""
-    from explorer.template import render
-
-    html = render({"spaces": []}, plotly_js="", title="t")
+    html = EMPTY_PAGE
     assert "SHEET_PANELS.grid" in html, "the grid kind is not registered"
     body = html[html.index("SHEET_PANELS.grid") :][:3000]
     assert "cell.kind" in body, "the cells do not render their kind"
@@ -1896,7 +1818,6 @@ def test_the_diagram_marks_the_block_whose_tensor_is_the_similarity_matrix():
     matrix, so PCA's input is the matrix. A `frequency` block's is not, and
     marking both would make the note meaningless.
     """
-    from explorer.payload import _pipeline
 
     class Block:
         def __init__(self, provider, representation):
@@ -1923,7 +1844,6 @@ def test_the_diagram_carries_both_graphs_because_they_are_different_graphs():
     drawn from another, so a cluster boundary and a gap on the map are not the
     same statement. On the shipped cohorts these k values are 37 and 15, and
     nothing else on the page says so."""
-    from explorer.payload import SpacePayload, _pipeline
 
     class Space:
         blocks = ("tmscore",)
@@ -1954,8 +1874,6 @@ def test_a_reducer_default_is_not_reported_as_a_chosen_value():
     not the same fact as a value somebody chose. Printing 15 here would claim
     the config said something it did not -- the same rule that keeps cohort
     numbers out of `descriptions.py`."""
-    from explorer.payload import SpacePayload, _pipeline
-    from explorer.template import render
 
     class Space:
         blocks = ("tmscore",)
@@ -1975,15 +1893,13 @@ def test_a_reducer_default_is_not_reported_as_a_chosen_value():
         verdict={"level": "ok", "reasons": [], "headline": "fine"},
     )
     assert _pipeline(Config(), [space])["rows"][0]["map_n_neighbors"] is None
-    html = render({"spaces": []}, plotly_js="", title="t")
+    html = EMPTY_PAGE
     assert "reducer default" in html, "the page prints nothing where the config said nothing"
 
 
 def test_a_config_that_resolves_to_nothing_draws_no_diagram():
     """Empty rather than a guessed diagram, so the panel says which input it is
     waiting for -- the same distinction the whole catalogue rests on."""
-    from explorer.panels import catalogue_for
-    from explorer.payload import _pipeline
 
     class Config:
         blocks: dict = {}
@@ -1997,8 +1913,6 @@ def test_a_config_that_resolves_to_nothing_draws_no_diagram():
 
 
 def test_the_pipeline_renderer_reads_the_payload_key():
-    from explorer.template import render
-
     html = render({"spaces": [], "pipeline": {}}, plotly_js="", title="t")
     assert "SHEET_PANELS.pipeline" in html, "the pipeline kind is not registered"
     assert "active.pipeline" in html, "nothing on the page reads the pipeline key"
@@ -2020,8 +1934,6 @@ def _tiny_matrix(tmp_path, values, protids):
     here produced a fixture with no censoring in it at all, and the cap test
     passed vacuously until it was asserted on.
     """
-    from matrix_io import CENSORED_FILL_TOKEN
-
     header = "protid\t" + "\t".join(protids)
     lines = [header]
     for protid, row in zip(protids, values):
@@ -2034,8 +1946,6 @@ def _tiny_matrix(tmp_path, values, protids):
 
 
 def _matrix_fixture(tmp_path, values, clusters):
-    from explorer.payload import SpacePayload
-
     protids = list(clusters)
     path = _tiny_matrix(tmp_path, values, protids)
 
@@ -2071,10 +1981,7 @@ def test_the_whole_square_ships_because_the_matrix_is_not_symmetric():
     pairs. The asymmetry is measured and travels with the matrix so the panel
     can say so rather than imply symmetry by drawing half.
     """
-    import base64
-
     pytest.importorskip("numpy")
-    from explorer.payload import _tm_matrix
 
     values = [[1.0, 0.9, 0.2], [0.3, 1.0, 0.5], [0.2, 0.5, 1.0]]
     config, spaces = _matrix_fixture(
@@ -2097,7 +2004,6 @@ def test_the_quantisation_error_is_measured_and_shipped_not_assumed():
     saying by how much would let a reader quote a cell.
     """
     pytest.importorskip("numpy")
-    from explorer.payload import _tm_matrix
 
     values = [[1.0, 0.5], [0.5, 1.0]]
     config, spaces = _matrix_fixture(_matrix_fixture_dir(), values, {"a": "LC0", "b": "LC0"})
@@ -2113,7 +2019,6 @@ def test_the_matrix_is_sorted_by_cluster_and_then_by_accession():
     bytes -- the property the provenance footer refuses a timestamp for. A sort
     on cluster alone leaves ties to dict order."""
     pytest.importorskip("numpy")
-    from explorer.payload import _tm_matrix
 
     values = [[1.0, 0.4, 0.4], [0.4, 1.0, 0.4], [0.4, 0.4, 1.0]]
     config, spaces = _matrix_fixture(
@@ -2126,8 +2031,6 @@ def test_the_matrix_is_sorted_by_cluster_and_then_by_accession():
 
 def test_a_run_with_no_matrix_keeps_the_panel_awaiting_its_input():
     pytest.importorskip("numpy")
-    from explorer.panels import catalogue_for
-    from explorer.payload import _tm_matrix
 
     class Block:
         provider = "tmscore"
@@ -2151,7 +2054,6 @@ def test_the_heatmap_labels_the_value_as_3di_derived_not_tm_align():
     panel is the most likely place on the page for someone to read it as
     TM-align output -- it is the only panel that shows the number itself."""
     pytest.importorskip("numpy")
-    from explorer.payload import _tm_matrix
 
     values = [[1.0, 0.5], [0.5, 1.0]]
     config, spaces = _matrix_fixture(_matrix_fixture_dir(), values, {"a": "LC0", "b": "LC0"})
@@ -2163,8 +2065,6 @@ def test_the_heatmap_renderer_decodes_the_matrix_and_refuses_a_wrong_size():
     """A byte count that disagrees with the stated n means the two halves of
     the payload disagree. Drawing something anyway would put a picture on the
     page that is wrong rather than absent."""
-    from explorer.template import render
-
     html = render({"spaces": [], "tm_matrix": {}}, plotly_js="", title="t")
     assert "SHEET_PANELS.heatmap" in html, "the heatmap kind is not registered"
     assert "function decodeMatrix" in html
@@ -2183,9 +2083,7 @@ def test_a_panel_that_measures_layout_draws_after_it_is_attached():
     panel's correctness depend on when someone happens to look at the DOM. A
     queue flushed straight after the append is deterministic instead.
     """
-    from explorer.template import render
-
-    html = render({"spaces": []}, plotly_js="", title="t")
+    html = EMPTY_PAGE
     assert "const PENDING_DRAWS" in html
     assert "flushPendingDraws()" in html
     heatmap = html[html.index("SHEET_PANELS.heatmap") :][:3500]
@@ -2205,9 +2103,7 @@ def test_no_heatmap_shape_reaches_outside_the_data_range():
     picture was empty. Nothing but a screenshot could see it, so this test
     pins the one property that was wrong.
     """
-    from explorer.template import render
-
-    html = render({"spaces": []}, plotly_js="", title="t")
+    html = EMPTY_PAGE
     shapes = html[html.index("function clusterBandShapes") :]
     shapes = shapes[: shapes.index("\n}")]
     assert "1e6" not in shapes, "a shape coordinate escapes the data range again"
@@ -2229,7 +2125,6 @@ def test_an_uncensored_matrix_reports_its_zero_rather_than_nothing():
     would misread the coverage of every other panel, so "nothing was censored"
     has to be a statement and not an absence."""
     pytest.importorskip("numpy")
-    from explorer.payload import _censoring
 
     values = [[1.0, 0.4], [0.4, 1.0]]
     config, spaces = _matrix_fixture(_matrix_fixture_dir(), values, {"a": "LC0", "b": "LC0"})
@@ -2250,7 +2145,6 @@ def test_a_per_query_cap_is_reported_as_one_and_even_sparsity_is_not():
     rather than inviting the reader to divide.
     """
     pytest.importorskip("numpy")
-    from explorer.payload import _censoring
 
     # Each row measures itself and one partner; the columns stay uneven.
     capped = [
@@ -2271,7 +2165,6 @@ def test_the_per_protein_rates_are_restricted_to_the_plotted_proteins():
     """Same rule as the records panel: a row for a protein no panel plots is a
     row the reader cannot find."""
     pytest.importorskip("numpy")
-    from explorer.payload import _censoring
 
     values = [[1.0, 0.0, 0.4], [0.0, 1.0, 0.0], [0.4, 0.0, 1.0]]
     config, spaces = _matrix_fixture(
@@ -2287,8 +2180,6 @@ def test_the_per_protein_rates_are_restricted_to_the_plotted_proteins():
 def test_the_censoring_panel_prints_both_sides_and_never_only_the_rate():
     """A rate alone cannot distinguish a cap from sparsity, which is the one
     thing this panel exists to say."""
-    from explorer.template import render
-
     html = render({"spaces": [], "censoring": {}}, plotly_js="", title="t")
     assert "SHEET_PANELS.censoring" in html, "the censoring kind is not registered"
     assert "active.censoring" in html, "nothing on the page reads the censoring key"
@@ -2314,9 +2205,7 @@ def test_the_flagged_points_are_marked_by_something_no_overlay_can_produce():
     keeps the overlay colour as its fill -- it is still a real protein with a
     real measurement, and only its position is untrustworthy.
     """
-    from explorer.template import render
-
-    html = render({"spaces": []}, plotly_js="", title="t")
+    html = EMPTY_PAGE
     trace = html[html.index("function traceFor") :]
     trace = trace[: trace.index("\n}")]
     assert "circle-open" not in trace, "the flag is still a missing fill"
@@ -2328,9 +2217,7 @@ def test_the_legend_counts_the_flagged_proteins_rather_than_asserting_them():
     """ "Some points are hollow" leaves a reader scanning 367 markers for
     something they cannot count. The number, and which panel carries it, is
     checkable."""
-    from explorer.template import render
-
-    html = render({"spaces": []}, plotly_js="", title="t")
+    html = EMPTY_PAGE
     assert "function renderLegend" in html
     assert "renderLegend()" in html, "the legend is never rendered"
     legend = html[html.index("function renderLegend") :][:1800]
@@ -2348,9 +2235,7 @@ def test_the_page_says_high_disagreement_is_not_untrustworthy():
     judgement from a different source, and a reader who merges them will
     discard their best candidates.
     """
-    from explorer.template import render
-
-    html = render({"spaces": []}, plotly_js="", title="t")
+    html = EMPTY_PAGE
     assert "High disagreement is not the same as untrustworthy" in html
     assert "discovery surface" in html
     key = html[html.index("function renderColourKey") :][:2600]
@@ -2373,8 +2258,6 @@ def test_the_superimposable_threshold_sits_far_above_the_reducer_s_own_noise():
     modalities give 0.862. A threshold of 0.5 is therefore nowhere near reducer
     noise and already past "as different as two different modalities".
     """
-    from explorer.payload import SUPERIMPOSABLE_THRESHOLD
-
     assert 0.031 < SUPERIMPOSABLE_THRESHOLD < 0.862
 
 
@@ -2382,8 +2265,6 @@ def test_an_unsuperimposable_pair_refuses_the_displacement():
     """A line between two positions is read as distance travelled, and that
     reading needs a shared frame. Above the threshold the page must say so and
     fall back to something frame-independent."""
-    from explorer.template import render
-
     html = render({"spaces": [], "censoring": {}}, plotly_js="", title="t")
     assert "function renderCensoringComparison" in html
     body = html[html.index("function renderCensoringComparison") :][:4200]
@@ -2397,14 +2278,11 @@ def test_the_comparison_needs_two_named_spaces_and_will_not_guess():
     and a convention over space ids would attach the label to whatever happened
     to match. So it is declared, validated against the defined spaces, and
     absent when not declared."""
-    import pytest as _pytest
-    from config_schema import ConfigError, DiagnosticsConfig
-
     assert DiagnosticsConfig().censoring_comparison == ()
-    with _pytest.raises(ConfigError) as one:
+    with pytest.raises(ConfigError) as one:
         DiagnosticsConfig(censoring_comparison=("only_one",))
     assert "exactly two space ids" in str(one.value)
-    with _pytest.raises(ConfigError) as same:
+    with pytest.raises(ConfigError) as same:
         DiagnosticsConfig(censoring_comparison=("structure", "structure"))
     assert "measures the reducer, not the censoring" in str(same.value)
 
@@ -2412,15 +2290,12 @@ def test_the_comparison_needs_two_named_spaces_and_will_not_guess():
 def test_a_censoring_comparison_naming_an_undefined_space_is_rejected():
     """The same rule `coregistration.compare` already follows. A typo here
     would silently produce a panel with no comparison rather than an error."""
-    import pytest as _pytest
-    from config_schema import ConfigError, from_legacy
-
     config = {
         "blocks": {"b": {"provider": "biophys"}},
         "spaces": {"s": {"blocks": ["b"]}},
         "diagnostics": {"censoring_comparison": ["s", "nope"]},
     }
-    with _pytest.raises(ConfigError) as error:
+    with pytest.raises(ConfigError) as error:
         from_legacy(config)
     assert "censoring_comparison[1]" in str(error.value)
     assert "not a defined space" in str(error.value)
@@ -2435,7 +2310,6 @@ def test_the_matrix_panels_read_the_named_space_s_own_block_not_the_first_one():
     rather than of what the panel describes. It would let the matrix panel draw
     one matrix under another's caption.
     """
-    from explorer.payload import _matrix_path_for
 
     class Block:
         def __init__(self, path):
@@ -2473,9 +2347,6 @@ def test_the_stability_series_is_written_beside_the_summary(tmp_path):
     stable". The source calls the per-protein overlay not optional (3.01).
     """
     pytest.importorskip("numpy")
-    import numpy as np
-    from diagnostics.stability import neighborhood_stability
-    from spaces import layout
 
     rng = np.random.default_rng(0)
     protids = [f"p{i}" for i in range(24)]
@@ -2496,10 +2367,6 @@ def test_diagnose_space_writes_the_series_next_to_its_summary():
     the reducer stack. The write has to sit inside the `bootstrap_replicates`
     branch: with replicates at 0 nothing was measured and a file of NaNs would
     claim otherwise."""
-    import inspect
-
-    import diagnose_space
-
     source = inspect.getsource(diagnose_space)
     assert "layout.stability_filename()" in source
     branch = source[source.index("if config.diagnostics.bootstrap_replicates:") :][:1200]
@@ -2511,7 +2378,6 @@ def test_the_stability_series_is_per_space_and_travels_per_space(tmp_path):
     would colour every panel by one space's answer. It is carried on the space,
     like the readable mask, rather than in the page-wide overlay dict."""
     pytest.importorskip("pandas")
-    from explorer.payload import SpacePayload, _stability_series
 
     (tmp_path / "stability.tsv").write_text(
         "protid\tstability\treplicates_seen\np1\t0.9\t20\np2\t0.1\t20\nother\t0.5\t20\n"
@@ -2533,10 +2399,6 @@ def test_the_stability_series_is_per_space_and_travels_per_space(tmp_path):
 def test_the_coin_flip_line_is_read_from_the_module_that_enforces_it():
     """A threshold retyped into the template can drift from the one the
     diagnostics apply, and then the picture and the verdict disagree."""
-    from diagnostics.stability import COIN_FLIP_THRESHOLD
-    from explorer.payload import _thresholds
-    from explorer.template import render
-
     assert _thresholds()["coin_flip"] == COIN_FLIP_THRESHOLD
     html = render({"spaces": [], "thresholds": _thresholds()}, plotly_js="", title="t")
     assert "const COIN_FLIP = THRESHOLDS.coin_flip" in html
@@ -2549,9 +2411,7 @@ def test_the_stability_panel_says_it_judges_the_space_not_the_layout():
     in the wrong place, and that second question is faithfulness -- which the
     panel banners answer. Merging them is the misreading this panel is most
     likely to cause."""
-    from explorer.template import render
-
-    html = render({"spaces": []}, plotly_js="", title="t")
+    html = EMPTY_PAGE
     assert "SHEET_PANELS.stability" in html, "the stability kind is not registered"
     body = html[html.index("SHEET_PANELS.stability") :][:3000]
     assert "space.stability" in body
@@ -2566,8 +2426,6 @@ def test_the_stability_panel_says_it_judges_the_space_not_the_layout():
 
 def _biophys_block(tmp_path, names, values):
     """A feature block on disk: features.npy, protids.txt and a manifest."""
-    import numpy as np
-
     directory = tmp_path / "blocks" / "biophys"
     directory.mkdir(parents=True)
     array = np.asarray(values, dtype=float)
@@ -2583,7 +2441,6 @@ def test_a_named_feature_block_becomes_one_overlay_per_column(tmp_path):
     from. Every other overlay comes from the features table and is, by
     construction, something the geometry never saw."""
     pytest.importorskip("numpy")
-    from explorer.payload import _block_column_overlays
 
     class Config:
         blocks = {"biophys": object()}
@@ -2600,8 +2457,6 @@ def test_a_block_with_thousands_of_columns_is_not_offered_as_overlays(tmp_path):
     dropdown would be absurd rather than merely long, so a block only exposes
     its columns when it has few enough of them to name."""
     pytest.importorskip("numpy")
-    import numpy as np
-    from explorer.payload import MAX_NAMED_BLOCK_COLUMNS, _block_column_overlays
 
     class Config:
         blocks = {"biophys": object()}
@@ -2617,7 +2472,6 @@ def test_a_manifest_disagreeing_with_its_array_yields_nothing(tmp_path):
     different version of the provider, and guessing which column is which would
     mislabel every point on the map."""
     pytest.importorskip("numpy")
-    from explorer.payload import _block_column_overlays
 
     class Config:
         blocks = {"biophys": object()}
@@ -2656,8 +2510,6 @@ def test_the_censoring_rate_becomes_an_overlay_aligned_by_label(tmp_path):
     """
     pytest.importorskip("numpy")
     pytest.importorskip("pandas")
-    from explorer.payload import _censoring_rate_overlay
-    from matrix_io import load_labeled_matrix
 
     protids = ["pA", "pB", "pC"]
     rows = [[1.0, 1.0, 1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 1.0]]
@@ -2684,7 +2536,6 @@ def test_a_protid_absent_from_the_matrix_gets_no_censoring_value(tmp_path):
     """A hole, not a zero. Zero means "measured against everything"."""
     pytest.importorskip("numpy")
     pytest.importorskip("pandas")
-    from explorer.payload import _censoring_rate_overlay
 
     protids = ["pA", "pB", "pC"]
     rows = [[1.0, 1.0, 1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 1.0]]
@@ -2703,7 +2554,6 @@ def test_an_exhaustive_cohort_is_offered_no_censoring_overlay(tmp_path):
     """
     pytest.importorskip("numpy")
     pytest.importorskip("pandas")
-    from explorer.payload import _censoring_rate_overlay
 
     protids = ["pA", "pB", "pC"]
     exhaustive = [[1.0, 0.5, 0.5], [0.5, 1.0, 0.5], [0.5, 0.5, 1.0]]
@@ -2724,11 +2574,6 @@ def test_the_censoring_rate_can_never_become_part_of_a_geometry(tmp_path):
     """
     pytest.importorskip("numpy")
     pytest.importorskip("pandas")
-    import inspect
-
-    from config_schema import NOT_FUSABLE_PROVIDERS
-    from explorer import payload
-    from explorer.payload import _censoring_rate_overlay
 
     protids = ["pA", "pB", "pC"]
     rows = [[1.0, 1.0, 1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 1.0]]
@@ -2749,10 +2594,6 @@ def test_the_censoring_rate_can_never_become_part_of_a_geometry(tmp_path):
 def test_a_descriptor_never_displaces_a_feature_table_column_of_the_same_name():
     """The block columns are added with `setdefault` after the table's, and they
     carry a `block:` prefix so the source travels with the number."""
-    import inspect
-
-    from explorer import payload
-
     source = inspect.getsource(payload.build_payload)
     assert "overlays.setdefault(name, overlay)" in source
     assert 'f"{block_id}:{name}"' in inspect.getsource(payload._block_column_overlays)
@@ -2763,7 +2604,6 @@ def test_each_column_s_share_of_the_distance_is_reported(tmp_path):
     differences, so a column's share of the variance IS its share of the
     squared distance. This is the quantity, not a proxy for it."""
     pytest.importorskip("numpy")
-    from explorer.payload import _column_shares
 
     class Block:
         normalization = "zscore_within"
@@ -2789,7 +2629,6 @@ def test_a_fused_space_reports_block_contributions_and_not_column_shares(tmp_pat
     contribution, which the run already computes. Reporting columns as well
     would be two different answers to one question."""
     pytest.importorskip("numpy")
-    from explorer.payload import _column_shares
 
     class Space:
         blocks = ("biophys", "tmscore")
@@ -2807,9 +2646,7 @@ def test_the_map_says_when_one_column_carries_almost_all_of_it():
     distance raw: on both shipped cohorts isoelectric point is over 97% of it.
     A reader who does not open the fold-out would otherwise read that map as a
     map of physicochemistry."""
-    from explorer.template import render
-
-    html = render({"spaces": []}, plotly_js="", title="t")
+    html = EMPTY_PAGE
     assert "space.column_shares" in html, "the shares never reach the panel"
     assert "This map is mostly" in html
     assert "a fact about the units, not about the" in html
@@ -2825,8 +2662,6 @@ def test_a_report_with_no_faithfulness_section_is_not_read_as_a_clean_one():
     section, and 306 flagged proteins silently became none while every banner
     still read "diagnostics found no reason to distrust this map".
     """
-    from explorer.payload import space_verdict
-
     partial = {
         "stability": [{"informative": True, "stability_mean": 0.9}],
         "partition": {"n_clusters": 4},
@@ -2849,10 +2684,6 @@ def test_a_report_with_no_faithfulness_section_is_not_read_as_a_clean_one():
 def test_diagnose_space_says_so_when_it_measures_no_layout():
     """Every other skipped section calls `_skip`. This one vanished in silence,
     and it is the worst one to lose quietly."""
-    import inspect
-
-    import diagnose_space
-
     source = inspect.getsource(diagnose_space)
     branch = source[source.index("# 4. did the map survive two dimensions") :][:1400]
     assert "else:" in branch, "the no-embedding case is still silent"
@@ -2869,8 +2700,6 @@ def test_the_structural_space_is_resolved_from_blocks_not_from_its_name(tmp_path
     cohort using any other id got an empty matrix panel and a censoring panel
     claiming its input did not exist, while the matrix sat on disk.
     """
-    from explorer.payload import _structural_space
-
     matrix = tmp_path / "m.tsv"
     matrix.write_text("protid\ta\tb\na\t1.0\t0.5\nb\t0.5\t1.0\n")
 
@@ -2900,8 +2729,6 @@ def test_two_tmscore_blocks_resolve_to_the_first_space_in_config_order(tmp_path)
     that did not fix an order would choose by dict insertion order, which is a
     property of how the config was typed.
     """
-    from explorer.payload import _structural_space
-
     full = tmp_path / "full.tsv"
     capped = tmp_path / "capped.tsv"
     for f in (full, capped):
@@ -2935,7 +2762,6 @@ def test_no_tmscore_block_means_no_structural_space_and_no_keys():
     and both payload keys stay out of `available`, so each panel prints its own
     `requires` rather than drawing someone else's data.
     """
-    from explorer.payload import _censoring, _structural_space, _tm_matrix
 
     class Block:
         provider = "biophys"
@@ -2963,8 +2789,6 @@ def test_the_axes_sentence_reports_the_components_the_run_actually_used(tmp_path
     on BOTH shipped cohorts -- sixteen times on the built page -- while
     `n_components_used` in the manifest carried the true number all along.
     """
-    from explorer.descriptions import describe_axes
-
     text = describe_axes(
         "pca_umap",
         {
@@ -2983,8 +2807,6 @@ def test_the_axes_sentence_reports_the_components_the_run_actually_used(tmp_path
 
 def test_the_axes_sentence_stays_quiet_when_requested_equals_used():
     """No divergence, no explanation -- the caveat would be noise on 9 of 11."""
-    from explorer.descriptions import describe_axes
-
     text = describe_axes(
         "pca_umap",
         {
@@ -3003,9 +2825,6 @@ def test_a_run_that_recorded_no_steps_says_nothing_about_its_axes(tmp_path):
     A page built from a tree older than the `steps` key must not fall back to
     the typed sentence, which is the defect being removed.
     """
-    from explorer.descriptions import describe_axes
-    from explorer.payload import _reducer_axes
-
     assert _reducer_axes(str(tmp_path), "pca_umap") == {}
     assert describe_axes("pca_umap", {}) == ""
     assert describe_axes("pca_umap", None) == ""
@@ -3019,10 +2838,6 @@ def test_no_component_count_is_typed_into_the_axes_prose():
     cannot track a run. Anyone reintroducing "a 30-component PCA" as a literal
     fails here rather than on a page nobody greps.
     """
-    import re
-
-    from explorer.descriptions import AXES
-
     joined = " ".join(AXES["paragraphs"])
     assert not re.search(r"\b\d+-component\b", joined), (
         "a component count is typed into the invariant axes prose; it must be "
@@ -3038,8 +2853,6 @@ def test_the_inspector_offers_entry_pages_and_never_a_guessed_model_url():
     each database routes itself. Both anchors also carry rel="noopener", because
     target="_blank" without it hands the opened tab a window.opener handle.
     """
-    from explorer.template import _TEMPLATE
-
     assert "https://www.uniprot.org/uniprotkb/{acc}/entry" in _TEMPLATE
     assert "https://alphafold.ebi.ac.uk/entry/{acc}" in _TEMPLATE
     assert 'rel="noopener"' in _TEMPLATE
@@ -3061,11 +2874,6 @@ def test_the_pages_accession_guard_is_the_same_regex_python_uses():
     silently, and the drift would show up as proteins quietly losing their links
     rather than as any error. So the literal is pinned to its source of truth.
     """
-    import re
-
-    from domain_utils import UNIPROT_ACCESSION
-    from explorer.template import _TEMPLATE
-
     block = re.search(r"const UNIPROT_ACCESSION = new RegExp\(\s*(.+?)\s*\);", _TEMPLATE, re.S)
     assert block, "the JS accession guard is missing or is no longer built from strings"
 
@@ -3099,8 +2907,6 @@ def test_the_full_selection_is_offered_even_though_the_code_line_truncates():
     and rejects with NotAllowedError without it. A button would therefore work
     sometimes and fail silently otherwise. Selecting text always works.
     """
-    from explorer.template import _TEMPLATE
-
     assert "chosen.slice(0, 12)" in _TEMPLATE, "the truncated code line is gone"
     assert 'textarea class="egress" readonly' in _TEMPLATE
     assert "chosen.join(" in _TEMPLATE, "the textarea does not carry the whole selection"
@@ -3129,8 +2935,6 @@ def test_no_metricity_figure_reaches_the_payload(built):
     because the point is that the number reaches no surface at all -- a key-name
     check would pass while the value rode along inside a nested diagnostics blob.
     """
-    import json
-
     blob = json.dumps(built.to_dict())
 
     # Not vacuous: a payload that serialized to almost nothing would satisfy the
@@ -3157,8 +2961,6 @@ def _producible_keys():
     where it does the one job it is good at: proving the constant and the code
     have not drifted apart.
     """
-    from explorer.payload import PRODUCIBLE_KEYS
-
     return set(PRODUCIBLE_KEYS)
 
 
@@ -3171,9 +2973,6 @@ def _keys_added_in_source():
     indistinguishable from code to a pattern match -- which is the whole reason
     the exported constant beats the scrape. `ast` sees calls and not sentences.
     """
-    import ast
-    import pathlib
-
     source = pathlib.Path(__file__).resolve().parents[1] / "explorer" / "payload.py"
     tree = ast.parse(source.read_text())
     keys = set()
@@ -3199,8 +2998,6 @@ def test_the_exported_vocabulary_matches_the_keys_the_code_actually_adds():
     and not the other, panels change drawability with nothing to say so -- which
     is why the export replaced the scrape rather than deleting it.
     """
-    from explorer.payload import PRODUCIBLE_KEYS
-
     assert set(PRODUCIBLE_KEYS) == _keys_added_in_source()
     assert len(PRODUCIBLE_KEYS) == 8
 
@@ -3213,10 +3010,6 @@ def test_the_vocabulary_is_read_and_never_used_to_build_the_set():
     Initialising it from `PRODUCIBLE_KEYS` would mark every panel drawable
     regardless, and `catalogue_for` would report a full page over an empty run.
     """
-    import inspect
-
-    from explorer import payload
-
     source = inspect.getsource(payload.build_payload)
     assert "available = set()" in source
     assert "available = set(PRODUCIBLE_KEYS)" not in source
@@ -3225,8 +3018,6 @@ def test_the_vocabulary_is_read_and_never_used_to_build_the_set():
 
 def test_an_availability_key_outside_the_vocabulary_is_refused():
     """The guard, run against the condition it exists for."""
-    from explorer.payload import PRODUCIBLE_KEYS
-
     available = {"comparisons", "a_key_nobody_declared"}
     unknown = available - PRODUCIBLE_KEYS
     assert unknown == {"a_key_nobody_declared"}
@@ -3241,8 +3032,6 @@ def test_the_seventh_empty_panel_needs_a_third_dataset_not_the_tree():
     per-family trees, and `identity_vs_tm` wants neither -- one foldseek pass
     per cohort emitting fident, which is compute rather than a decision.
     """
-    from explorer.panels import CATALOGUE
-
     tree_space = next(s for s in CATALOGUE if s.panel_id == "tree_space")
     assert tree_space.needs == ("tree_corpus",)
 
@@ -3261,8 +3050,6 @@ def test_exactly_nine_declared_inputs_are_ones_this_pipeline_cannot_produce():
     not on a page where a reader would have to notice a panel that stopped
     refusing.
     """
-    from explorer.panels import CATALOGUE
-
     declared = {n for s in CATALOGUE for n in s.needs}
     unsatisfiable = declared - _producible_keys()
     assert unsatisfiable == {
@@ -3286,8 +3073,6 @@ def test_one_produced_key_is_declared_by_no_panel_at_all():
     input -- but it is the shape that would hide a panel silently losing its
     declaration, so it is stated rather than left as a coincidence.
     """
-    from explorer.panels import CATALOGUE
-
     declared = {n for s in CATALOGUE for n in s.needs}
     assert _producible_keys() - declared == {"overlays"}
 
@@ -3308,8 +3093,6 @@ def test_no_panel_names_the_fident_aggregator_as_the_route_to_an_identity_table(
     is a wide per-key-protid feature table rather than the pairwise table a
     scatter needs.
     """
-    from explorer.panels import CATALOGUE
-
     for spec in CATALOGUE:
         for field in ("requires", "fills_in"):
             assert "aggregate_foldseek_fraction_seq_identity" not in getattr(spec, field), (
@@ -3337,9 +3120,6 @@ def test_the_stability_foldout_says_the_number_reads_two_ways(built):
     shows" to "and N thing(s) it cannot be read for", which would tell a reader
     the opposite of what the sentence says.
     """
-    from explorer.descriptions import PANEL_DESCRIPTIONS
-    from explorer.template import render
-
     html = render(built.to_dict(), "", "t")
     assert "where the measurements disagree" in html
     assert "indeterminate is a warning" in html
@@ -3371,9 +3151,6 @@ def test_the_inventorys_hand_typed_count_is_pinned_to_the_guard_it_reads():
     to the guard -- while the question above the table goes on saying eight.
     A panel that miscounts its own rows reads as a check and is not one.
     """
-    from config_schema import NOT_FUSABLE_PROVIDERS
-    from explorer.panels import CATALOGUE
-
     entry = next(p for p in CATALOGUE if p.panel_id == "signal_inventory")
     count = len(set(NOT_FUSABLE_PROVIDERS.values()))
     word = INVENTORY_COUNT_WORDS.get(count)
@@ -3396,9 +3173,7 @@ def test_a_panel_drawn_on_another_sheet_says_where_it_went():
     Asserted against CODE, not against the comment that explains it: a bare
     `DRAWN_AT` also matches the prose above the constant.
     """
-    from explorer.template import render
-
-    html = render({"spaces": []}, plotly_js="", title="t")
+    html = EMPTY_PAGE
     assert "const DRAWN_AT = {" in html, "the pointer table is not in the page"
     assert "DRAWN_AT[p.panel_id]" in html, "the sheet body does not select pointers"
     assert "DRAWN_AT[panel.panel_id]" in html, "the pointer text is never read"
@@ -3413,9 +3188,7 @@ def test_the_pointer_is_keyed_on_panel_id_and_never_on_panel_type():
     "where did THIS panel go", and a second panel of type `contributions` would
     inherit a false answer if the pointer were keyed the same way.
     """
-    from explorer.template import render
-
-    html = render({"spaces": []}, plotly_js="", title="t")
+    html = EMPTY_PAGE
     assert "DRAWN_AT[p.panel_type]" not in html
     assert "DRAWN_AT[panel.panel_type]" not in html
     assert (
@@ -3432,9 +3205,7 @@ def test_the_pointer_card_is_not_counted_as_an_empty_panel():
     must not borrow the `.awaiting` hatch, which is the page's visual language
     for an input that is absent.
     """
-    from explorer.template import render
-
-    html = render({"spaces": []}, plotly_js="", title="t")
+    html = EMPTY_PAGE
     counter = html[html.index("const blank = sheetPanels") - 700 :][:900]
     assert "!BUILT_ELSEWHERE.has(p.panel_type)" in counter, (
         "the empty counter stopped excluding panels drawn elsewhere, so the "
@@ -3457,9 +3228,7 @@ def test_the_cutoff_that_decides_a_position_is_unreadable_is_read_and_printed():
     not thereby honored (FOLLOWUPS #29, #32), so the assertion is that the
     template CONSUMES the key, not that it mentions it.
     """
-    from explorer.template import render
-
-    html = render({"spaces": []}, plotly_js="", title="t")
+    html = EMPTY_PAGE
     assert "THRESHOLDS.distorted" in html, "the cutoff never reaches the page"
     assert "distortedCutoffNote()" in html, "nothing calls the note builder"
     assert (
@@ -3473,9 +3242,7 @@ def test_the_cutoff_note_is_dropped_rather_than_printed_half_written():
     The note must then be absent, not "at or below undefined" -- a page saying
     that is worse than one saying nothing, because it looks like a measurement.
     """
-    from explorer.template import render
-
-    html = render({"spaces": []}, plotly_js="", title="t")
+    html = EMPTY_PAGE
     body = html[html.index("function distortedCutoffNote") :][:420]
     assert "THRESHOLDS.distorted === undefined" in body
     assert 'return THRESHOLDS.distorted === undefined\n    ? ""' in body.replace("\r", "")
@@ -3488,9 +3255,7 @@ def test_both_places_that_print_the_unreadable_count_carry_the_cutoff():
     reader who never opens the diagnostics report still sees the cutoff beside
     the count in the panel they are actually using.
     """
-    from explorer.template import render
-
-    html = render({"spaces": []}, plotly_js="", title="t")
+    html = EMPTY_PAGE
     calls = html.count("distortedCutoffNote()") - html.count("function distortedCutoffNote()")
     assert calls == 2, f"expected exactly the two count sites to call the note, found {calls}"
     inspector = html[html.index("positions not readable<span") :][:220]
@@ -3526,9 +3291,7 @@ def test_a_diagnostic_sentence_reaches_the_rendered_page():
     copies, so no payload test noticed they arrived, and no template test
     noticed they were dropped.
     """
-    from explorer.template import render
-
-    html = render({"spaces": []}, plotly_js="", title="t")
+    html = EMPTY_PAGE
     assert "function diagnosticsBlock(space)" in html
     # Read under BOTH names a diagnostic module uses -- see
     # test_the_censoring_sections_prose_is_read_under_its_own_key.
@@ -3546,9 +3309,7 @@ def test_the_disclosure_is_titled_by_what_it_contains_not_called_warnings():
     labelled "warnings" containing that sentence contradicts itself, and it
     would do so on more than a third of the page.
     """
-    from explorer.template import render
-
-    html = render({"spaces": []}, plotly_js="", title="t")
+    html = EMPTY_PAGE
     block = html[html.index("function diagnosticsBlock(space)") :][:3000]
     assert "What the diagnostics wrote about this space" in block
     assert "an all-clear" in block, "the all-clear count is not disclosed"
@@ -3567,9 +3328,7 @@ def test_the_block_reads_the_space_it_is_given_and_never_walks_the_payload():
     space of the ACTIVE cohort, so taking `space.diagnostics` is what keeps the
     count right.
     """
-    from explorer.template import render
-
-    html = render({"spaces": []}, plotly_js="", title="t")
+    html = EMPTY_PAGE
     block = html[html.index("function diagnosticsBlock(space)") :][:3000]
     assert "space.diagnostics" in block
     for walked in ("PAYLOAD.cohorts", "PAYLOAD.spaces", "cohorts.forEach"):
@@ -3583,9 +3342,7 @@ def test_a_section_with_no_prose_renders_no_disclosure():
     carry sections but no `warnings` at all must render nothing, not an empty
     fold-out.
     """
-    from explorer.template import render
-
-    html = render({"spaces": []}, plotly_js="", title="t")
+    html = EMPTY_PAGE
     block = html[html.index("function diagnosticsBlock(space)") :][:3000]
     assert "if (!total) return null;" in block
     assert "if (!lines.length) return;" in block
@@ -3593,9 +3350,7 @@ def test_a_section_with_no_prose_renders_no_disclosure():
 
 def test_the_section_order_is_fixed_and_not_json_insertion_order():
     """`Object.keys` over a payload section would order by however it was written."""
-    from explorer.template import render
-
-    html = render({"spaces": []}, plotly_js="", title="t")
+    html = EMPTY_PAGE
     assert "const DIAGNOSTIC_SECTIONS = [" in html
     listed = html[html.index("const DIAGNOSTIC_SECTIONS = [") :][:520]
     for key in ("faithfulness", "stability", "redundancy", "resolution_sweep"):
@@ -3613,8 +3368,6 @@ def test_the_banner_prints_the_stability_mean_at_the_diagnostics_own_precision()
     Asserted structurally rather than against a literal: the check is that the
     two agree, not that either says any particular thing.
     """
-    from explorer.payload import space_verdict
-
     mean = 0.1194
     verdict = space_verdict(
         {"stability": [{"stability_mean": mean, "informative": True}]}, n_proteins=367
@@ -3634,9 +3387,7 @@ def test_the_cluster_count_is_shown_as_one_point_on_a_sweep():
     that beside it. The sweep has shipped in the payload since it was written
     and `grep resolution_sweep` over template.py returned 0 hits.
     """
-    from explorer.template import render
-
-    html = render({"spaces": []}, plotly_js="", title="t")
+    html = EMPTY_PAGE
     assert "function sweepNote(space)" in html
     assert "sweep.steps" in html, "nothing reads the swept resolutions"
     assert "sweep.adjacent_ari" in html, "nothing reads the agreement between them"
@@ -3651,9 +3402,7 @@ def test_the_resolution_the_page_actually_drew_is_marked_in_the_sweep():
     position in the list, so a sweep that adds or reorders a step cannot
     silently mark the wrong row.
     """
-    from explorer.template import render
-
-    html = render({"spaces": []}, plotly_js="", title="t")
+    html = EMPTY_PAGE
     block = html[html.index("function sweepNote(space)") :][:1400]
     assert "step.resolution === drawn" in block
     assert "partition || {}).resolution" in block
@@ -3667,9 +3416,7 @@ def test_the_sweep_states_numbers_and_leaves_the_verdict_to_the_diagnostics():
     nothing holding them in step -- and the threshold would have to be retyped,
     because the payload does not carry it.
     """
-    from explorer.template import render
-
-    html = render({"spaces": []}, plotly_js="", title="t")
+    html = EMPTY_PAGE
     block = html[html.index("function sweepNote(space)") :][:1400]
     assert "0.8" not in block, "an ARI threshold was retyped into the sweep"
     assert "plateau" not in block, "the sweep restates a judgement it should not"
@@ -3677,9 +3424,7 @@ def test_the_sweep_states_numbers_and_leaves_the_verdict_to_the_diagnostics():
 
 def test_a_space_with_no_sweep_adds_nothing_to_its_cluster_count():
     """actin_B's `structure` space carries no resolution_sweep at all."""
-    from explorer.template import render
-
-    html = render({"spaces": []}, plotly_js="", title="t")
+    html = EMPTY_PAGE
     block = html[html.index("function sweepNote(space)") :][:1400]
     assert 'if (!steps.length) return "";' in block
 
@@ -3699,8 +3444,6 @@ def test_each_spaces_own_censoring_section_reaches_the_browser():
     `SUMMARY_SECTIONS` named four sections and this was not one of them, so the
     coverage table printed "per-space retention at each k: not in this payload".
     """
-    from explorer.payload import SUMMARY_SECTIONS
-
     assert "censoring" in SUMMARY_SECTIONS
 
 
@@ -3715,8 +3458,6 @@ def test_the_cluster_pair_table_is_dropped_and_its_reduction_is_kept():
     censoring diagnostic should arrive and be noticed rather than be dropped
     silently by a list nobody updated.
     """
-    from explorer.payload import CENSORING_DROPPED_KEYS
-
     assert CENSORING_DROPPED_KEYS == ("cross_cluster_table",)
     assert "cross_cluster_edge_retention" not in CENSORING_DROPPED_KEYS
 
@@ -3728,9 +3469,7 @@ def test_the_coverage_row_reports_retention_instead_of_refusing_to():
     branch keeps catching: a refusal that outlives its reason reads as a
     limitation of the method rather than of one commit.
     """
-    from explorer.template import render
-
-    html = render({"spaces": []}, plotly_js="", title="t")
+    html = EMPTY_PAGE
     assert "not plumbed into the payload yet" not in html, "the stale refusal survives"
     assert "PC-003 phase 2" not in html, "the page still cites the ticket as its excuse"
     assert "retentionSummaryCell()" in html
@@ -3743,9 +3482,7 @@ def test_retention_is_never_shown_without_the_cluster_count_it_was_measured_at()
     table, so the count is not decoration here -- it is what stops the column
     from being read as a ranking.
     """
-    from explorer.template import render
-
-    html = render({"spaces": []}, plotly_js="", title="t")
+    html = EMPTY_PAGE
     cell = html[html.index("function retentionCell(space)") :][:2200]
     assert "retention.n_clusters" in cell
     summary = html[html.index("function retentionSummaryCell()") :][:900]
@@ -3759,9 +3496,7 @@ def test_the_ratio_refuses_rather_than_printing_nan():
     "NaN" printed beside two real fractions reads as a measurement that failed
     rather than one that could not be formed.
     """
-    from explorer.template import render
-
-    html = render({"spaces": []}, plotly_js="", title="t")
+    html = EMPTY_PAGE
     cell = html[html.index("function retentionCell(space)") :][:2200]
     assert "Number.isFinite(within)" in cell
     assert "no ratio: nothing was measured within a cluster" in cell
@@ -3775,9 +3510,7 @@ def test_the_per_space_censoring_is_named_apart_from_the_cohorts():
     capped twin is built from another. A call site that took one for the other
     would print a true number about the wrong thing.
     """
-    from explorer.template import render
-
-    html = render({"spaces": []}, plotly_js="", title="t")
+    html = EMPTY_PAGE
     assert "function spaceCensoring(space)" in html
     block = html[html.index("function spaceCensoring(space)") :][:200]
     assert "active.censoring" not in block
@@ -3790,9 +3523,7 @@ def test_the_censoring_sections_prose_is_read_under_its_own_key():
     writes -- including the only ones on either shipped cohort that describe a
     matrix that really was censored.
     """
-    from explorer.template import render
-
-    html = render({"spaces": []}, plotly_js="", title="t")
+    html = EMPTY_PAGE
     assert 'const PROSE_KEYS = ["warnings", "interpretation"];' in html
     block = html[html.index("function diagnosticsBlock(space)") :][:2400]
     assert "PROSE_KEYS.forEach" in block
@@ -3806,9 +3537,7 @@ def test_the_censoring_all_clear_is_recognised_as_one():
     section on both cohorts except the capped twin. Left unrecognised it would
     be filed and coloured as a hazard.
     """
-    from explorer.template import render
-
-    html = render({"spaces": []}, plotly_js="", title="t")
+    html = EMPTY_PAGE
     assert "const ALL_CLEAR_PHRASES = [" in html
     listed = html[html.index("const ALL_CLEAR_PHRASES = [") :][:400]
     assert "No censoring problems detected" in listed
@@ -3847,10 +3576,6 @@ def test_every_reducers_axes_sentence_reaches_the_page_not_only_the_opening_one(
     the dropdown would have nothing to switch to and the caption would be stuck
     describing the layout the page happened to open on.
     """
-    import json
-
-    from explorer.template import render
-
     document = {"spaces": [_two_reducer_space("s", ["pca_umap", "pca_tsne"])]}
     html = render(document, plotly_js="", title="t")
     start = html.index("const PAYLOAD = ") + len("const PAYLOAD = ")
@@ -3869,9 +3594,7 @@ def test_the_caption_reports_the_layout_drawn_and_not_the_one_selected():
     describe a reduction that is not on screen — and unlike the typed caption
     this replaced, it would look verified.
     """
-    from explorer.template import render
-
-    html = render({"spaces": []}, plotly_js="", title="t")
+    html = EMPTY_PAGE
     assert "function drawnReducer(space)" in html
     block = html[html.index("function drawnReducer(space)") :][:420]
     assert "embeddings[state.reducer] ? state.reducer" in block
@@ -3882,9 +3605,7 @@ def test_the_caption_reports_the_layout_drawn_and_not_the_one_selected():
 
 def test_the_caption_is_rewritten_on_every_draw_not_only_at_build():
     """The grid is built once and re-rendered on every interaction."""
-    from explorer.template import render
-
-    html = render({"spaces": []}, plotly_js="", title="t")
+    html = EMPTY_PAGE
     body = html[html.index("function draw()") : html.index("// --- sheets")]
     assert "refreshAxes(space)" in body, "draw() does not refresh the caption"
     assert 'grid.dataset.built = "1"' in body
@@ -3895,9 +3616,7 @@ def test_the_caption_is_rewritten_on_every_draw_not_only_at_build():
 
 def test_the_panel_is_found_by_name_and_never_by_position():
     """Matching on index breaks the moment a space is filtered or reordered."""
-    from explorer.template import render
-
-    html = render({"spaces": []}, plotly_js="", title="t")
+    html = EMPTY_PAGE
     assert "panel.dataset.space = space.space_id;" in html
     refresh = html[html.index("function refreshAxes(space)") :][:900]
     assert "p.dataset.space === space.space_id" in refresh
@@ -3905,9 +3624,7 @@ def test_the_panel_is_found_by_name_and_never_by_position():
 
 def test_a_layout_with_no_recorded_axes_sentence_refuses_rather_than_going_stale():
     """Leaving the previous layout's text is a caption about the wrong picture."""
-    from explorer.template import render
-
-    html = render({"spaces": []}, plotly_js="", title="t")
+    html = EMPTY_PAGE
     refresh = html[html.index("function refreshAxes(space)") :][:900]
     assert "no axes sentence was recorded for this space" in refresh
     assert "reportMissing(" in refresh
@@ -3924,9 +3641,7 @@ def test_the_stability_note_states_where_the_reference_neighbourhood_comes_from(
     believed the note would expect a no-noise replicate to score BELOW 1.0 and
     would read every number on the sheet against the wrong baseline.
     """
-    from explorer.template import render
-
-    html = render({"spaces": []}, plotly_js="", title="t")
+    html = EMPTY_PAGE
     assert "in the full one" not in html, "the note still describes a full-cohort reference"
     note = html[html.index("SHEET_PANELS.stability") :][:2400]
     assert "in that same subsample" in note
@@ -3943,9 +3658,7 @@ def test_the_stability_note_names_faithfulness_rather_than_pointing_off_screen()
     measurements that actually judge the drawing are trustworthiness and
     continuity, and the note now names them and where to find them.
     """
-    from explorer.template import render
-
-    html = render({"spaces": []}, plotly_js="", title="t")
+    html = EMPTY_PAGE
     note = html[html.index("SHEET_PANELS.stability") :][:2400]
     assert "panel banners above" not in note
     assert "trustworthiness and continuity" in note
@@ -3958,9 +3671,7 @@ def test_the_grid_really_is_hidden_on_every_sheet_but_maps():
     If the grid were ever shown on another sheet, "the panel banners above"
     would stop being wrong and this correction would need revisiting.
     """
-    from explorer.template import render
-
-    html = render({"spaces": []}, plotly_js="", title="t")
+    html = EMPTY_PAGE
     assert 'const isMaps = sheetId === "maps";' in html
     assert 'el("grid").style.display = isMaps ? "" : "none";' in html
 
@@ -3994,8 +3705,6 @@ def test_the_verdict_finally_reads_the_n_proteins_it_has_always_been_given():
     through and never honored. Asserted on the REASON text and not the level,
     because the level is deliberately unchanged by this phase.
     """
-    from explorer.payload import space_verdict
-
     small = space_verdict(_stability(subsample_size=None), n_proteins=100)
     large = space_verdict(_stability(subsample_size=None), n_proteins=2465)
     small_reason = next(r for r in small["reasons"] if "coin-flip" in r)
@@ -4012,9 +3721,6 @@ def test_the_chance_in_the_banner_is_the_librarys_chance():
     re-exports it, so there is exactly one definition. This asserts the banner
     prints that one.
     """
-    from diagnostics.stability import chance_jaccard
-    from explorer.payload import space_verdict
-
     verdict = space_verdict(_stability(), n_proteins=367)
     reason = next(r for r in verdict["reasons"] if "coin-flip" in r)
     expected = chance_jaccard(275, 15)
@@ -4024,9 +3730,6 @@ def test_the_chance_in_the_banner_is_the_librarys_chance():
 
 def test_the_fixtures_chance_is_the_librarys_and_not_a_second_copy():
     """Two definitions of chance would eventually disagree."""
-    from diagnostics.stability import chance_jaccard as library
-    from stability_cohort import chance_jaccard as fixture
-
     assert fixture is library
 
 
@@ -4037,8 +3740,6 @@ def test_the_pool_is_the_subsamples_and_not_the_cohorts():
     `subsample_fraction` is 0.75 by default -- and understating chance makes
     every stability number look better than it is.
     """
-    from explorer.payload import space_verdict
-
     verdict = space_verdict(_stability(subsample_size=276), n_proteins=367)
     reason = next(r for r in verdict["reasons"] if "coin-flip" in r)
     assert "k=15 of 275 candidates" in reason, reason
@@ -4047,8 +3748,6 @@ def test_the_pool_is_the_subsamples_and_not_the_cohorts():
 
 def test_a_verdict_with_no_usable_chance_loses_the_clause_rather_than_printing_nan():
     """A verdict carrying "so this is NaNx chance" is worse than one carrying none."""
-    from explorer.payload import space_verdict
-
     verdict = space_verdict(
         _stability(k=None, subsample_size=None, subsample_fraction=None), n_proteins=0
     )
@@ -4071,10 +3770,6 @@ def test_the_accounting_is_complete_and_says_what_it_cannot_attribute():
     per-key sizes would leave a silent remainder; `unattributed` states it, so a
     reader can check the accounting without it having to balance to zero.
     """
-    import json
-
-    from explorer.payload import payload_bytes
-
     document = {"a": [1, 2, 3], "b": {"c": "d"}, "e": "f"}
     accounting = payload_bytes(document)
     assert accounting["total"] == len(json.dumps(document, separators=(",", ":")))
@@ -4090,11 +3785,6 @@ def test_the_quadratic_term_is_pinned_by_arithmetic_and_not_by_a_snapshot():
     forever after someone changed the encoding; asserting the arithmetic fails
     the moment the relationship changes.
     """
-    import base64
-    import math
-
-    from explorer.payload import payload_bytes
-
     n = 40
     cells = bytes(range(256))[: n * n % 256] * (n * n // 256) + bytes(n * n % 256)
     encoded = base64.b64encode(bytes(n * n)).decode()
@@ -4110,8 +3800,6 @@ def test_the_budget_is_named_and_is_not_a_gate():
     """A build that FAILED on size would refuse the artifact at the moment
     someone most needs to see how big it got. The numbers are printed and the
     judgement is left to a person, so nothing here raises."""
-    from explorer import payload as payload_module
-
     assert payload_module.HARD_BUDGET_BYTES == 20 * 1024**2
     assert payload_module.PREFERRED_BUDGET_BYTES == 10 * 1024**2
     source = open(payload_module.__file__).read()
@@ -4122,10 +3810,6 @@ def test_the_size_report_goes_to_stderr_and_never_into_the_page():
     """The page carries no generation timestamp on purpose, so that two runs of
     the same inputs produce the same bytes. A size line inside it would be a
     second thing that varies with the machine."""
-    import inspect
-
-    import build_explorer
-
     source = inspect.getsource(build_explorer._report_size)
     assert source.count("file=sys.stderr") >= 4
     assert "handle.write" not in source
@@ -4143,8 +3827,6 @@ def test_a_multi_cohort_page_ships_the_first_cohort_once():
     array whenever it exists, and the only top-level key the page reads is
     `thresholds`.
     """
-    from explorer.payload import payload_bytes
-
     document = {
         "analysis_name": "a",
         "thresholds": {"coin_flip": 0.3},
@@ -4168,11 +3850,7 @@ def test_the_reducer_keeps_exactly_the_keys_the_page_reads_off_the_top_level():
     page silently losing it -- which would show up as a blank map long after the
     commit that caused it.
     """
-    import re
-
-    from explorer.template import render
-
-    html = render({"spaces": []}, plotly_js="", title="t")
+    html = EMPTY_PAGE
     read = set(re.findall(r"PAYLOAD\.([a-z_]+)", html))
     # `cohorts` and `cohort_name` belong to the fallback that builds the
     # one-cohort list; `analysis_name` is the page identity.
@@ -4187,15 +3865,10 @@ def test_the_single_cohort_page_still_carries_its_keys_at_the_top_level():
     `Object.assign({}, PAYLOAD, ...)` is what makes it a cohort at all. Reducing
     that document would produce a page with no spaces and no error.
     """
-    import inspect
-
-    import build_explorer
-    from explorer.template import render
-
     source = inspect.getsource(build_explorer.main)
     reducer = source[source.index("if len(cohorts) > 1:") :]
     assert "document = {" in reducer, "the reduction is not inside the multi-cohort branch"
-    html = render({"spaces": []}, plotly_js="", title="t")
+    html = EMPTY_PAGE
     assert "PAYLOAD.cohorts || [Object.assign({}, PAYLOAD, {" in html
 
 
@@ -4207,12 +3880,6 @@ def test_the_single_cohort_page_still_carries_its_keys_at_the_top_level():
 
 def test_the_heatmap_bound_is_derived_from_the_page_budget_not_typed():
     """A magic number here would be a second budget nobody could trace."""
-    from explorer.payload import (
-        PREFERRED_BUDGET_BYTES,
-        TM_MATRIX_MAX_BYTES,
-        TM_MATRIX_MAX_PROTEINS,
-    )
-
     assert TM_MATRIX_MAX_BYTES == PREFERRED_BUDGET_BYTES // 4
     # n**2 bytes -> 4*ceil(n**2/3) base64 chars, so the bound is sqrt(3/4 * B).
     n = TM_MATRIX_MAX_PROTEINS
@@ -4223,8 +3890,6 @@ def test_the_heatmap_bound_is_derived_from_the_page_budget_not_typed():
 def test_the_two_shipped_cohorts_are_comfortably_inside_the_bound():
     """367 and 308 must keep their heatmaps; this is a regression guard on the
     constant, not a claim about those cohorts."""
-    from explorer.payload import TM_MATRIX_MAX_PROTEINS
-
     assert TM_MATRIX_MAX_PROTEINS > 400
     # ...and a full production cohort must be outside it, or the bound does
     # nothing for the case it was added for.
@@ -4238,10 +3903,6 @@ def test_a_cohort_over_the_bound_refuses_the_heatmap_and_says_why():
     say the maps are unaffected, because a reader who sees one panel withheld
     has no way to know the others are complete.
     """
-    import inspect
-
-    from explorer import payload as payload_module
-
     source = inspect.getsource(payload_module._tm_matrix)
     assert "TM_MATRIX_MAX_PROTEINS" in source
     assert '"refused"' in source
@@ -4251,10 +3912,6 @@ def test_a_cohort_over_the_bound_refuses_the_heatmap_and_says_why():
 def test_the_bound_refuses_and_never_subsamples():
     """A subsampled heatmap is a picture of a cohort nobody chose, and a reader
     cannot tell it from the real one."""
-    import inspect
-
-    from explorer import payload as payload_module
-
     source = inspect.getsource(payload_module._tm_matrix)
     guard = source[source.index("if len(order) > TM_MATRIX_MAX_PROTEINS") :][:900]
     for forbidden in ("random", "sample", "choice", "::", "[:TM_MATRIX"):
@@ -4268,9 +3925,7 @@ def test_a_withheld_heatmap_is_a_third_state_and_not_awaiting_a_matrix():
     ship it. The rule is that these empty states stay distinct,
     because collapsing them hides which panels are one step from working.
     """
-    from explorer.template import render
-
-    html = render({"spaces": []}, plotly_js="", title="t")
+    html = EMPTY_PAGE
     body = html[html.index("SHEET_PANELS.heatmap") :][:2200]
     assert "matrix.refused" in body, "the renderer has no withheld branch"
     assert "the heatmap is withheld for this cohort" in body
@@ -4294,9 +3949,6 @@ def test_the_overlay_builder_reports_what_it_could_not_use(tmp_path):
     A missing table and an unusable column both shorten the dropdown, and a
     reader cannot tell them apart -- or even notice -- from the dropdown alone.
     """
-    import pandas as pd
-    from explorer.payload import _overlays_from_features
-
     seed = {"path": str(tmp_path / "nope.tsv"), "found": False, "source": "none"}
     overlays, report = _overlays_from_features(None, ["a", "b"], seed)
     assert overlays == {}
@@ -4323,10 +3975,6 @@ def test_the_overlay_builder_reports_what_it_could_not_use(tmp_path):
 
 def test_the_levels_ceiling_is_named_once_and_quoted_from_there():
     """A second copy of 24 would eventually disagree with the filter."""
-    import inspect
-
-    from explorer import payload as payload_module
-
     assert payload_module.MAX_OVERLAY_LEVELS == 24
     source = inspect.getsource(payload_module._overlays_from_features)
     assert source.count("24") == 0, "the ceiling is typed as a literal somewhere"
@@ -4334,9 +3982,7 @@ def test_the_levels_ceiling_is_named_once_and_quoted_from_there():
 
 def test_the_page_says_why_the_colour_by_list_is_short():
     """The dropdown cannot explain its own length."""
-    from explorer.template import render
-
-    html = render({"spaces": []}, plotly_js="", title="t")
+    html = EMPTY_PAGE
     assert "function overlaySourceCell()" in html
     assert '["colour-by vocabulary", overlaySourceCell(), overlaySourceFile()]' in html
     body = html[html.index("function overlaySourceCell()") :][:1600]
@@ -4350,9 +3996,7 @@ def test_the_page_says_why_the_colour_by_list_is_short():
 
 def test_the_overlay_source_is_read_from_the_active_cohort():
     """On a multi-cohort page some cohorts have the table and some do not."""
-    from explorer.template import render
-
-    html = render({"spaces": []}, plotly_js="", title="t")
+    html = EMPTY_PAGE
     body = html[html.index("function overlaySourceCell()") :][:900]
     assert "active.overlay_source" in body
     assert "PAYLOAD.overlay_source" not in html
@@ -4368,8 +4012,6 @@ def test_the_overlay_source_is_read_from_the_active_cohort():
 
 def test_the_colour_frame_prefers_the_aggregated_table(tmp_path):
     """When aggregate_features did run, nothing changes."""
-    from explorer.payload import _colour_frame
-
     final = tmp_path / "final_results"
     final.mkdir()
     (final / "run_aggregated_features.tsv").write_text(
@@ -4389,8 +4031,6 @@ def test_a_run_with_no_aggregated_table_is_assembled_from_what_it_does_have(tmp_
     four colours instead of thirteen and could not be coloured by cluster at
     all, which is the first thing anyone asks a map to do.
     """
-    from explorer.payload import _colour_frame
-
     (tmp_path / "protein_features").mkdir()
     (tmp_path / "protein_features" / "uniprot_features.tsv").write_text(
         "protid\tOrganism\nA\tmouse\nB\trat\n", encoding="utf-8"
@@ -4411,8 +4051,6 @@ def test_a_run_with_no_aggregated_table_is_assembled_from_what_it_does_have(tmp_
 
 def test_the_assembly_survives_a_run_with_no_leiden_table(tmp_path):
     """The join is optional; the base table alone still colours."""
-    from explorer.payload import _colour_frame
-
     (tmp_path / "protein_features").mkdir()
     (tmp_path / "protein_features" / "uniprot_features.tsv").write_text(
         "protid\tOrganism\nA\tmouse\n", encoding="utf-8"
@@ -4425,8 +4063,6 @@ def test_the_assembly_survives_a_run_with_no_leiden_table(tmp_path):
 
 def test_a_run_with_nothing_to_colour_by_says_so_rather_than_raising(tmp_path):
     """An empty output tree is a refusal, not a traceback."""
-    from explorer.payload import _colour_frame
-
     frame, seed = _colour_frame(str(tmp_path), "run")
     assert frame is None
     assert seed["source"] == "none"
@@ -4440,9 +4076,7 @@ def test_an_assembled_vocabulary_says_so_and_names_what_it_cannot_recover():
     What is genuinely gone is anything `assess_pdbs` produces, and a reader who
     is not told that would conclude pdb_confidence was merely unusable.
     """
-    from explorer.template import render
-
-    html = render({"spaces": []}, plotly_js="", title="t")
+    html = EMPTY_PAGE
     body = html[html.index("function overlaySourceCell()") :][:2600]
     assert 'source.source === "assembled"' in body
     assert "assembled from" in body
@@ -4453,9 +4087,7 @@ def test_an_assembled_vocabulary_says_so_and_names_what_it_cannot_recover():
 
 def test_the_dropped_note_is_built_once_for_every_branch():
     """Two copies would eventually disagree about the ordering or the cut-off."""
-    from explorer.template import render
-
-    html = render({"spaces": []}, plotly_js="", title="t")
+    html = EMPTY_PAGE
     assert html.count("function droppedNote(dropped)") == 1
     assert html.count("nearest first:") == 1, "the note is spelled out more than once"
 
@@ -4473,9 +4105,7 @@ def test_the_disparity_table_carries_a_floor_row():
     A reader who has only seen 0.79-0.99 cannot tell whether 0.968 is alarming
     or ordinary. The seed control is what the same map scores against itself.
     """
-    from explorer.template import render
-
-    html = render({"spaces": []}, plotly_js="", title="t")
+    html = EMPTY_PAGE
     assert 'const SEED_FLOOR = "0.010 - 0.031";' in html
     assert '"the same map, reseeded"' in html
     # The label cell is escaped by `reportRows`, so markup there would render as
@@ -4493,9 +4123,7 @@ def test_the_panel_says_what_a_disparity_is_not():
     can keep their local neighbourhoods and still refuse to superimpose. That
     distinction is why the page acts on retention rather than on disparity.
     """
-    from explorer.template import render
-
-    html = render({"spaces": []}, plotly_js="", title="t")
+    html = EMPTY_PAGE
     # Matched as it appears in the SOURCE, not as it concatenates at runtime --
     # a phrase split across a `+` is not searchable in the emitted page.
     assert "<b>What the number is not:</b>" in html
@@ -4514,8 +4142,6 @@ def test_the_panel_says_what_a_disparity_is_not():
 
 def test_the_declared_order_puts_umap_before_tsne():
     """The defect itself, at the level of the rule."""
-    from explorer.payload import ordered_reducers
-
     assert ordered_reducers(["pca_tsne", "pca_umap"]) == ["pca_umap", "pca_tsne"]
     assert (
         sorted(["pca_tsne", "pca_umap"])[0] == "pca_tsne"
@@ -4528,8 +4154,6 @@ def test_an_unlisted_reducer_follows_rather_than_vanishes():
     Dropping it off the Layout control would hide a map the run produced, which
     is worse than ordering it badly.
     """
-    from explorer.payload import REDUCER_DISPLAY_ORDER, ordered_reducers
-
     resolved = ordered_reducers(["zebra", "pca_umap", "alpha", "pca_tsne"])
     assert resolved == ["pca_umap", "pca_tsne", "alpha", "zebra"]
     # Total: every name in, every name out, exactly once.
@@ -4541,10 +4165,6 @@ def test_the_manifest_lookup_and_the_panel_read_one_order():
     """`_space_manifest`'s docstring claims it tries reducers "in the order the
     panel would draw them". It took whatever iterable it was handed, so the
     claim was aspirational. It reads the same constant now."""
-    import inspect
-
-    from explorer import payload
-
     source = inspect.getsource(payload._space_manifest)
     assert "ordered_reducers(reducers)" in source, source
 
@@ -4552,7 +4172,6 @@ def test_the_manifest_lookup_and_the_panel_read_one_order():
 def test_the_resolved_order_travels_in_the_provenance():
     """Resolved in Python and shipped, so the footer and the control cannot
     disagree about which reducer is first."""
-    from explorer.payload import REDUCER_DISPLAY_ORDER, ordered_reducers
 
     class _Space:
         def __init__(self, embeddings):
@@ -4570,9 +4189,7 @@ def test_the_page_orders_by_the_payload_and_not_by_sorting():
     The browser pass is what proves the value; this proves the page stopped
     asking `.sort()` for it.
     """
-    from explorer.template import render
-
-    html = render({"spaces": []}, plotly_js="", title="t")
+    html = EMPTY_PAGE
     assert "function orderReducers(names)" in html
     assert "reducers = orderReducers([...new Set(" in html
     assert "provenance || {}).reducer_order" in html
@@ -4592,9 +4209,7 @@ def test_a_space_missing_the_selected_layout_says_so_on_the_panel():
     pass is what proves it renders. This proves the notice exists, is built with
     the strips rather than in the fold-out, and names both layouts.
     """
-    from explorer.template import render
-
-    html = render({"spaces": []}, plotly_js="", title="t")
+    html = EMPTY_PAGE
     assert "function refreshFallback(space)" in html
     # Called on every draw, beside the axes sentence, for the same reason.
     assert "refreshFallback(space);" in html
@@ -4611,9 +4226,7 @@ def test_a_space_missing_the_selected_layout_says_so_on_the_panel():
 def test_the_layout_notice_is_hidden_rather_than_empty_when_nothing_was_swapped():
     """A permanent empty strip on every panel is the noise half of a diagnostic
     that always fires."""
-    from explorer.template import render
-
-    html = render({"spaces": []}, plotly_js="", title="t")
+    html = EMPTY_PAGE
     assert "swap.hidden = true;" in html
     assert "node.hidden = !swapped;" in html
 
@@ -4624,9 +4237,7 @@ def test_the_comment_no_longer_asserts_an_invariant_nothing_enforces():
     The reducer declaration used to end "...and says so", which nothing in the
     page did. The claim is either enforced or not made.
     """
-    from explorer.template import render
-
-    html = render({"spaces": []}, plotly_js="", title="t")
+    html = EMPTY_PAGE
     assert "with whatever it has, rather than vanishing from the grid." in html
     assert "with whatever it has, and says so, rather than vanishing" not in html
     # And it points at the test that would fail, rather than restating the rule.
@@ -4644,9 +4255,7 @@ def test_the_assembled_branch_reconciles_with_the_dropdown_like_the_aggregate_on
     calls the common case -- printed a colour count SMALLER than the list it was
     explaining. Introduced by e4cc3a8, 19 commits after PC-034 shipped.
     """
-    from explorer.template import render
-
-    html = render({"spaces": []}, plotly_js="", title="t")
+    html = EMPTY_PAGE
     # Both branches carry the clause, so the count and the dropdown agree in
     # both. Matched as contiguous source: a phrase split across a `+` is not
     # searchable in the emitted page.
@@ -4658,9 +4267,7 @@ def test_the_assembled_branch_reconciles_with_the_dropdown_like_the_aggregate_on
 def test_the_provenance_column_names_the_file_the_run_actually_read():
     """It was the literal "aggregate_features" on every branch, including the
     one whose own text says the run has no features table at all."""
-    from explorer.template import render
-
-    html = render({"spaces": []}, plotly_js="", title="t")
+    html = EMPTY_PAGE
     assert "function overlaySourceFile()" in html
     assert '["colour-by vocabulary", overlaySourceCell(), overlaySourceFile()]' in html
     # The three answers, one per branch of overlaySourceCell.
@@ -4680,8 +4287,6 @@ def _domain_run(root, protids):
     about the ids, and a fuller fixture would only add ways for the test to fail
     for a reason it is not about.
     """
-    from config_schema import from_legacy
-
     directory = root / "spaces" / "d"
     directory.mkdir(parents=True, exist_ok=True)
     rows = ["protid\tUMAP1\tUMAP2"]
@@ -4705,8 +4310,6 @@ DOMAIN_COHORT = ["P00001__d01", "P00001__d03", "P00002__d01", "Q99999__draft"]
 
 
 def test_domains_of_the_same_parent_are_grouped_by_the_parent_they_parse_to(tmp_path):
-    from explorer.payload import build_payload
-
     config = _domain_run(tmp_path, DOMAIN_COHORT)
     links = build_payload(config, str(tmp_path), analysis_name="d").domain_links
     assert links["domains_of"]["P00001"] == ["P00001__d01", "P00001__d03"]
@@ -4721,8 +4324,6 @@ def test_a_parent_missing_a_middle_domain_reports_two_and_not_three(tmp_path):
     then empties a domain and `run_query_gate` drops it without renumbering. A
     grouping that walked 1..max would advertise a `__d02` that no file exists for.
     """
-    from explorer.payload import build_payload
-
     config = _domain_run(tmp_path, DOMAIN_COHORT)
     links = build_payload(config, str(tmp_path), analysis_name="d").domain_links
     assert len(links["domains_of"]["P00001"]) == 2
@@ -4732,8 +4333,6 @@ def test_a_parent_missing_a_middle_domain_reports_two_and_not_three(tmp_path):
 def test_an_accession_carrying_the_separator_is_not_read_as_a_domain(tmp_path):
     """The reason `domain_utils.is_domain_id` anchors its pattern instead of
     testing for the substring `"__d"`, stated as a test rather than a docstring."""
-    from explorer.payload import build_payload
-
     config = _domain_run(tmp_path, DOMAIN_COHORT)
     links = build_payload(config, str(tmp_path), analysis_name="d").domain_links
     assert "Q99999__draft" not in links["parent_of"]
@@ -4743,8 +4342,6 @@ def test_an_accession_carrying_the_separator_is_not_read_as_a_domain(tmp_path):
 def test_siblings_are_ordered_by_the_parsed_index_not_by_the_string(tmp_path):
     """`__d9` before `__d10`. Sorting the ids as strings puts `10` first, which
     is invisible below ten domains and wrong above it."""
-    from explorer.payload import build_payload
-
     config = _domain_run(tmp_path, ["P00001__d10", "P00001__d9"])
     links = build_payload(config, str(tmp_path), analysis_name="d").domain_links
     assert links["domains_of"]["P00001"] == ["P00001__d9", "P00001__d10"]
@@ -4753,8 +4350,6 @@ def test_siblings_are_ordered_by_the_parsed_index_not_by_the_string(tmp_path):
 def test_a_cohort_of_whole_proteins_carries_no_domain_key_at_all(tmp_path):
     """ABSENT, not empty. An empty key would render as a question that was asked
     and came back with nothing, on a page where nothing ever asks it."""
-    from explorer.payload import build_payload
-
     config = _domain_run(tmp_path, ["P00001", "P00002", "P00003"])
     payload = build_payload(config, str(tmp_path), analysis_name="d")
     assert payload.domain_links == {}
@@ -4764,9 +4359,6 @@ def test_a_cohort_of_whole_proteins_carries_no_domain_key_at_all(tmp_path):
 def test_the_domain_link_survives_into_the_rendered_page(tmp_path):
     """Carrying it is not drawing it, so both halves are asserted -- the payload
     the page received, and the fact that the inspector reads that key."""
-    from explorer.payload import build_payload
-    from explorer.template import render
-
     config = _domain_run(tmp_path, DOMAIN_COHORT)
     document = build_payload(config, str(tmp_path), analysis_name="d").to_dict()
     html = render(document, plotly_js="", title="t")
@@ -4779,9 +4371,7 @@ def test_the_domain_link_survives_into_the_rendered_page(tmp_path):
 def test_the_sibling_link_selects_rather_than_navigating(tmp_path):
     """`href="#"` on a file:// page would scroll to the top and change nothing.
     The handler has to take over the click and put the sibling in the selection."""
-    from explorer.template import render
-
-    html = render({"spaces": []}, plotly_js="", title="t")
+    html = EMPTY_PAGE
     assert "function selectProtid(protid)" in html
     assert "state.selected = new Set([protid]);" in html
     assert "event.preventDefault();" in html
@@ -4790,8 +4380,6 @@ def test_the_sibling_link_selects_rather_than_navigating(tmp_path):
 def test_a_page_with_no_domain_links_renders_no_domain_ui(tmp_path):
     """The guard is `if (!links) { return ""; }` -- a cohort without the key
     must not reach `parent_of` at all."""
-    from explorer.template import render
-
-    html = render({"spaces": []}, plotly_js="", title="t")
+    html = EMPTY_PAGE
     assert "const links = active.domain_links;" in html
     assert 'if (!links) { return ""; }' in html
