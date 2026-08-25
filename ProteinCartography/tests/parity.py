@@ -73,10 +73,72 @@ __all__ = [
     "EXCLUSIONS",
     "assert_critical_outputs_compared",
     "ParityReport",
+    "MINIMAL_SPACES",
+    "FUSED_SPACES",
     "compare_trees",
     "normalize_bytes",
     "run_pipeline",
 ]
+
+#: The smallest config that puts a space in the DAG. `diagnose_space` is the
+#: only consumer of the cohort report, so this is what makes the report appear.
+#:
+#: Here rather than in `test_parity.py`, where it used to live, because
+#: `mutation_check.py` needs the same spelling and imports this module, not that
+#: one. A second copy is how the two would come to mean different things.
+MINIMAL_SPACES = {
+    "blocks": {"tmscore": {"provider": "tmscore", "representation": "profile"}},
+    "spaces": {"legacy": {"blocks": ["tmscore"], "strategy": "none", "reducers": ["pca"]}},
+}
+
+#: The smallest config that reaches the four modules THIS BRANCH ADDED and the
+#: `MUTATIONS` list above never touches: `fusion.py`, `diagnose_space.py`,
+#: `diagnostics/*` and `enrich_clusters.py`.
+#:
+#: Every key earns its place and none is decoration:
+#:
+#: * two blocks and a `late` space, because fusion needs something to fuse and
+#:   `strategy: none` reaches `reduce_space` without reaching `fusion.py`;
+#: * `coregistration`, because a second space is only comparable to the first
+#:   through it, and it is where `coregister.py` writes;
+#: * `enrichment`, which is the SOLE gate on `enrich_clusters` -- the rule's own
+#:   docstring says it is unreachable unless this key names a column;
+#: * `diagnostics`, which configures the sweep and the controls. Note that
+#:   `diagnose_space` runs for every space with or without this key -- the demo
+#:   config says so in as many words -- so this key widens what is diagnosed
+#:   rather than switching diagnosis on.
+#:
+#: Measured cost on the mocked 10-protein search-mode fixture: 25.1 s against
+#: 18.9 s for the legacy config. That 6-second difference is what makes a
+#: per-mutant end-to-end run affordable here at all, and it is a measurement
+#: rather than an estimate because every mutant pays it.
+FUSED_SPACES = {
+    "blocks": {
+        "tmscore": {"provider": "tmscore", "representation": "profile"},
+        "biophys": {"provider": "biophys"},
+    },
+    "spaces": {
+        "legacy": {"blocks": ["tmscore"], "strategy": "none", "reducers": ["pca"]},
+        "fused": {"blocks": ["tmscore", "biophys"], "strategy": "late", "reducers": ["pca"]},
+    },
+    "coregistration": {"reference_space": "legacy", "compare": ["legacy", "fused"], "k": 3},
+    "enrichment": {
+        "cluster_column": "LeidenCluster",
+        "continuous": ["Length"],
+        "categorical": ["Organism"],
+        "min_term_count": 1,
+        "fdr": 0.05,
+    },
+    "diagnostics": {
+        "leiden_resolution_sweep": [0.5, 1.0],
+        "negative_controls": ["shuffled_labels"],
+    },
+}
+
+#: Everything `FUSED_SPACES` adds to the output tree, by prefix. A space mutant
+#: that changes nothing under one of these was detected through the legacy path
+#: and proves nothing about the module it mutated.
+SPACE_OUTPUT_PREFIXES = ("spaces/", "coregistration/", "enrichment/")
 
 # One random uuid per Plotly figure, in the div id and the matching script call.
 _PLOTLY_UUID = re.compile(rb"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")

@@ -27,6 +27,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from parity import (
+    FUSED_SPACES,
+    SPACE_OUTPUT_PREFIXES,
     compare_trees,
     run_leiden,
     run_pipeline,
@@ -40,10 +42,12 @@ __all__ = [
     "MUTATIONS",
     "COMPONENT_MUTATIONS",
     "REDUCER_MUTATIONS",
+    "SPACE_MUTATIONS",
     "Mutation",
     "run_mutation_suite",
     "run_component_mutation_suite",
     "run_reducer_mutation_suite",
+    "run_space_mutation_suite",
 ]
 
 
@@ -282,6 +286,188 @@ def run_mutation_suite(repo: Path, workdir: Path, conda_prefix: Path) -> list:
     return results
 
 
+#: Mutants in the four modules THIS BRANCH ADDED, which `MUTATIONS` above
+#: cannot reach.
+#:
+#: FOLLOWUPS #44 is the reason this exists and its own text is why it took so
+#: long. All ten of `MUTATIONS` name six files -- `dim_reduction.py`,
+#: `foldseek_clustering.py`, `leiden_clustering.py`, `aggregate_features.py`,
+#: `cohort.py`, `spaces/reducers/core.py` -- and none of them is `fusion.py`,
+#: `diagnose_space.py`, `enrich_clusters.py` or anything under `diagnostics/`.
+#: So "12 detected / 5 survived as expected / 0 unexplained holes" was, for
+#: those four modules, guaranteed by construction rather than measured.
+#:
+#: #44 then said the fix "needs a different harness, comparing HEAD against HEAD
+#: with the mutation applied, not HEAD against the baseline". THAT WAS WRONG
+#: ABOUT THE HARNESS IT WAS DESCRIBING: `run_mutation_suite` above already runs
+#: an unmutated reference and a mutated run FROM THE SAME CHECKOUT and diffs
+#: them. Nothing about the baseline enters it. What was actually missing was a
+#: CONFIG -- the default one puts no space in the DAG, so the four modules never
+#: execute. `parity.FUSED_SPACES` is that config, and this suite is the rest.
+#:
+#: Anchoring follows `Mutation`'s own warning: every `old` below is a value the
+#: executed path reads, not an overridable default.
+SPACE_MUTATIONS = (
+    Mutation(
+        name="fused_distance_not_squared",
+        path="ProteinCartography/fusion.py",
+        old="    fused = np.sqrt(squared)",
+        new="    fused = squared",
+        detects=(
+            "late fusion returning SQUARED distances as distances. The classic "
+            "form of this refactor error, and it is not a rescaling: squaring "
+            "changes the ratio of every pair of distances, so the map moves."
+        ),
+    ),
+    Mutation(
+        name="distorted_threshold",
+        path="ProteinCartography/diagnostics/embedding.py",
+        old="DISTORTED_THRESHOLD = 0.70",
+        new="DISTORTED_THRESHOLD = 0.20",
+        detects=(
+            "the faithfulness band moving. Every space's `diagnostics.json` "
+            "records which proteins are unreliable at this cutoff, and the "
+            "explorer draws them differently, so a moved threshold is a moved "
+            "refusal rather than a moved number."
+        ),
+        expected_to_survive=(
+            "MEASURED, NOT ASSUMED, AND IT IS NOT COVERAGE. On this fixture every "
+            "protein scores trustworthiness 1.0 and continuity 1.0 in both spaces "
+            "-- 10 and 11 rows of `1.0\t1.0` in `faithfulness_pca.tsv` -- because "
+            "a cohort this small clamps k far enough that the PCA layout is "
+            "perfectly faithful. NO value of this threshold between 0 and 1 "
+            "changes a byte, so the mutant cannot be detected here and its "
+            "survival says something about the fixture rather than about the "
+            "test. The faithfulness BAND therefore has no end-to-end coverage "
+            "anywhere: the N=750 reducer suite is the only large fixture and it "
+            "does not run `diagnose_space`. Stated rather than counted."
+        ),
+    ),
+    Mutation(
+        name="pearson_denominator",
+        path="ProteinCartography/diagnostics/redundancy.py",
+        old="    denominator = np.sqrt(float(a @ a) * float(b @ b))",
+        new="    denominator = float(a @ a) * float(b @ b)",
+        detects=(
+            "the block-agreement correlation losing its normalisation. Chosen "
+            "after measuring what this fixture can actually show: stability is "
+            "1.0 by construction at n=10, the partition is one cluster, the "
+            "sweep's ARI is 1.0 and the silhouette is 0.0 -- `redundancy` "
+            "carries the only live numbers in the whole diagnostics report "
+            "(pearson 0.6907, spearman 0.8781 over 45 pairs), so it is the only "
+            "place a `diagnostics/` mutant can be falsified end to end here."
+        ),
+    ),
+    Mutation(
+        name="own_partition_ignored",
+        path="ProteinCartography/diagnose_space.py",
+        old="    clusters = own.as_mapping() if own is not None else legacy_clusters",
+        new="    clusters = legacy_clusters",
+        detects=(
+            "every space being diagnosed against the STRUCTURE space's Leiden "
+            "partition instead of its own -- which is precisely the defect "
+            "FOLLOWUPS #41 described, and which the code no longer has. A "
+            "mutant that reintroduces a fixed historical bug is the strongest "
+            "kind there is: it proves the fix is load-bearing rather than "
+            "merely present."
+        ),
+    ),
+    Mutation(
+        name="enrichment_rank_base",
+        path="ProteinCartography/enrichment.py",
+        old="            ranks[order[start:stop]] = 0.5 * (start + stop + 1)",
+        new="            ranks[order[start:stop]] = 0.5 * (start + stop)",
+        detects=(
+            "the Mann-Whitney ranks going 0-based. Not invented: "
+            "`coregistration.average_ranks` computes the same statistic 0-based "
+            "for a different purpose, so this is the exact edit a consolidation "
+            "of the two would make, and it shifts every U and every p-value in "
+            "`cluster_enrichment.tsv`."
+        ),
+    ),
+)
+
+
+def run_space_mutation_suite(repo: Path, workdir: Path, conda_prefix: Path) -> list:
+    """`SPACE_MUTATIONS`, end to end, under a config that reaches the four modules.
+
+    The same shape as `run_mutation_suite` with two differences, and both are
+    guards rather than conveniences.
+
+    **The floor is checked, not just printed.** If any output under
+    `spaces/`, `coregistration/` or `enrichment/` turns up in the self-diff
+    floor, every mutant below becomes unfalsifiable in exactly the way that
+    reports as "survived", so this RAISES instead of running them. A suite whose
+    negative result cannot be told from a broken one is worse than no suite.
+
+    **Each result records whether it was detected on the NEW path.** A mutant
+    can change a legacy output too -- `enrich_clusters` reads
+    `leiden_features.tsv` -- and being detected there says nothing about the
+    module it mutated. `on_space_path` is False when none of the differing files
+    is under one of those prefixes, and the report prints it.
+    """
+    repo, workdir = Path(repo), Path(workdir)
+
+    print("=== spaces reference run (unmutated) ===", flush=True)
+    reference = run_pipeline(
+        repo, workdir / "reference", conda_prefix=conda_prefix, extra_config=FUSED_SPACES
+    )
+    print("=== spaces self-diff, to establish the nondeterminism floor ===", flush=True)
+    reference_b = run_pipeline(
+        repo, workdir / "reference_b", conda_prefix=conda_prefix, extra_config=FUSED_SPACES
+    )
+    floor = set(compare_trees(reference, reference_b).differing)
+    print(f"floor: {sorted(floor) or 'nothing -- fully deterministic'}\n", flush=True)
+
+    swallowed = sorted(f for f in floor if f.startswith(SPACE_OUTPUT_PREFIXES))
+    if swallowed:
+        raise RuntimeError(
+            "the nondeterminism floor contains output this suite mutates: "
+            f"{swallowed}. Every space mutant would be ignorable on those files "
+            "and would report 'survived' for a reason that is not a hole in the "
+            "test. Fix the nondeterminism before trusting any result below."
+        )
+
+    results = []
+    for mutation in SPACE_MUTATIONS:
+        print(f"=== space mutation: {mutation.name} ===", flush=True)
+        run_dir = workdir / f"mut_{mutation.name}"
+        outcome, note, changed, on_path = "survived", "", [], False
+        try:
+            with _patched(repo, mutation):
+                mutated = run_pipeline(
+                    repo, run_dir, conda_prefix=conda_prefix, extra_config=FUSED_SPACES
+                )
+                report = compare_trees(reference, mutated, ignore=floor)
+                outcome = "detected" if not report.ok else "survived"
+                changed = report.differing[:6]
+                on_path = any(f.startswith(SPACE_OUTPUT_PREFIXES) for f in report.differing)
+        except MutationDidNotApply as exc:
+            outcome, note = "error", str(exc)
+        except RuntimeError as exc:
+            outcome, note = "detected", f"pipeline failed: {str(exc)[:160]}"
+            on_path = True
+        results.append(
+            {
+                "name": f"space:{mutation.name}",
+                "outcome": outcome,
+                "detected": outcome == "detected",
+                "detects": mutation.detects,
+                "expected_to_survive": mutation.expected_to_survive,
+                "changed_files": changed,
+                "on_space_path": on_path,
+                "note": note,
+            }
+        )
+        where = "" if on_path else "  (NOT on the spaces path)"
+        print(f"  -> {outcome.upper()}{where}  {note}", flush=True)
+        for rel in changed:
+            print(f"     ! {rel}", flush=True)
+        shutil.rmtree(run_dir, ignore_errors=True)
+        print(flush=True)
+    return results
+
+
 def format_report(results: list) -> str:
     lines = ["", "=" * 74, "MUTATION TESTING OF THE PARITY TEST", "=" * 74]
     detected = [r for r in results if r["outcome"] == "detected"]
@@ -304,6 +490,13 @@ def format_report(results: list) -> str:
             lines.append(f"                  expected to survive: {r['expected_to_survive']}")
         if r["note"]:
             lines.append(f"                  {r['note']}")
+        # A space mutant detected only through a legacy output says nothing
+        # about the module it mutated, and the count alone cannot show that.
+        if r["outcome"] == "detected" and r.get("on_space_path") is False:
+            lines.append(
+                "                  DETECTED, BUT NOT ON THE SPACES PATH -- no file "
+                "under spaces/, coregistration/ or enrichment/ differed"
+            )
         for rel in r["changed_files"][:4]:
             lines.append(f"                  ! {rel}")
 
@@ -334,14 +527,30 @@ def main(argv=None) -> int:
         action="store_true",
         help="skip the slow end-to-end suite and run only the N=750 reducer mutations",
     )
+    parser.add_argument(
+        "--spaces-only",
+        action="store_true",
+        help="run only SPACE_MUTATIONS, which is the affordable half to iterate on",
+    )
     args = parser.parse_args(argv)
 
     repo = Path(args.repo).resolve()
     prefix = Path(args.conda_prefix) if args.conda_prefix else repo / ".snakemake" / "conda"
 
     results = []
-    if not args.reducer_only:
+    if not args.reducer_only and not args.spaces_only:
         results += run_mutation_suite(repo, Path(args.workdir), prefix)
+
+    if not args.reducer_only:
+        # Its own workdir: this suite runs a different CONFIG through the same
+        # pipeline, and sharing a directory would have one reference run
+        # standing in for the other.
+        results += run_space_mutation_suite(repo, Path(args.workdir) / "spaces", prefix)
+
+    if args.spaces_only:
+        print(format_report(results))
+        holes = [r for r in results if r["outcome"] == "survived" and not r["expected_to_survive"]]
+        return 1 if (holes or [r for r in results if r["outcome"] == "error"]) else 0
 
     python = args.analysis_python or _find_analysis_python(prefix)
     if python:

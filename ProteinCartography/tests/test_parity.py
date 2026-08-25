@@ -39,6 +39,7 @@ from parity import (
     CRITICAL_OUTPUTS,
     FOLDSEEK_BENCHMARK_CEILING_SECONDS,
     FOLDSEEK_POLLS_PER_QUERY_CEILING,
+    MINIMAL_SPACES,
     _assert_the_foldseek_polls_were_bounded,
     _assert_the_foldseek_sleep_was_neutralised,
     _normalized_by_stat,
@@ -214,12 +215,9 @@ def runs(tmp_path_factory, repo_dirpath, baseline_repo, conda_prefix):
     return {"head_a": head_a, "head_b": head_b, "base_a": base_a, "base_b": base_b}
 
 
-#: The smallest config that puts a space in the DAG. `diagnose_space` is the
-#: only consumer of the cohort report, so this is what makes the report appear.
-_MINIMAL_SPACES = {
-    "blocks": {"tmscore": {"provider": "tmscore", "representation": "profile"}},
-    "spaces": {"legacy": {"blocks": ["tmscore"], "strategy": "none", "reducers": ["pca"]}},
-}
+#: One spelling, in `parity.py`, because `mutation_check.py` needs the same
+#: config and imports that module rather than this one.
+_MINIMAL_SPACES = MINIMAL_SPACES
 
 
 @pytest.fixture(scope="module")
