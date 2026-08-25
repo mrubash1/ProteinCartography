@@ -80,9 +80,31 @@ def test_direct_requires_a_valid_symmetrization():
         )
 
 
-def test_direct_defaults_to_mean_symmetrization():
-    params = validate_params({"representation": "direct", "alignment_verified": True})
-    assert params["symmetrization"] == "mean"
+def test_direct_requires_an_explicit_symmetrization():
+    """It used to default to "mean" in silence.
+
+    The default was then written into the block manifest by
+    `spaces/store.py:271`, where nothing could tell it apart from a rule somebody
+    chose. ADR 0001 says `direct` "requires an explicit symmetrization decision",
+    and the validator four lines below this one says "one of them has to be
+    chosen" -- and then chose. `direct` is already an explicit opt-in behind
+    `alignment_verified`, so requiring one more key asks nothing of anyone who
+    was not already writing this block out by hand.
+    """
+    with pytest.raises(ValueError, match="requires an explicit"):
+        validate_params({"representation": "direct", "alignment_verified": True})
+
+    params = validate_params(
+        {"representation": "direct", "alignment_verified": True, "symmetrization": "min"}
+    )
+    assert params["symmetrization"] == "min"
+
+
+def test_profile_needs_no_symmetrization_decision():
+    """The requirement is scoped to `direct`. A profile block never reads the
+    matrix as a matrix, so there is no pair of directions to reconcile."""
+    params = validate_params({"representation": "profile"})
+    assert "symmetrization" not in params
 
 
 # --------------------------------------------------------------------------

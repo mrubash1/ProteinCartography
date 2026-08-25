@@ -82,7 +82,18 @@ def validate_params(params: dict) -> dict:
                 "alignment_verified: true only once matrix_io accepts the matrix "
                 "without repair. 'profile' is safe either way."
             )
-        symmetrization = params.get("symmetrization", "mean")
+        if "symmetrization" not in params:
+            raise ValueError(
+                "tmscore.representation 'direct' requires an explicit "
+                "tmscore.symmetrization. TM-score is length-normalized per query, "
+                "so M[a][b] and M[b][a] are different numbers about the same pair "
+                f"and one of them has to be chosen. Allowed: "
+                f"{', '.join(VALID_SYMMETRIZATIONS)}. This used to default to "
+                "'mean' in silence and then record 'mean' in the block manifest, "
+                "where it was indistinguishable from a decision somebody made "
+                "(ADR 0001). 'profile' needs no such choice."
+            )
+        symmetrization = params["symmetrization"]
         if symmetrization not in VALID_SYMMETRIZATIONS:
             raise ValueError(
                 f"tmscore.symmetrization: {symmetrization!r} is not valid. "
