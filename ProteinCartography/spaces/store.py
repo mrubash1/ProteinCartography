@@ -135,6 +135,14 @@ class BlockStore:
                 # a digest that cannot verify the file it describes is not doing
                 # anything.
                 "values_digest": values_digest(stored_payload),
+                # Shape and dtype are RECORDED as well as digested. ADR 0004
+                # names them as two of the four things that make a `.npy`
+                # readable without opening it, and `values_digest` folds them in
+                # as hash INPUT -- from which neither can be read back, so the
+                # nearest thing written down was `n_proteins`. As stored, not as
+                # handed over: STORAGE_DTYPE is what the file holds.
+                "values_shape": list(stored_payload.shape),
+                "values_dtype": str(stored_payload.dtype),
                 "spec": _spec_to_dict(result.spec),
                 "censoring_rate": result.censoring_rate,
                 "absent_rate": result.absent_rate,

@@ -287,6 +287,44 @@ def test_manifest_written_beside_the_arrays(tmp_path):
     assert data["derived"]["spec"]["metric"] == "precomputed"
 
 
+def test_the_manifest_records_the_shape_and_dtype_it_wrote(tmp_path):
+    """ADR 0004:89 names shape and dtype among the four things that make a
+    `.npy` readable without opening it, and they were the two not recorded.
+
+    `values_digest` folds both in as hash INPUT, from which neither can be read
+    back, so the nearest recorded fact was `n_proteins`. The mitigation is aimed
+    precisely at a reader who does not want to open the array.
+
+    They land in `derived`, which `cache_key` excludes, so no block's identity
+    moves -- asserted below rather than asserted about, because FOLLOWUPS #92 is
+    the entry for two commits that moved a cache key while saying they did not.
+    """
+    store = BlockStore(str(tmp_path))
+    store.write_block(
+        BlockResult(
+            spec=spec(id="biophys", kind="features", metric="euclidean", symmetrization=None),
+            protids=["A", "B", "C"],
+            features=np.arange(6, dtype=np.float64).reshape(3, 2),
+        )
+    )
+    data = json.loads((tmp_path / "blocks" / "biophys" / "manifest.json").read_text())
+    # As STORED, not as handed over: ADR 0004 writes float32 whatever arrives.
+    assert data["derived"]["values_shape"] == [3, 2]
+    assert data["derived"]["values_dtype"] == "float32"
+    assert "values_shape" not in data["extra"], (
+        "`cache_key` folds `extra` in, so recording the output's shape there would "
+        "give every block already on disk a new identity"
+    )
+    expected = Manifest.build(
+        "block",
+        "biophys",
+        provider="tmscore",
+        params={},
+        protids=["A", "B", "C"],
+    )
+    assert data["cache_key"] == expected.cache_key
+
+
 def test_the_providers_manifest_reaches_disk(tmp_path):
     """Regression: `write_block` used to rebuild a minimal manifest and drop it.
 
