@@ -12,9 +12,9 @@ for the rules that config happens to reach — which for the domain path is none
 of them, because the gate is off by default. Reading the file answers it for
 every rule unconditionally, which is what an invariant needs.
 
-This is the `STRATEGY_PARAMS`-style check CLAUDE.md prefers over a comment: a
-rule added tomorrow without a benchmark fails here rather than being noticed by
-someone reading a docstring.
+This is a check rather than a comment, and the difference is the point: a rule
+added tomorrow without a benchmark fails here, rather than being noticed by
+someone reading a docstring that says it should not happen.
 """
 
 from __future__ import annotations

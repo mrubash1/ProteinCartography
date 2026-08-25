@@ -95,7 +95,9 @@ jobs:
             'envs/analysis.yml', 'envs/blast.yml', 'envs/foldseek.yml',
             'envs/pandas.yml', 'envs/plotting.yml', 'envs/web_apis.yml') }}
           # Scoped to the six env files the Snakefile rules actually name in a
-          # `conda:` directive, not all ten. `envs/*.yml` meant that editing a
+          # `conda:` directive. There are nine env files and three are excluded
+          # -- cartography_pub, cartography_test, cartography_tidy -- none of
+          # which snakemake solves. `envs/*.yml` meant that editing a
           # developer or publication env -- which no rule solves -- evicted a
           # multi-gigabyte cache and rebuilt every pipeline environment.
 
@@ -173,19 +175,29 @@ jobs:
           base=$(git -C ../pc-baseline rev-parse HEAD)
           echo "fork point: $base"
 
-          # <repo dir> <config path, relative to that repo dir>
+          # <repo dir> <config path, relative to that repo dir> <stderr file>
+          #
+          # stderr goes to a file rather than to /dev/null. A Snakefile that
+          # cannot be PARSED prints its traceback there and produces no count on
+          # stdout, so discarding it reported the failure as "produced no rule
+          # count" -- true, useless, and pointing at the wrong thing. That is not
+          # hypothetical: on 2026-08-25 this branch could not parse its own
+          # Snakefile in an environment built from `envs/cartography_test.yml`,
+          # and this step would have blamed the counter rather than the import.
           count_rules() {
             ( cd "$1" \
-              && snakemake --configfile "$2" -n --quiet --rerun-incomplete 2>/dev/null \
+              && snakemake --configfile "$2" -n --quiet --rerun-incomplete 2>"$3" \
                  | awk '/^total/ {print $2}' )
           }
 
           status=0
           for cfg in demo/cluster-mode/config.yml demo/search-mode/config_actin_small.yml; do
-            want=$(count_rules ../pc-baseline "$cfg")
-            got=$(count_rules . "$cfg")
+            want=$(count_rules ../pc-baseline "$cfg" /tmp/dag_base.err)
+            got=$(count_rules . "$cfg" /tmp/dag_head.err)
             if [ -z "$want" ] || [ -z "$got" ]; then
               echo "::error::$cfg produced no rule count (fork point: '$want', HEAD: '$got')"
+              echo "--- snakemake stderr, fork point ---"; tail -30 /tmp/dag_base.err || true
+              echo "--- snakemake stderr, HEAD ---";       tail -30 /tmp/dag_head.err || true
               status=1
             elif [ "$got" != "$want" ]; then
               echo "::error::$cfg resolves to $got rules on this branch but $want at $base"
@@ -305,7 +317,9 @@ jobs:
             'envs/analysis.yml', 'envs/blast.yml', 'envs/foldseek.yml',
             'envs/pandas.yml', 'envs/plotting.yml', 'envs/web_apis.yml') }}
           # Scoped to the six env files the Snakefile rules actually name in a
-          # `conda:` directive, not all ten. `envs/*.yml` meant that editing a
+          # `conda:` directive. There are nine env files and three are excluded
+          # -- cartography_pub, cartography_test, cartography_tidy -- none of
+          # which snakemake solves. `envs/*.yml` meant that editing a
           # developer or publication env -- which no rule solves -- evicted a
           # multi-gigabyte cache and rebuilt every pipeline environment.
 
