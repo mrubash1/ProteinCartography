@@ -136,6 +136,24 @@ def main() -> int:
     if block.normalization is not None:
         params.setdefault("normalization", block.normalization)
 
+    # ADR 0010: `spec_schema` is the provider's parameter contract, and the
+    # FRAMEWORK is what calls it. It used to be declarative -- bound by all four
+    # built-ins and called by nothing -- which was invisible because each of the
+    # four calls its own `validate_params` at the top of both `plan` and
+    # `compute`. A third-party provider (ADR 0006) that relied on the documented
+    # contract got no validation at all, and its first sign of a bad parameter
+    # was whatever `compute` did with it.
+    #
+    # `getattr` and `callable`, so a provider that has no such attribute keeps
+    # working. The normalized dict is used, because "validates and normalizes"
+    # is the contract; for the four built-ins that is a no-op, since each
+    # `validate_params` is idempotent and runs again inside `plan` and
+    # `compute`. No manifest field moves, and therefore no cache key does
+    # (FOLLOWUPS #92 is what that caution is for).
+    spec_schema = getattr(provider, "spec_schema", None)
+    if callable(spec_schema):
+        params = dict(spec_schema(params))
+
     # ASK THE PROVIDER what it would write, instead of guessing.
     #
     # This used to be `Manifest.build(..., protids=[])` with no `inputs`, whose

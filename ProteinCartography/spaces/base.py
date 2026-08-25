@@ -121,9 +121,9 @@ class BlockSpec:
         normalization: applied before any weighting. ADR 0002 requires that
             block scale be normalized before weights are meaningful.
         provider: the registry name that produces this block.
-        params: provider-specific parameters, validated by the provider itself
-            at the top of ``compute``. Nothing calls ``spec_schema`` for it --
-            see the note on that attribute.
+        params: provider-specific parameters. ``compute_block`` runs them
+            through the provider's ``spec_schema`` before it computes anything,
+            and every built-in validates them again at the top of ``compute``.
         not_fusable_reason: required when ``fusable`` is False. This string is
             shown to the user verbatim when they try to fuse the block.
         version: bumped by a provider when its output changes meaning. Recorded
@@ -483,11 +483,14 @@ class BlockProvider(Protocol):
     #: Raises on bad input. A provider that already depends on pydantic may
     #: implement this with a pydantic model; the contract is the callable.
     #:
-    #: **Declarative only -- the framework never calls it.** `config_schema`
-    #: validates a config without importing any provider, so it cannot reach
-    #: this at parse time. Every built-in provider calls its own
-    #: `validate_params` first thing in `compute`, and a provider that does not
-    #: gets no validation. See docs/EXTENDING.md §2.
+    #: `config_schema` validates a config without importing any provider, so it
+    #: cannot reach this at parse time. `compute_block` calls it instead, once
+    #: the provider has been resolved and before anything is computed, and uses
+    #: what it returns. Every built-in also calls its own `validate_params` at
+    #: the top of `compute`, which is why this hook was inert for so long
+    #: without anyone noticing: the only provider it protects is one that does
+    #: NOT validate itself, which is exactly the third-party case ADR 0010
+    #: wrote the contract for. See docs/EXTENDING.md §2.
     spec_schema: object
 
     def is_available(self) -> tuple:

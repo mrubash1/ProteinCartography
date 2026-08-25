@@ -231,12 +231,11 @@ class MyThingProvider:
 ```
 
 Nothing in this repo changes. `registry.py` discovers it, and the Snakefile skips
-it with a clear log line if `is_available()` is false. `spec_schema` is
-**declarative only — the framework never calls it**: `config_schema` validates a
-config without importing any provider, so it cannot reach a provider's schema at
-parse time, and a provider that does not call its own schema first thing in
-`compute()` gets no parameter validation at all. That warning, and a worked
-example, are in `docs/EXTENDING.md`.
+it with a clear log line if `is_available()` is false. `config_schema` validates a
+config without importing any provider, so it cannot reach a provider's
+`spec_schema` at config-parse time; `compute_block` calls it instead, once the
+provider has been resolved and before anything is computed, and uses what it
+returns. A worked example is in `docs/EXTENDING.md`.
 
 ---
 

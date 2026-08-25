@@ -194,6 +194,66 @@ def test_the_builtin_providers_all_register(monkeypatch, run_dir):
     assert {"tmscore", "threedi", "biophys", "domains"} <= registered
 
 
+def test_a_providers_spec_schema_is_called_before_anything_is_computed(monkeypatch, run_dir):
+    """ADR 0010: `spec_schema` is the parameter contract and the FRAMEWORK calls it.
+
+    It was bound by all four built-ins and called by nothing, and that was
+    invisible because each of the four calls its own `validate_params` at the
+    top of `compute`. So the provider here validates ONLY through `spec_schema`
+    and asserts inside `compute` -- which is the third-party case the contract
+    exists for, and the only one that can tell the two arrangements apart.
+    """
+    from spaces.registry import BLOCK_GROUP, register_builtin
+
+    class Fussy:
+        @staticmethod
+        def spec_schema(params):
+            if params.get("mode") != "ok":
+                raise ValueError("fussy.mode must be 'ok'")
+            return dict(params)
+
+        def is_available(self):
+            return True, ""
+
+        def compute(self, ctx, params):
+            raise AssertionError("compute ran on parameters spec_schema rejects")
+
+    register_builtin(BLOCK_GROUP, "fussy_for_test", Fussy)
+    config = write_config(run_dir, {"f": {"provider": "fussy_for_test", "mode": "no"}})
+    with pytest.raises(ValueError, match="fussy.mode"):
+        run(monkeypatch, config, "f", run_dir / "output")
+
+
+def test_a_provider_without_a_spec_schema_still_computes(monkeypatch, run_dir):
+    """The other half of ADR 0006: the hook is optional, like `plan`."""
+    from spaces.base import BlockResult, BlockSpec
+    from spaces.registry import BLOCK_GROUP, register_builtin
+
+    class Bare:
+        def is_available(self):
+            return True, ""
+
+        def compute(self, ctx, params):
+            import numpy as np
+
+            return BlockResult(
+                spec=BlockSpec(
+                    id=params["block_id"],
+                    kind="features",
+                    fusable=True,
+                    metric="euclidean",
+                    normalization="zscore_within",
+                    provider="bare_for_test",
+                ),
+                protids=["P1", "P2"],
+                features=np.zeros((2, 1), dtype=float),
+            )
+
+    register_builtin(BLOCK_GROUP, "bare_for_test", Bare)
+    config = write_config(run_dir, {"bare": {"provider": "bare_for_test"}})
+    assert run(monkeypatch, config, "bare", run_dir / "output") == 0
+
+
 # ---------------------------------------------------------------------------
 # PC-012 phase 1 -- the freshness check that could never fire (FOLLOWUPS #27)
 # ---------------------------------------------------------------------------

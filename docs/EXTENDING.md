@@ -97,8 +97,9 @@ class HydropathyWindowsProvider:
     """Mean Kyte-Doolittle hydropathy in W windows along each sequence."""
 
     #: Validates and normalizes the block's `params` from the config.
-    #: Declarative only: see the note under `spec_schema` below. Call it
-    #: yourself, first thing in `compute`, as the built-in providers do.
+    #: `compute_block` calls this before it computes anything. Call it yourself
+    #: too, first thing in `compute`, as the built-in providers do: it is
+    #: idempotent, and it keeps the provider correct when it is driven directly.
     spec_schema = staticmethod(validate_params)
 
     #: Bump when the output's *meaning* changes. Recorded on every block, and
@@ -126,18 +127,23 @@ class HydropathyWindowsProvider:
 A callable taking the raw `params` dict and returning a validated one, raising
 on anything it does not recognise. **Reject unknown keys.**
 
-**The framework does not call it.** It is declared by all four built-in
-providers and read by nothing outside the tests: validation happens because each
-provider calls its own `validate_params` at the top of `compute()`, which is
-*inside* the snakemake rule and therefore after the run has started. The reason
+**The framework calls it**, in `compute_block`, once the provider has been
+resolved and before anything is computed, and it uses the dict that comes back.
+It did not until PC-039: it was declared by all four built-in providers and read
+by nothing outside the tests, and that stayed invisible because each of the four
+also calls its own `validate_params` at the top of `compute()` — so the only
+provider the gap could bite was a third-party one that trusted the documented
+contract. Call it yourself at the top of `compute()` anyway, as the built-ins do:
+it is idempotent, so it costs nothing, and it keeps the provider correct when it
+is driven directly rather than through `compute_block`.
+
+The call is *inside* the snakemake rule, after the run has started, and that part
 is deliberate — `config_schema.py` validates a config without importing any
-provider, so it cannot reach a provider's schema at parse time — but the effect
-is that a third-party provider which declares `spec_schema` and trusts it to run
-gets no parameter validation at all. Call it yourself. A misspelled
-parameter that is silently ignored is indistinguishable from one that is read
-and does nothing, which is the most persistent defect shape in this codebase —
-`spec.metric` and `spec.normalization` are each recorded on every block and
-consulted by nothing (`docs/FOLLOWUPS.md` #29, #32).
+provider, so it cannot reach a provider's schema at config-parse time. A
+misspelled parameter that is silently ignored is indistinguishable from one that
+is read and does nothing, which is the most persistent defect shape in this
+codebase — `spec.metric` and `spec.normalization` are each recorded on every
+block and consulted by nothing (`docs/FOLLOWUPS.md` #29, #32).
 
 ### `is_available`
 
