@@ -150,11 +150,29 @@ def kmer_vocabulary(descriptors, k: int) -> list:
 
 
 def kmer_profile(descriptors, k: int = DEFAULT_K, scaling: str = "frequency", vocabulary=None):
-    """The (N, V) k-mer matrix, its protids, and its vocabulary.
+    """The (N, V) k-mer matrix, its protids, its vocabulary, and what it dropped.
+
+    Returns ``(protids, features, vocabulary, too_short, out_of_vocabulary)``.
 
     ``frequency`` is the default because raw counts scale with protein length,
     which would make the dominant axis of any reduction "how long is this
     protein" -- a real property, and not the one this block exists to measure.
+
+    **THE FREQUENCY DENOMINATOR IS THE PROTEIN'S TRUE K-MER COUNT, NOT THE SUM
+    OF ITS IN-VOCABULARY ROW.** The two are equal whenever the vocabulary was
+    observed from these same descriptors, which is every call the pipeline makes
+    today -- and they stop being equal the moment a vocabulary is PINNED from
+    config, which is what FOLLOWUPS #28 asks for. With the row sum as
+    denominator, a protein whose k-mers are half outside the vocabulary has its
+    surviving half renormalised to sum to 1 and looks, to every distance, exactly
+    like a protein that was fully described. The loss is not merely unreported;
+    it is erased.
+
+    ``out_of_vocabulary`` is the per-protein fraction of k-mer occurrences that
+    fell outside the vocabulary, in ``protids`` order. It is zero everywhere for
+    an observed vocabulary, by construction -- and that is asserted by a test
+    rather than stated here, per this repository's own rule that a comment
+    claiming an invariant does not enforce one.
     """
     if scaling not in VALID_SCALINGS:
         raise DescriptorError(
@@ -169,6 +187,13 @@ def kmer_profile(descriptors, k: int = DEFAULT_K, scaling: str = "frequency", vo
     position = {kmer: index for index, kmer in enumerate(vocabulary)}
 
     features = np.zeros((len(protids), len(vocabulary)), dtype=np.float64)
+    # The protein's TRUE k-mer count, which is `len(sequence) - k + 1` and is
+    # what the frequency denominator has to be. Accumulated here rather than
+    # recovered from `features.sum(axis=1)` afterwards, because that sum is the
+    # in-vocabulary total and the difference between the two is exactly what
+    # this function now reports.
+    occurrences = np.zeros(len(protids), dtype=np.float64)
+    in_vocabulary = np.zeros(len(protids), dtype=np.float64)
     too_short = []
     for row, protid in enumerate(protids):
         sequence = descriptors[protid]
@@ -176,21 +201,41 @@ def kmer_profile(descriptors, k: int = DEFAULT_K, scaling: str = "frequency", vo
             too_short.append(protid)
             continue
         counts = Counter(sequence[start : start + k] for start in range(len(sequence) - k + 1))
+        occurrences[row] = sum(counts.values())
         for kmer, count in counts.items():
             index = position.get(kmer)
             if index is not None:
                 features[row, index] = count
+                in_vocabulary[row] += count
+
+    out_of_vocabulary = np.zeros(len(protids), dtype=np.float64)
+    np.divide(
+        occurrences - in_vocabulary,
+        occurrences,
+        out=out_of_vocabulary,
+        where=occurrences > 0,
+    )
 
     if scaling == "frequency":
-        totals = features.sum(axis=1, keepdims=True)
         # A protein shorter than k contributes no k-mers. Its row stays zero
         # rather than becoming NaN, and it is reported separately.
-        np.divide(features, totals, out=features, where=totals > 0)
+        np.divide(
+            features,
+            occurrences[:, None],
+            out=features,
+            where=occurrences[:, None] > 0,
+        )
     elif scaling == "l2":
         norms = np.linalg.norm(features, axis=1, keepdims=True)
         np.divide(features, norms, out=features, where=norms > 0)
 
-    return protids, features.astype(np.float32), vocabulary, too_short
+    return (
+        protids,
+        features.astype(np.float32),
+        vocabulary,
+        too_short,
+        [float(v) for v in out_of_vocabulary],
+    )
 
 
 def validate_params(params: dict) -> dict:
@@ -303,7 +348,7 @@ class ThreeDiProvider:
         if not descriptors:
             raise DescriptorError(f"{path} contains no 3Di descriptors.")
 
-        protids, features, vocabulary, too_short = kmer_profile(
+        protids, features, vocabulary, too_short, out_of_vocabulary = kmer_profile(
             descriptors, k=params["k"], scaling=params["scaling"]
         )
 
@@ -321,6 +366,21 @@ class ThreeDiProvider:
                 # run to tens of thousands of entries and would dwarf the rest.
                 "kmers": vocabulary if len(vocabulary) <= 1024 else None,
                 "proteins_shorter_than_k": too_short,
+                # Zero for every protein while the vocabulary is observed from
+                # these same descriptors, which is every call the pipeline makes
+                # today. Recorded anyway, and recorded as a SUMMARY rather than
+                # a per-protein list, so the day a vocabulary is pinned from
+                # config the loss is already on the manifest instead of needing
+                # a new field nobody adds.
+                "out_of_vocabulary": {
+                    "max_fraction": max(out_of_vocabulary, default=0.0),
+                    "mean_fraction": (
+                        sum(out_of_vocabulary) / len(out_of_vocabulary)
+                        if out_of_vocabulary
+                        else 0.0
+                    ),
+                    "n_proteins_affected": sum(1 for v in out_of_vocabulary if v > 0),
+                },
             },
         )
         spec = BlockSpec(

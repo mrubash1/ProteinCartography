@@ -109,7 +109,7 @@ def test_the_suffix_is_removed_as_a_suffix_not_a_character_set(name, expected):
 
 
 def test_kmers_are_counted_with_a_sliding_window():
-    protids, features, vocabulary, _ = kmer_profile({"P1": "AAAB"}, k=2, scaling="counts")
+    protids, features, vocabulary, _, _ = kmer_profile({"P1": "AAAB"}, k=2, scaling="counts")
     assert protids == ["P1"]
     counts = dict(zip(vocabulary, features[0]))
     assert counts == {"AA": 2.0, "AB": 1.0}
@@ -123,7 +123,7 @@ def test_the_vocabulary_is_sorted_and_observed_only():
 
 
 def test_frequencies_sum_to_one():
-    _, features, _, _ = kmer_profile({"S": "ABAB", "L": "AABB"}, k=2, scaling="frequency")
+    _, features, _, _, _ = kmer_profile({"S": "ABAB", "L": "AABB"}, k=2, scaling="frequency")
     assert features.sum(axis=1) == pytest.approx([1.0, 1.0])
 
 
@@ -137,28 +137,28 @@ def test_frequency_removes_the_length_signal_that_counts_keeps():
     pairs = [("AB" * 5, "AB" * 25), ("AB" * 50, "AB" * 250)]
     gaps = []
     for short, long in pairs:
-        _, freq, _, _ = kmer_profile({"S": short, "L": long}, k=2, scaling="frequency")
+        _, freq, _, _, _ = kmer_profile({"S": short, "L": long}, k=2, scaling="frequency")
         gaps.append(float(np.abs(freq[0] - freq[1]).max()))
     assert gaps[1] < gaps[0] / 5, gaps
 
-    _, counts, _, _ = kmer_profile({"S": "AB" * 50, "L": "AB" * 250}, k=2, scaling="counts")
+    _, counts, _, _, _ = kmer_profile({"S": "AB" * 50, "L": "AB" * 250}, k=2, scaling="counts")
     assert counts[1].sum() == pytest.approx(5 * counts[0].sum(), rel=0.02)
 
 
 def test_counts_scaling_keeps_the_length_signal():
     """The opposite of the default, and the reason the default is not this."""
-    _, features, _, _ = kmer_profile({"S": "ABAB", "L": "ABABABABAB"}, k=2, scaling="counts")
+    _, features, _, _, _ = kmer_profile({"S": "ABAB", "L": "ABABABABAB"}, k=2, scaling="counts")
     assert features[1].sum() > 2 * features[0].sum()
 
 
 def test_l2_scaling_gives_unit_rows():
-    _, features, _, _ = kmer_profile({"P1": "ABAB", "P2": "AAAA"}, k=2, scaling="l2")
+    _, features, _, _, _ = kmer_profile({"P1": "ABAB", "P2": "AAAA"}, k=2, scaling="l2")
     assert np.linalg.norm(features, axis=1) == pytest.approx([1.0, 1.0])
 
 
 def test_a_protein_shorter_than_k_is_reported_and_left_as_zeros():
     """Not NaN, and not silently dropped from the cohort."""
-    protids, features, _, too_short = kmer_profile({"P1": "AB", "P2": "ABCDE"}, k=3)
+    protids, features, _, too_short, _ = kmer_profile({"P1": "AB", "P2": "ABCDE"}, k=3)
     assert too_short == ["P1"]
     assert protids == ["P1", "P2"]
     assert features[0].sum() == 0.0
@@ -167,7 +167,7 @@ def test_a_protein_shorter_than_k_is_reported_and_left_as_zeros():
 
 def test_an_explicit_vocabulary_is_honored():
     """So two cohorts can be compared on the same columns when that is wanted."""
-    _, features, vocabulary, _ = kmer_profile(
+    _, features, vocabulary, _, _ = kmer_profile(
         {"P1": "AAAB"}, k=2, scaling="counts", vocabulary=["AA", "ZZ"]
     )
     assert vocabulary == ["AA", "ZZ"]
@@ -292,3 +292,99 @@ def test_the_provider_registers_under_its_name():
 
     threedi.register()
     assert isinstance(get_provider(BLOCK_GROUP, "threedi"), ThreeDiProvider)
+
+
+# ==========================================================================
+# PC-012 phase 2 -- the frequency denominator, and what falls outside a
+# pinned vocabulary (FOLLOWUPS #28)
+# ==========================================================================
+
+
+def test_an_observed_vocabulary_leaves_the_matrix_bit_identical(tmp_path):
+    """The no-op half, proven rather than asserted in a comment (#39's rule).
+
+    The denominator changed from the in-vocabulary row sum to the protein's true
+    k-mer count. Whenever the vocabulary was observed from these same
+    descriptors the two are equal, so every call the pipeline makes today must
+    produce exactly the bytes it produced before.
+    """
+    descriptors = {"P1": "ABCABCAB", "P2": "AABBCCAA", "P3": "CCCCCCCC"}
+    _, features, vocabulary, _, oov = kmer_profile(descriptors, k=2, scaling="frequency")
+
+    # Every k-mer occurrence is inside an observed vocabulary, by construction.
+    assert oov == [0.0, 0.0, 0.0]
+    # And the rows still sum to 1, because nothing was dropped.
+    assert np.allclose(features.sum(axis=1), 1.0)
+    # Pinning the observed vocabulary explicitly must change nothing at all.
+    _, pinned, _, _, pinned_oov = kmer_profile(
+        descriptors, k=2, scaling="frequency", vocabulary=vocabulary
+    )
+    assert pinned.tobytes() == features.tobytes()
+    assert pinned_oov == oov
+
+
+def test_a_pinned_vocabulary_does_not_renormalise_away_what_it_dropped(tmp_path):
+    """THE DEFECT. With the row sum as denominator, a protein described half by
+    out-of-vocabulary k-mers had its surviving half scaled up to sum to 1 -- so
+    to every distance it looked exactly like a protein that was fully described.
+
+    Here `P1`'s eight k-mer occurrences are four `AB` and four others, and the
+    vocabulary admits only `AB`. The row must carry 0.5, not 1.0.
+    """
+    descriptors = {"P1": "ABXABYABZAB"}
+    _, features, _, _, oov = kmer_profile(descriptors, k=2, scaling="frequency", vocabulary=["AB"])
+    occurrences = len("ABXABYABZAB") - 2 + 1  # 10
+    assert features.shape == (1, 1)
+    assert features[0, 0] == pytest.approx(4 / occurrences)
+    assert features.sum() < 1.0, (
+        "the surviving k-mers were renormalised to sum to 1, which makes a "
+        "half-described protein indistinguishable from a fully described one"
+    )
+    assert oov[0] == pytest.approx(1.0 - 4 / occurrences)
+
+
+def test_a_protein_with_nothing_in_the_vocabulary_is_all_out_not_all_in(tmp_path):
+    """Its row is zeros either way. The difference is whether anything says so.
+
+    Under the old denominator this protein and a protein shorter than k were
+    indistinguishable -- both all-zero rows, both reported nowhere.
+    """
+    _, features, _, too_short, oov = kmer_profile(
+        {"P1": "XYXYXY", "P2": "A"}, k=2, scaling="frequency", vocabulary=["AB"]
+    )
+    assert too_short == ["P2"]
+    assert np.all(features == 0.0)
+    assert oov[0] == pytest.approx(1.0), "every k-mer of P1 fell outside the vocabulary"
+    assert oov[1] == 0.0, "P2 has no k-mers at all, so no fraction of them fell outside"
+
+
+def test_counts_and_l2_scaling_are_untouched_by_the_denominator_change(tmp_path):
+    """Only `frequency` divides by the k-mer count. The other two scalings must
+    be exactly what they were, pinned so the change cannot spread."""
+    descriptors = {"P1": "ABCABCAB", "P2": "AABBCCAA"}
+    _, counts, _, _, _ = kmer_profile(descriptors, k=2, scaling="counts")
+    assert counts.sum(axis=1).tolist() == [7.0, 7.0]
+    _, l2, _, _, _ = kmer_profile(descriptors, k=2, scaling="l2")
+    assert np.allclose(np.linalg.norm(l2, axis=1), 1.0)
+
+
+def test_the_manifest_carries_the_out_of_vocabulary_summary(tmp_path):
+    """A number computed and not recorded is a number nobody can act on. It is a
+    summary rather than a per-protein list for the same reason the k-mer
+    vocabulary is capped at 1024 entries: the manifest is read by people."""
+    from blocks.threedi import ThreeDiProvider
+
+    directory = tmp_path / "protein_features"
+    directory.mkdir(parents=True)
+    # One 3Di letter per residue -- the reader checks the two field lengths
+    # against each other and refuses a mismatch rather than guessing, which is
+    # what the first draft of this fixture ran into.
+    (directory / "3di_descriptors.tsv").write_text(
+        "P1.pdb\tMDDDIAALV\tABCABCABC\t0,0,0\nP2.pdb\tMKKKKKAAA\tAABBCCAAB\t0,0,0\n"
+    )
+    from blocks.tmscore import PipelineContext
+
+    result = ThreeDiProvider().compute(PipelineContext(output_dir=str(tmp_path)), {"k": 2})
+    # `BlockResult.manifest` is the serialised dict, not the `Manifest` object.
+    summary = result.manifest["extra"]["out_of_vocabulary"]
+    assert summary == {"max_fraction": 0.0, "mean_fraction": 0.0, "n_proteins_affected": 0}
