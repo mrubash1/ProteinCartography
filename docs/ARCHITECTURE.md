@@ -40,6 +40,7 @@ ProteinCartography/
 │   ├── registry.py         # entry-point discovery
 │   ├── store.py            # read/write .npy + manifest, hash-based cache invalidation
 │   ├── manifest.py         # provenance capture (ADR 0001 I5)
+│   ├── layout.py           # every space- and block-level filename, defined once
 │   └── reducers/           # pca, umap, tsne — the existing behavior, extracted
 ├── blocks/
 │   ├── tmscore.py          # the existing TM path, as a block
@@ -49,6 +50,7 @@ ProteinCartography/
 ├── fusion.py               # none, early, late, graph (SNF) — ADR 0002, 0013
 ├── diagnostics/
 │   ├── censoring.py        # rate, asymmetry, cross-cluster retention — ADR 0009
+│   ├── metricity.py        # negative spectral mass of a pairwise block — context, not a verdict
 │   ├── redundancy.py       # do two blocks say the same thing — ADR 0014
 │   ├── embedding.py        # trustworthiness / continuity, per protein — ADR 0014
 │   ├── stability.py        # per-protein kNN Jaccard under resampling — ADR 0015
@@ -58,7 +60,7 @@ ProteinCartography/
 │  # entry points, one per snakemake rule; each is a CLI over the modules above
 ├── compute_block.py        # build one block
 ├── reduce_space.py         # embed one space
-├── diagnose_space.py       # the nine diagnostics for one space
+├── diagnose_space.py       # the seven diagnostic sections for one space
 ├── coregister.py           # compare a pair of spaces
 ├── enrich_clusters.py      # cluster-level enrichment
 ├── build_explorer.py       # the single-file HTML
@@ -90,6 +92,7 @@ OUTPUT_DIR/
 │   ├── embedding_{reducer}.tsv        # protid, dim_1, dim_2[, dim_3]
 │   ├── clusters.tsv                   # this space's own Leiden (ADR 0015)
 │   ├── faithfulness_{reducer}.tsv     # per-protein trustworthiness / continuity
+│   ├── stability.tsv                  # per-protein kNN stability — per space, not per reducer
 │   ├── diagnostics.json
 │   ├── manifest_{reducer}.json        # one per reducer, not one per space
 │   └── manifest_diagnostics.json
@@ -115,7 +118,7 @@ flowchart LR
     PDB["n PDB files"] --> TMP["foldseek_clustering.py<br/>(unchanged)"]
     TMP --> MAT["all_by_all_tmscore_pivoted.tsv<br/>(unchanged)"]
 
-    MAT --> MIO["matrix_io.load()<br/>asserts header order == row order<br/>builds censoring mask from string form"]
+    MAT --> MIO["matrix_io.load_labeled_matrix()<br/>asserts header order == row order<br/>builds censoring mask from string form"]
     PDB --> B2["threedi"]
     SEQ["sequences"] --> B3["biophys"]
     META["uniprot metadata"] --> B4["domains"]
@@ -227,10 +230,13 @@ class MyThingProvider:
         ...
 ```
 
-Nothing in this repo changes. `registry.py` discovers it, the config validator
-type-checks its params against `spec_schema`, and the Snakefile skips it with a
-clear log line if `is_available()` is false. A worked example is in
-`docs/EXTENDING.md`.
+Nothing in this repo changes. `registry.py` discovers it, and the Snakefile skips
+it with a clear log line if `is_available()` is false. `spec_schema` is
+**declarative only — the framework never calls it**: `config_schema` validates a
+config without importing any provider, so it cannot reach a provider's schema at
+parse time, and a provider that does not call its own schema first thing in
+`compute()` gets no parameter validation at all. That warning, and a worked
+example, are in `docs/EXTENDING.md`.
 
 ---
 

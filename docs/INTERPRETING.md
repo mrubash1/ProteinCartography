@@ -146,9 +146,13 @@ are `%.3E` (ADR 0009).
 
 ## 3. The nine diagnostics, and what each one licenses
 
-Every space writes `spaces/{space_id}/diagnostics.json`. A section is absent
-when this run could not answer it, and the set that landed is recorded in the
-manifest, so absence is information rather than silence.
+Every space writes `spaces/{space_id}/diagnostics.json`, which carries seven
+sections (`diagnose_space.SECTIONS`). A section is absent when this run could not
+answer it, and the set that landed is recorded in the manifest, so absence is
+information rather than silence. Two of the nine below are not sections of that
+file: the contribution share is written on the space's own
+`manifest_{reducer}.json` under `extra.fusion`, and self-diff determinism is a
+standing CI guard rather than a per-run number.
 
 ### Censoring — was the input measured?
 
@@ -202,10 +206,15 @@ Per protein, and **never averaged together**, because they fail in opposite
 directions. Trustworthiness penalizes neighbours the 2-D layout *invented*;
 continuity penalizes true neighbours it *tore apart*.
 
-*Reads:* T ≫ C means the layout is over-compressed — it has crushed distinct
-regions together. C ≫ T means it is torn — it has separated things that belong
-together. A protein flagged in either direction should not have its position on
-the plot read at all.
+*Reads:* **C ≫ T means the layout is over-compressed** — low trustworthiness is
+neighbours it invented, so it has crushed distinct regions together, and that is
+the failure that produces wrong biology. **T ≫ C means it is torn** — low
+continuity is true neighbours it lost, so it has separated things that belong
+together and any split it shows should be read as a hypothesis. This is the
+direction the tool prints on the same run: below a gap of −0.10 it says
+"over-compressed rather than torn", above +0.10 "torn rather than crowded"
+(`diagnostics/embedding.py`). A protein flagged in either direction should not
+have its position on the plot read at all.
 
 ### Neighborhood stability — is this neighbour list a finding or a coin flip?
 
@@ -326,20 +335,34 @@ Two behaviours to know:
 
 - **Default configuration output is byte-identical** to upstream at the commit
   this branch forked from, checked by a parity test that CI runs on every pull
-  request and that is itself mutation tested (12 mutations detected, 5
-  survived-as-expected with a recorded reason, 0 unexplained holes). Read that
-  mutation result narrowly: the harness runs pipeline steps and diffs output
-  trees, and all 17 of its mutations name six pipeline scripts, so it says
-  nothing about the block, fusion or diagnostics modules.
+  request and that is itself mutation tested — 22 mutants across the four suites
+  of `tests/mutation_check.py`, of which 16 are detected, 6 survive as expected
+  with a recorded reason, and 0 are unexplained. Read that result with its shape
+  in mind. The harness runs pipeline steps and diffs output trees, and the ten
+  mutants of `MUTATIONS` name six pipeline scripts only, so that suite alone says
+  nothing about the modules this branch added. `SPACE_MUTATIONS` exists for those
+  — five mutants in `fusion.py`, `diagnostics/embedding.py`,
+  `diagnostics/redundancy.py`, `diagnose_space.py` and `enrichment.py`, run under
+  a config that puts spaces in the DAG, because the default config does not and
+  so could never reach them. `REDUCER_MUTATIONS` and `COMPONENT_MUTATIONS` add
+  seven more at N=750 and at the pivot and Leiden steps, which the
+  eleven-protein fixture clamps away.
 - **Two runs of the same config agree above N=500**, guarded in CI.
-- **The Leiden partition is not reproducible across environments at very small
-  N.** Two environments agreeing on scanpy, leidenalg, igraph, numpy and
-  scikit-learn, and differing only in scipy 1.13.1 against 1.15.2, return
-  different two-cluster memberships at N=11 and identical ones at N=250. At
-  eleven proteins the kNN graph is nearly complete and Leiden's optimum is
-  degenerate, so `arpack` decides the tie. This applies to the pre-existing
-  `leiden_clustering` rule too; `envs/analysis.yml` does not pin scipy
-  (FOLLOWUPS #42).
+- **The Leiden partition is not reproducible across environments, and the
+  disagreement is largest at production scale.** It was found first on the
+  eleven-protein demo, where two environments agreeing on scanpy, leidenalg,
+  igraph, numpy and scikit-learn and differing only in scipy 1.13.1 against
+  1.15.2 return different two-cluster memberships: at eleven proteins the kNN
+  graph is nearly complete and Leiden's optimum is degenerate, so `arpack`
+  decides the tie. **Do not read that as a small-N problem.** On a 2,465-protein
+  production matrix the same script returns **6 clusters under python 3.11 +
+  scipy 1.15.2 and 14 under python 3.9 + scipy 1.13.1**, each bit-identical on a
+  rerun, and the fourteen-cluster partition is the one the published actin map's
+  labels come from — so a reader comparing the published map against one rebuilt
+  today sees a different cluster count for reasons that have nothing to do with
+  the data. Everything downstream of the partition inherits it. This applies to
+  the pre-existing `leiden_clustering` rule too; `envs/analysis.yml` does not pin
+  scipy (FOLLOWUPS #42).
 - **The parity test cannot see what the default configuration does not run.**
   Significance-ranked cohort selection, for example, is covered by unit tests
   instead. And because both sides of the comparison run in one environment, it

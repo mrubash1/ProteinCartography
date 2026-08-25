@@ -72,8 +72,10 @@ What the manifest then records, and why each part is worth having:
   different block. Move the file and it is the same block.
 * `extra.vocabulary_pinned` — the basename and the token count, for a person
   reading the manifest.
-* `extra.out_of_vocabulary` (threedi) — how much of each protein's k-mer mass
-  fell outside. Zero everywhere for an unpinned block, by construction.
+* `extra.out_of_vocabulary` (threedi) — how much k-mer mass fell outside,
+  recorded as a **summary rather than a per-protein list**: `max_fraction`,
+  `mean_fraction` and `n_proteins_affected`. Zero everywhere for an unpinned
+  block, by construction.
 * `extra.proteins_annotated_outside_vocabulary` (domains) — proteins that ARE
   annotated and whose every family is outside the vocabulary. Their rows are
   zeros, exactly like an unannotated protein's, and this is the only place the
@@ -85,8 +87,10 @@ rather than null, so the cache key of an unpinned block does not move.
 ## 2. Write the provider
 
 A provider is a plain object with four members. There is no base class to
-inherit and no import from this package required — it is a structural protocol,
-so your package need not depend on ProteinCartography at all to satisfy it.
+inherit — `BlockProvider` is a structural protocol, so nothing checks your type
+and `is_available()` can be consulted before this package is imported at all. One
+import is not optional, though: `compute` must return a `BlockResult` wrapping a
+`BlockSpec`, and both live in `spaces.base`, as the worked example below shows.
 
 ```python
 class HydropathyWindowsProvider:
@@ -218,19 +222,23 @@ Some signals belong on a map as an overlay and never as an axis. Set
 `fusable=False` and give a `not_fusable_reason`, which is shown to the user
 verbatim when they try to fuse it.
 
-The existing cases and their reasons are in
+The existing cases and their reasons are the eight entries of
 `config_schema.NOT_FUSABLE_REASONS`: taxonomy (fusing it makes every
 taxon-specific cluster claim circular), phylogeny (patristic distance is derived
 from the same sequences), pLDDT and prediction confidence (both track length),
 censoring rate (a property of how well a protein was measured, not of the
-protein), and `struclusters` (a structurally-gated graph clustered on
-amino-acid identity, so using it inside a geometry later contrasted against
-sequence space is partly circular).
+protein), disorder fraction (explains most TM-score failures and also tracks
+length), stability QC (a measurement's qualifier, so fusing it into the thing it
+qualifies is a category error), and `struclusters` (a structurally-gated graph
+clustered on amino-acid identity, so using it inside a geometry later contrasted
+against sequence space is partly circular).
 
-The rule is keyed on the **provider name**, not the block id, deliberately: the
-block id is free text the user chooses, so a table keyed on it would protect
+The rule is looked up on the **provider name first**, deliberately: the block id
+is free text the user chooses, so a table keyed on it *alone* would protect
 `taxonomy:` and miss `tax:`, `Taxonomy:` and `lineage:` — that is, it would
-protect exactly the users who already knew.
+protect exactly the users who already knew. The case-folded block id is then
+tried as a second chance, for a block whose provider name this table does not
+recognise, so a block *named* `taxonomy` is still refused.
 
 A single-block space is not a fusion, so an overlay-only signal can still have
 its own space. Looking at a taxonomy-only layout is fine; letting taxonomy move
