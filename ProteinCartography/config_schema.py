@@ -19,7 +19,7 @@ Two things here are load-bearing rather than housekeeping:
 
 from __future__ import annotations
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 
 from diagnostics.partition import CONTROL_DESCRIPTIONS
 from enrichment import ENCODINGS
@@ -220,6 +220,24 @@ def _require_sequence(path: str, value) -> list:
     return list(value)
 
 
+def _known_keys(cls, *, drop=(), extra=()) -> set:
+    """The config keys a dataclass accepts, DERIVED from the dataclass.
+
+    Every one of these sets used to be written out by hand beside the fields it
+    mirrored, which is a drift waiting to happen in one direction only: add a
+    field, forget the set, and the loader REJECTS the key you just added, with a
+    message listing every key except the one the user typed. Measured before
+    changing anything -- five of the six were already exactly the field names,
+    so this collapses six hand-maintained copies rather than fixing six bugs.
+
+    `drop` is for a field that is not a config key: `id` is the mapping key the
+    block or space is filed under, not something you write inside it. `extra` is
+    for a key with no field behind it, which today is
+    `fusable_override_reason` -- it is folded into `params` rather than stored.
+    """
+    return {f.name for f in fields(cls)} - set(drop) | set(extra)
+
+
 def _reject_unknown_keys(path: str, data: Mapping, known) -> None:
     unknown = sorted(set(data) - set(known))
     if unknown:
@@ -277,8 +295,7 @@ class CohortConfig:
     @classmethod
     def from_dict(cls, data: Mapping | None) -> CohortConfig:
         data = _require_mapping("cohort", data or {})
-        known = {"max_structures", "selection", "significance_rule", "record_truncation"}
-        _reject_unknown_keys("cohort", data, known)
+        _reject_unknown_keys("cohort", data, _known_keys(cls))
         return cls(
             max_structures=data.get("max_structures", 5000),
             selection=data.get("selection", "as_filtered"),
@@ -351,17 +368,7 @@ class BlockConfig:
     def from_dict(cls, block_id: str, data: Mapping) -> BlockConfig:
         path = f"blocks.{block_id}"
         data = _require_mapping(path, data)
-        known = {
-            "provider",
-            "params",
-            "fusable",
-            "not_fusable_reason",
-            "normalization",
-            "metric",
-            "representation",
-            "fusable_override_reason",
-            "vocabulary_file",
-        }
+        known = _known_keys(cls, drop=("id",), extra=("fusable_override_reason",))
         # Provider-specific keys are common in the wild, so anything not in
         # `known` is folded into params rather than rejected -- but only for a
         # block, where the provider is the authority on its own parameters.
@@ -555,7 +562,7 @@ class SpaceConfig:
     def from_dict(cls, space_id: str, data: Mapping) -> SpaceConfig:
         path = f"spaces.{space_id}"
         data = _require_mapping(path, data)
-        known = {"blocks", "strategy", "weights", "params", "reducers", "reducer_params"}
+        known = _known_keys(cls, drop=("id",))
         _reject_unknown_keys(path, data, known)
         blocks = _require_sequence(f"{path}.blocks", data.get("blocks", []))
         reducers = _require_sequence(f"{path}.reducers", data.get("reducers", ["pca_umap"]))
@@ -602,7 +609,7 @@ class CoregistrationConfig:
     @classmethod
     def from_dict(cls, data: Mapping | None) -> CoregistrationConfig:
         data = _require_mapping("coregistration", data or {})
-        _reject_unknown_keys("coregistration", data, {"reference_space", "compare", "k"})
+        _reject_unknown_keys("coregistration", data, _known_keys(cls))
         compare = _require_sequence("coregistration.compare", data.get("compare", []))
         return cls(
             reference_space=data.get("reference_space"),
@@ -693,14 +700,7 @@ class EnrichmentConfig:
     @classmethod
     def from_dict(cls, data: Mapping | None) -> EnrichmentConfig:
         data = _require_mapping("enrichment", data or {})
-        known = {
-            "cluster_column",
-            "categorical",
-            "continuous",
-            "encodings",
-            "min_term_count",
-            "fdr",
-        }
+        known = _known_keys(cls)
         _reject_unknown_keys("enrichment", data, known)
         categorical = _require_sequence("enrichment.categorical", data.get("categorical", []) or [])
         continuous = _require_sequence("enrichment.continuous", data.get("continuous", []) or [])
@@ -801,14 +801,7 @@ class DiagnosticsConfig:
     @classmethod
     def from_dict(cls, data: Mapping | None) -> DiagnosticsConfig:
         data = _require_mapping("diagnostics", data or {})
-        known = {
-            "k",
-            "bootstrap_replicates",
-            "subsample_fraction",
-            "leiden_resolution_sweep",
-            "negative_controls",
-            "censoring_comparison",
-        }
+        known = _known_keys(cls)
         _reject_unknown_keys("diagnostics", data, known)
         return cls(
             k=data.get("k", 15),
@@ -1001,6 +994,64 @@ def _cohort_from_legacy(config: Mapping) -> dict:
     return cohort
 
 
+#: The top-level keys this file owns. A legacy config carries dozens of others
+#: -- `mode`, `input_dir`, `max_blast_hits` -- so the top level CANNOT reject
+#: unknown keys the way every nested block does.
+MULTISPACE_TOP_LEVEL_KEYS = (
+    "blocks",
+    "spaces",
+    "cohort",
+    "coregistration",
+    "enrichment",
+    "diagnostics",
+)
+
+
+def _reject_near_miss_top_level_keys(config: Mapping) -> None:
+    """Refuse a top-level key that is one typo away from a multispace key.
+
+    Every nested block rejects unknown keys outright. The top level cannot: a
+    legacy `config.yml` is full of keys this file knows nothing about, and
+    rejecting them would refuse every real config. So `coregistraton:` was
+    accepted in silence, the co-registration never ran, and nothing said why --
+    which is precisely what `_reject_unknown_keys`' own message warns about:
+    "a misspelled key is silently ignored by a permissive loader, which is how a
+    setting you thought you changed turns out not to have applied."
+
+    The narrow fix is to refuse only the keys that are CLOSE to one this file
+    owns. An unrelated legacy key is nowhere near "coregistration" and stays
+    accepted; a one- or two-character slip is refused with the key it meant.
+
+    Distance is computed on the plain edit distance and gated at 2, which is far
+    enough to catch a transposition or a doubled letter and near enough that no
+    key in the shipped `config.yml` trips it -- checked against every one of
+    them, and there is a test that keeps checking.
+    """
+    for key in config:
+        if key in MULTISPACE_TOP_LEVEL_KEYS:
+            continue
+        for known in MULTISPACE_TOP_LEVEL_KEYS:
+            if 0 < _edit_distance(str(key), known) <= 2:
+                raise ConfigError(
+                    f"<config>: top-level key {key!r} is not one this pipeline "
+                    f"knows, and it is {_edit_distance(str(key), known)} character(s) "
+                    f"away from {known!r}. If you meant {known!r}, fix the spelling; "
+                    f"if {key!r} is deliberate, it is being ignored, which is worse "
+                    "than an error and is why this refuses instead."
+                )
+
+
+def _edit_distance(a: str, b: str) -> int:
+    """Levenshtein distance. Small strings only -- this runs over config keys."""
+    previous = list(range(len(b) + 1))
+    for i, ca in enumerate(a, start=1):
+        current = [i]
+        for j, cb in enumerate(b, start=1):
+            current.append(min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + (ca != cb)))
+        previous = current
+    return previous[-1]
+
+
 def from_legacy(config: Mapping | None) -> MultispaceConfig:
     """Build a MultispaceConfig from an existing ``config.yml``.
 
@@ -1019,6 +1070,7 @@ def from_legacy(config: Mapping | None) -> MultispaceConfig:
     passthrough, so a user can migrate incrementally.
     """
     config = _require_mapping("<config>", config or {})
+    _reject_near_miss_top_level_keys(config)
 
     if config.get("blocks") or config.get("spaces"):
         merged = dict(config)

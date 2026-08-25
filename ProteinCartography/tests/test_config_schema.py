@@ -565,3 +565,103 @@ def test_the_shipped_config_states_the_mode():
     key without editing anything."""
     root = pathlib.Path(__file__).resolve().parents[2]
     assert 'foldseek_mode: "3diaa"' in (root / "config.yml").read_text()
+
+
+# ==========================================================================
+# PC-036 phase 3 / WS5 -- the known-key sets, and the typo the top level ate
+# ==========================================================================
+
+
+def test_every_known_key_set_is_derived_from_its_dataclass():
+    """Six sets used to be written out by hand beside the fields they mirrored.
+
+    The drift runs in one direction only and is nasty when it happens: add a
+    field, forget the set, and the loader REJECTS the key you just added with a
+    message listing every key except the one the user typed. Measured before the
+    change -- five of the six were already exactly the field names -- so this
+    collapsed six copies rather than fixing six bugs, and this test is what stops
+    a seventh copy appearing.
+    """
+    import dataclasses
+
+    import config_schema as cs
+
+    cases = [
+        (cs.CohortConfig, set(), set()),
+        (cs.BlockConfig, {"id"}, {"fusable_override_reason"}),
+        (cs.SpaceConfig, {"id"}, set()),
+        (cs.CoregistrationConfig, set(), set()),
+        (cs.EnrichmentConfig, set(), set()),
+        (cs.DiagnosticsConfig, set(), set()),
+    ]
+    for cls, drop, extra in cases:
+        expected = {f.name for f in dataclasses.fields(cls)} - drop | extra
+        assert cs._known_keys(cls, drop=tuple(drop), extra=tuple(extra)) == expected
+
+
+def test_a_new_field_becomes_an_accepted_key_without_a_second_edit():
+    """The property the derivation buys, stated as a behaviour rather than as a
+    shape. `vocabulary_file` was added to BlockConfig this session and needed a
+    second edit to the hand-written set; it would not now."""
+    import config_schema as cs
+
+    for name in ("vocabulary_file", "representation", "metric"):
+        assert name in cs._known_keys(cs.BlockConfig, drop=("id",))
+
+
+@pytest.mark.parametrize(
+    "typo",
+    ["coregistraton", "coregistrations", "diagnostic", "diagnostcs", "enrichmnt", "spaces_"],
+)
+def test_a_misspelled_top_level_key_is_refused_by_name(typo):
+    """THE DEFECT. Every nested block rejects unknown keys; the top level cannot,
+    because a legacy config.yml is full of keys this file knows nothing about.
+
+    So `coregistraton:` was accepted in silence, the co-registration never ran,
+    and nothing said why -- which is exactly what `_reject_unknown_keys`' own
+    message warns about.
+    """
+    base = {
+        "blocks": {"t": {"provider": "tmscore"}},
+        "spaces": {"s": {"blocks": ["t"], "strategy": "none", "reducers": ["pca"]}},
+    }
+    with pytest.raises(ConfigError) as excinfo:
+        from_legacy({**base, typo: {}})
+    message = str(excinfo.value)
+    assert typo in message, "the message must quote the key the user actually typed"
+    assert "character(s) away from" in message
+
+
+def test_an_unrelated_legacy_key_is_still_accepted():
+    """The guard has to be narrow or it refuses every real config. `mode`,
+    `input_dir` and `max_blast_hits` are nowhere near a multispace key."""
+    base = {
+        "blocks": {"t": {"provider": "tmscore"}},
+        "spaces": {"s": {"blocks": ["t"], "strategy": "none", "reducers": ["pca"]}},
+    }
+    config = {
+        **base,
+        "mode": "search",
+        "input_dir": "in",
+        "max_blast_hits": 10,
+        "plotting_modes": ["pca_umap"],
+        "analysis_name": "x",
+        "features_file": "f.tsv",
+    }
+    assert from_legacy(config) is not None
+
+
+def test_no_shipped_config_trips_the_near_miss_guard():
+    """The guard's threshold is a judgement, so it is checked against the configs
+    that actually exist rather than argued about."""
+    import glob
+
+    import yaml
+
+    root = pathlib.Path(__file__).resolve().parents[2]
+    paths = sorted(
+        glob.glob(str(root / "config.yml")) + glob.glob(str(root / "demo/*/config*.yml"))
+    )
+    assert paths, "no configs found to check the guard against"
+    for path in paths:
+        from_legacy(yaml.safe_load(open(path)))
