@@ -40,6 +40,35 @@ import pytest
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 
+
+def _why_no_snakemake():
+    """``None`` when snakemake actually RUNS, else the reason it does not.
+
+    Not `shutil.which("snakemake") is None`, which is the idiom the rest of the
+    suite uses and which is wrong on any machine with pyenv: `which` finds
+    `~/.pyenv/shims/snakemake`, the shim then prints "pyenv: snakemake: command
+    not found" and exits non-zero, and the guard concludes snakemake is present.
+    The test then fails for a reason it does not exist to catch. That happened
+    twice on this branch in one day -- once producing a report of "10 failures"
+    against a tree whose battery was green -- so this probe runs the thing.
+    """
+    exe = shutil.which("snakemake")
+    if exe is None:
+        return "needs snakemake"
+    try:
+        probe = subprocess.run([exe, "--version"], capture_output=True, text=True, timeout=60)
+    except OSError as exc:  # pragma: no cover - depends on the machine
+        return f"snakemake at {exe} is not executable: {exc}"
+    if probe.returncode != 0:
+        return (
+            f"snakemake at {exe} does not run (exit {probe.returncode}): "
+            f"{(probe.stderr or probe.stdout).strip()[:120]}"
+        )
+    return None
+
+
+_WHY_NO_SNAKEMAKE = _why_no_snakemake()
+
 #: What `envs/cartography_test.yml` does not ship. `bioservices` is the module
 #: that actually broke; the rest are here because ADR 0006 rule 3 says the
 #: framework must work with zero optional dependencies, and a parse that reached
@@ -130,7 +159,7 @@ def test_config_utils_imports_without_the_heavy_stack(tmp_path):
     assert result.stdout.strip() == "3diaa"
 
 
-@pytest.mark.skipif(shutil.which("snakemake") is None, reason="needs snakemake")
+@pytest.mark.skipif(_WHY_NO_SNAKEMAKE is not None, reason=_WHY_NO_SNAKEMAKE or "")
 @pytest.mark.parametrize(
     "configfile",
     ["demo/cluster-mode/config.yml", "demo/search-mode/config_actin_small.yml"],
