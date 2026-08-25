@@ -661,3 +661,60 @@ def test_a_domain_whose_pdb_crops_to_nothing_leaves_no_fasta_behind(tmp_path: Pa
         structures / "P99999__d02.fasta"
     ).exists(), "the second domain has no structure, so it must have no sequence either"
     assert gate == "off", "one kept domain is not multi-domain"
+
+
+# ==========================================================================
+# PC-023 phase 3 (rewritten) -- the sequence crop the hit path does not do
+# ==========================================================================
+
+
+def test_a_hit_domain_gets_a_structure_and_no_sequence(tmp_path: Path):
+    """A CHARACTERISATION TEST. It pins a question, not an answer.
+
+    A QUERY domain gets both halves: `_crop_query_files` writes a cropped `.pdb`
+    and a cropped `.fasta`. A HIT domain gets only the first --
+    `assign_and_crop_hits` calls `crop_pdb_file` and calls `crop_fasta_file`
+    nowhere. `grep -rn crop_fasta_file` over the package returns exactly one
+    production call site, and it is the query one.
+
+    That asymmetry is plausible and is stated nowhere. BLAST and Foldseek on the
+    domain path search FROM the query domains' sequences, so a hit domain may
+    genuinely never need one -- but `aggregate_domain_hits` reads hit files by
+    name, and nothing in the code says which files a hit domain is entitled to.
+
+    **This test must FLIP if anyone gives the hit path a sequence crop.** It is
+    here so that change is deliberate and visible in a diff, rather than
+    arriving as a silently different output tree. The related annotation
+    question is PC-021 phase 3, which is defaulted-not-done.
+    """
+    pdb_dir = tmp_path / "pdbs"
+    pdb_dir.mkdir()
+    _write_query_files(pdb_dir, "P99999", 160)
+    hits = tmp_path / "hits.txt"
+    hits.write_text("P99999\n")
+    session = FakeSession({"P99999": FakeResponse(200, TWO_DOMAIN_PAYLOAD)})
+    out_dir = tmp_path / "domain_structures"
+
+    rows = assign_domains.assign_and_crop_hits(
+        accessions_file=str(hits),
+        pdb_dir=str(pdb_dir),
+        output_dir=str(out_dir),
+        output_tsv=str(tmp_path / "domain_features.tsv"),
+        cache_dir=str(tmp_path / "cache"),
+        session=session,
+    )
+
+    assert {row["protid"] for row in rows} == {"P99999__d01", "P99999__d02"}
+    # The structure half, which the hit path does do.
+    for row in rows:
+        assert (out_dir / f"{row['protid']}.pdb").is_file()
+    # The sequence half, which it does not -- asserted over the whole tree
+    # rather than at one path, so a FASTA written anywhere would fail this.
+    assert not list(out_dir.rglob("*.fasta")), (
+        "a hit domain gained a cropped sequence. That may be right, but it is a "
+        "change to what the domain path produces: update this test deliberately "
+        "and say so, rather than letting the output tree differ in silence."
+    )
+    # And the parent's own sequence was not copied through either, which is a
+    # different way the same file could appear.
+    assert not (out_dir / "P99999.fasta").exists()
