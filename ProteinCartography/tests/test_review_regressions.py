@@ -21,13 +21,17 @@ import numpy as np
 import pytest
 from config_schema import ConfigError, MultispaceConfig
 from index import IndexAlignmentError, ProteinIndex
+from matrix_io import CENSORED_FILL_TOKEN
 from spaces.base import BlockResult, BlockSpec, BlockSpecError, NotFusableError
 from spaces.manifest import Manifest
 from spaces.store import BlockStore
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-FILL = "0.0"
+# Not the literal, which is what this was and what its three sibling test
+# files never had: `matrix_io` owns the token, and a copy here would keep
+# testing the old one after a change nobody thought to look for.
+FILL = CENSORED_FILL_TOKEN
 
 
 def fmt(v):
