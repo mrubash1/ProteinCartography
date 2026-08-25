@@ -578,7 +578,7 @@ function renderLegend() {
   spaces.forEach((space) => {
     const bad = space.protids.filter((protid, i) => space.readable[i] === false);
     bad.forEach((protid) => flagged.add(protid));
-    if (bad.length) perSpace.push(`${space.space_id} ${bad.length}`);
+    if (bad.length) perSpace.push(`${escapeHtml(space.space_id)} ${bad.length}`);
   });
   const total = spaces.length ? spaces[0].protids.length : 0;
   if (!flagged.size) {
@@ -992,7 +992,7 @@ function panelShell(space) {
   const verdict = document.createElement("div");
   verdict.className = `verdict level-${space.verdict.level}`;
   verdict.innerHTML =
-    space.verdict.headline +
+    escapeHtml(space.verdict.headline) +
     (space.verdict.reasons.length
       ? "<ul>" + space.verdict.reasons
           .map((r) => `<li>${escapeHtml(r)}</li>`).join("") + "</ul>"
@@ -2899,7 +2899,7 @@ function renderInspector() {
     ).length;
     const spread = Object.entries(clusters)
       .sort((a, b) => b[1] - a[1])
-      .map(([c, n]) => `${c}×${n}`)
+      .map(([c, n]) => `${escapeHtml(c)}×${n}`)
       .join(", ") || "no partition";
     return `<tr><td>${escapeHtml(space.space_id)}</td><td>${spread}</td>` +
            `<td>${unreadable} of ${chosen.length}</td></tr>`;
@@ -2956,8 +2956,9 @@ function renderProvenance() {
       `<code>${escapeHtml(m.cache_key || "no cache key")}</code></li>`)
     .join("");
   el("provenance").innerHTML =
-    `<b>Provenance.</b> ${p.n_spaces} space(s), ${p.n_proteins} proteins, ` +
-    `neighbourhood k=${p.diagnostics_k}, cohort rule ` +
+    `<b>Provenance.</b> ${escapeHtml(p.n_spaces)} space(s), ` +
+    `${escapeHtml(p.n_proteins)} proteins, ` +
+    `neighbourhood k=${escapeHtml(p.diagnostics_k)}, cohort rule ` +
     `<code>${escapeHtml(p.cohort_rule || "n/a")}</code>. ` +
     `This file carries no generation timestamp on purpose: two runs of the same inputs ` +
     `must produce the same bytes. ` +

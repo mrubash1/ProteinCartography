@@ -4568,3 +4568,38 @@ def test_the_page_title_cannot_carry_markup():
     html = render({"spaces": []}, plotly_js="", title="A<img src=x onerror=alert(2)>")
     assert "<img src=x" not in html
     assert "&lt;img src=x onerror=alert(2)&gt;" in html
+
+
+def test_every_payload_string_at_an_innerHTML_sink_goes_through_escapeHtml():
+    """The four sites the PC-038 audit left LISTED, closed at their source.
+
+    None is reachable from external text -- their inputs are the operator's
+    config, four repo literals, Leiden cluster labels and provenance integers,
+    so these are hygiene defects and not vulnerabilities. They are fixed anyway
+    because `template.py:2604` already escapes `verdict.headline` while `:993`
+    did not, and one field under two rules is the drift this repo's rules exist
+    to stop.
+
+    Asserted against the emitted JavaScript rather than a rendered DOM: pytest
+    has no DOM to plant into, so the page's own source is the only observable.
+    Each pair fails in both directions -- the raw form must be gone AND the
+    escaped form must be present -- so a deletion cannot pass it.
+    """
+    html = EMPTY_PAGE
+    for unescaped, escaped in (
+        # :590 renderLegend -- `space_id` into a text node
+        (
+            "perSpace.push(`${space.space_id} ${bad.length}`)",
+            "perSpace.push(`${escapeHtml(space.space_id)} ${bad.length}`)",
+        ),
+        # :993 panelShell -- the field :2604 already escapes
+        ("space.verdict.headline +", "escapeHtml(space.verdict.headline) +"),
+        # :2940 renderInspector -- Leiden cluster labels, via `spread`
+        ("`${c}×${n}`", "`${escapeHtml(c)}×${n}`"),
+        # :2957 renderProvenance -- ints by contract, unenforced at the sink
+        ("${p.n_spaces} space(s)", "${escapeHtml(p.n_spaces)} space(s)"),
+        ("${p.n_proteins} proteins", "${escapeHtml(p.n_proteins)} proteins"),
+        ("k=${p.diagnostics_k}, cohort rule", "k=${escapeHtml(p.diagnostics_k)}, cohort rule"),
+    ):
+        assert unescaped not in html, f"unescaped interpolation still in the page: {unescaped}"
+        assert escaped in html, f"escaped interpolation missing from the page: {escaped}"
