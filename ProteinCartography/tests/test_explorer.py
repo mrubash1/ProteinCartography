@@ -4666,3 +4666,132 @@ def test_the_provenance_column_names_the_file_the_run_actually_read():
     # The three answers, one per branch of overlaySourceCell.
     assert 'if (source.source === "none") return "none found";' in html
     assert '(source.assembled_from || []).join(" + ") || "assembled"' in html
+
+
+# ==========================================================================
+# PC-025 phase 4 -- the parent-to-domain link the explorer had never parsed
+# ==========================================================================
+
+
+def _domain_run(root, protids):
+    """The smallest run directory `build_payload` will read, over `protids`.
+
+    One space, one reducer, no diagnostics. Everything this section asserts is
+    about the ids, and a fuller fixture would only add ways for the test to fail
+    for a reason it is not about.
+    """
+    from config_schema import from_legacy
+
+    directory = root / "spaces" / "d"
+    directory.mkdir(parents=True, exist_ok=True)
+    rows = ["protid\tUMAP1\tUMAP2"]
+    for i, protid in enumerate(protids):
+        rows.append(f"{protid}\t{float(i)}\t{float(i % 3)}")
+    (directory / "embedding_pca.tsv").write_text("\n".join(rows) + "\n")
+    config = from_legacy(
+        {
+            "blocks": {"t": {"provider": "tmscore"}},
+            "spaces": {"d": {"blocks": ["t"], "strategy": "none", "reducers": ["pca"]}},
+        }
+    )
+    return config
+
+
+#: A parent with two domains whose indices are NOT contiguous, a second parent
+#: with one, and a decoy carrying the literal characters `__d` that is not a
+#: domain id. The gap at `__d02` is what `run_query_gate` leaves behind when a
+#: domain crops to zero residues, and it is the case a range-walk gets wrong.
+DOMAIN_COHORT = ["P00001__d01", "P00001__d03", "P00002__d01", "Q99999__draft"]
+
+
+def test_domains_of_the_same_parent_are_grouped_by_the_parent_they_parse_to(tmp_path):
+    from explorer.payload import build_payload
+
+    config = _domain_run(tmp_path, DOMAIN_COHORT)
+    links = build_payload(config, str(tmp_path), analysis_name="d").domain_links
+    assert links["domains_of"]["P00001"] == ["P00001__d01", "P00001__d03"]
+    assert links["domains_of"]["P00002"] == ["P00002__d01"]
+    assert links["parent_of"]["P00001__d03"] == "P00001"
+
+
+def test_a_parent_missing_a_middle_domain_reports_two_and_not_three(tmp_path):
+    """`__d01` and `__d03` with no `__d02` is a NORMAL shape, not a corruption.
+
+    `filter_domain_rows` renumbers after the length filter, but `_crop_query_files`
+    then empties a domain and `run_query_gate` drops it without renumbering. A
+    grouping that walked 1..max would advertise a `__d02` that no file exists for.
+    """
+    from explorer.payload import build_payload
+
+    config = _domain_run(tmp_path, DOMAIN_COHORT)
+    links = build_payload(config, str(tmp_path), analysis_name="d").domain_links
+    assert len(links["domains_of"]["P00001"]) == 2
+    assert "P00001__d02" not in links["parent_of"]
+
+
+def test_an_accession_carrying_the_separator_is_not_read_as_a_domain(tmp_path):
+    """The reason `domain_utils.is_domain_id` anchors its pattern instead of
+    testing for the substring `"__d"`, stated as a test rather than a docstring."""
+    from explorer.payload import build_payload
+
+    config = _domain_run(tmp_path, DOMAIN_COHORT)
+    links = build_payload(config, str(tmp_path), analysis_name="d").domain_links
+    assert "Q99999__draft" not in links["parent_of"]
+    assert "Q99999" not in links["domains_of"]
+
+
+def test_siblings_are_ordered_by_the_parsed_index_not_by_the_string(tmp_path):
+    """`__d9` before `__d10`. Sorting the ids as strings puts `10` first, which
+    is invisible below ten domains and wrong above it."""
+    from explorer.payload import build_payload
+
+    config = _domain_run(tmp_path, ["P00001__d10", "P00001__d9"])
+    links = build_payload(config, str(tmp_path), analysis_name="d").domain_links
+    assert links["domains_of"]["P00001"] == ["P00001__d9", "P00001__d10"]
+
+
+def test_a_cohort_of_whole_proteins_carries_no_domain_key_at_all(tmp_path):
+    """ABSENT, not empty. An empty key would render as a question that was asked
+    and came back with nothing, on a page where nothing ever asks it."""
+    from explorer.payload import build_payload
+
+    config = _domain_run(tmp_path, ["P00001", "P00002", "P00003"])
+    payload = build_payload(config, str(tmp_path), analysis_name="d")
+    assert payload.domain_links == {}
+    assert "domain_links" not in payload.to_dict()
+
+
+def test_the_domain_link_survives_into_the_rendered_page(tmp_path):
+    """Carrying it is not drawing it, so both halves are asserted -- the payload
+    the page received, and the fact that the inspector reads that key."""
+    from explorer.payload import build_payload
+    from explorer.template import render
+
+    config = _domain_run(tmp_path, DOMAIN_COHORT)
+    document = build_payload(config, str(tmp_path), analysis_name="d").to_dict()
+    html = render(document, plotly_js="", title="t")
+    embedded = _embedded_payload(html)
+    assert embedded["domain_links"]["domains_of"]["P00001"] == ["P00001__d01", "P00001__d03"]
+    assert "active.domain_links" in html, "the inspector must read the key the payload writes"
+    assert "data-select-protid" in html, "a sibling must be clickable, not merely listed"
+
+
+def test_the_sibling_link_selects_rather_than_navigating(tmp_path):
+    """`href="#"` on a file:// page would scroll to the top and change nothing.
+    The handler has to take over the click and put the sibling in the selection."""
+    from explorer.template import render
+
+    html = render({"spaces": []}, plotly_js="", title="t")
+    assert "function selectProtid(protid)" in html
+    assert "state.selected = new Set([protid]);" in html
+    assert "event.preventDefault();" in html
+
+
+def test_a_page_with_no_domain_links_renders_no_domain_ui(tmp_path):
+    """The guard is `if (!links) { return ""; }` -- a cohort without the key
+    must not reach `parent_of` at all."""
+    from explorer.template import render
+
+    html = render({"spaces": []}, plotly_js="", title="t")
+    assert "const links = active.domain_links;" in html
+    assert 'if (!links) { return ""; }' in html

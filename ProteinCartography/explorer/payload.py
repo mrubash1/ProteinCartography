@@ -31,6 +31,7 @@ import json
 import os
 from dataclasses import dataclass, field
 
+from domain_utils import is_domain_id, parse_domain_id
 from explorer import descriptions, panels
 from spaces import layout
 
@@ -587,9 +588,13 @@ class ExplorerPayload:
     #: The judgement lines the page draws, read from the modules that enforce
     #: them rather than retyped into the template.
     thresholds: dict = field(default_factory=dict)
+    #: For a domain cohort, each domain protid's parent and each parent's
+    #: domains. Empty -- and therefore ABSENT from `to_dict` -- for a cohort of
+    #: whole proteins, which is every cohort this PR ships.
+    domain_links: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
-        return {
+        document = {
             "analysis_name": self.analysis_name,
             "spaces": [space.to_dict() for space in self.spaces],
             "comparisons": self.comparisons,
@@ -605,6 +610,13 @@ class ExplorerPayload:
             "censoring": self.censoring,
             "thresholds": self.thresholds,
         }
+        # Added only when there is something to add. A cohort of whole proteins
+        # renders byte-for-byte the page it rendered before this existed, which
+        # is the additive-only guarantee stated as a property of the output
+        # rather than as an intention in a commit message.
+        if self.domain_links:
+            document["domain_links"] = self.domain_links
+        return document
 
 
 #: The largest number of categories that is still a legend rather than a smear.
@@ -918,6 +930,54 @@ def _censoring_rate_overlay(config, sort_space: str, protids: list) -> dict:
     return {"censoring:rate": {"kind": "continuous", "values": column}}
 
 
+def _domain_links(protids) -> dict:
+    """Which points on this map are domains of the same protein.
+
+    A domain cohort names its points ``{parent}__d01``, so two points that are
+    two halves of one protein look like two unrelated proteins to a reader --
+    and to this file, which until now parsed no domain id at all. The link is
+    the answer to "where did the OTHER domain of this protein land", which is
+    the question a domain map exists to be asked.
+
+    Built by GROUPING ON THE PARSED PARENT, never by walking an index range.
+    ``filter_domain_rows`` renumbers domains after the length filter so the
+    indices are contiguous (``domain_utils.py``), but ``_crop_query_files``
+    then drops a domain whose crop came back empty and ``run_query_gate``
+    filters it out with no renumbering (``assign_domains.py``) -- so a parent
+    shipping ``__d01`` and ``__d03`` with no ``__d02`` is a normal shape, and
+    anything that infers the sibling count from the highest index reports a
+    domain that does not exist.
+
+    Membership is decided by ``domain_utils.is_domain_id``, which anchors the
+    pattern, rather than by a substring test for ``"__d"`` -- that test also
+    matches an ordinary accession carrying those characters, silently. This is
+    the guard ``plot_interactive`` already uses, for the same reason.
+
+    Returns ``{}`` for a cohort with no domain ids, so the key is ABSENT from
+    such a payload rather than present and empty: an empty key would read as
+    "asked and there were none" on a page where nothing ever asks.
+    """
+    domains_of: dict = {}
+    parent_of = {}
+    for protid in sorted(str(p) for p in protids):
+        if not is_domain_id(protid):
+            continue
+        parent, index = parse_domain_id(protid)
+        parent_of[protid] = parent
+        domains_of.setdefault(parent, []).append((index, protid))
+    if not parent_of:
+        return {}
+    return {
+        "parent_of": parent_of,
+        # Ordered by the PARSED index rather than by the string, so ``__d9``
+        # and ``__d10`` come back in that order whatever the zero-padding was.
+        "domains_of": {
+            parent: [protid for _, protid in sorted(pairs)]
+            for parent, pairs in sorted(domains_of.items())
+        },
+    }
+
+
 def build_payload(config, output_dir: str, analysis_name: str = "analysis") -> ExplorerPayload:
     """Read a finished run and assemble the explorer's data.
 
@@ -992,6 +1052,10 @@ def build_payload(config, output_dir: str, analysis_name: str = "analysis") -> E
         overlays.setdefault(name, overlay)
     provenance = _provenance(output_dir, config, spaces)
     records = _records(output_dir, index_order or [])
+    # Over every space's protids, not `index_order` alone: a domain that only
+    # one space could place is still a domain, and reading one space's index
+    # would drop its link without saying so.
+    domain_links = _domain_links({p for space in spaces for p in space.protids})
     pipeline = _pipeline(config, spaces)
     structural = _structural_space(config, spaces)
     # Registered here rather than beside the block columns above because it
@@ -1059,6 +1123,7 @@ def build_payload(config, output_dir: str, analysis_name: str = "analysis") -> E
         tm_matrix=tm_matrix,
         censoring=censoring,
         thresholds=_thresholds(),
+        domain_links=domain_links,
     )
 
 

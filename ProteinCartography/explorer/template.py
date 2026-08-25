@@ -2820,6 +2820,55 @@ function renderComparisons() {
     `<tbody>${rows.join("")}</tbody></table>`;
 }
 
+// Where the other domains of this protein landed.
+//
+// A domain cohort names its points `{parent}__d01`, so two halves of one
+// protein look like two unrelated proteins. The payload carries the grouping
+// (`explorer/payload.py:_domain_links`) because parsing an id is a decision and
+// decisions are made in Python; this reads it and never re-derives it. A cohort
+// of whole proteins carries no `domain_links` key at all, so this returns ""
+// and no domain UI exists on the page.
+//
+// The siblings listed are the ones IN THIS COHORT. A parent whose second domain
+// cropped to nothing ships `__d01` and `__d03`, so the count here is what was
+// mapped and not what the parent has -- which is why the sentence says "on this
+// map" rather than naming a total it cannot know.
+function domainSiblingNote(protid) {
+  const links = active.domain_links;
+  if (!links) { return ""; }
+  const parent = (links.parent_of || {})[protid];
+  if (parent === undefined) { return ""; }
+  const family = (links.domains_of || {})[parent] || [];
+  const others = family.filter((other) => other !== protid);
+  const head = `<span class="domain-parent">domain of ` +
+               `<code>${escapeHtml(parent)}</code></span>`;
+  if (!others.length) {
+    return ` — ${head} <span class="withheld">its only domain on this map</span>`;
+  }
+  const jumps = others.map((other) =>
+    `<a href="#" class="domain-sibling" data-select-protid="${escapeHtml(other)}">` +
+    `<code>${escapeHtml(other)}</code></a>`).join(", ");
+  return ` — ${head} · also here: ${jumps}`;
+}
+
+// Click-through for the sibling links above. Delegated to the inspector rather
+// than bound per anchor because `renderInspector` replaces its innerHTML on
+// every selection, which would drop per-node handlers; and the protid travels
+// in a data attribute rather than inside an inline `onclick` string, where an
+// id carrying a quote would break the page instead of failing to link.
+function selectProtid(protid) {
+  state.selected = new Set([protid]);
+  draw();
+  renderInspector();
+}
+
+el("inspector").addEventListener("click", (event) => {
+  const target = event.target.closest("[data-select-protid]");
+  if (!target) { return; }
+  event.preventDefault();
+  selectProtid(target.getAttribute("data-select-protid"));
+});
+
 function renderInspector() {
   const node = el("inspector");
   if (!state.selected.size) { node.textContent = "Nothing selected."; return; }
@@ -2861,16 +2910,17 @@ function renderInspector() {
   // shown as a refusal. Domain-suffixed ids (`P60709__d01`) land here by design.
   const links = chosen.map((protid) => {
     const safe = escapeHtml(protid);
+    const siblings = domainSiblingNote(protid);
     if (!UNIPROT_ACCESSION.test(protid)) {
       return `<li><code>${safe}</code> <span class="withheld">not a UniProt ` +
-             `accession, so it has no entry page to link to</span></li>`;
+             `accession, so it has no entry page to link to</span>${siblings}</li>`;
     }
     const acc = encodeURIComponent(protid);
     const uni = UNIPROT_ENTRY.replace("{acc}", acc);
     const afdb = AFDB_ENTRY.replace("{acc}", acc);
     return `<li><code>${safe}</code> ` +
            `<a href="${uni}" target="_blank" rel="noopener">UniProt</a> · ` +
-           `<a href="${afdb}" target="_blank" rel="noopener">AlphaFold</a></li>`;
+           `<a href="${afdb}" target="_blank" rel="noopener">AlphaFold</a>${siblings}</li>`;
   });
 
   node.innerHTML =
