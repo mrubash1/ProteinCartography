@@ -12,10 +12,13 @@ obvious tool is pydantic v2, and that was the original plan.
 Three facts make it the wrong choice here.
 
 **1. The validator has to run inside the snakemake driver environment.**
-`config_utils` is imported at the top of the `Snakefile`
-(`Snakefile:4`), and the Snakefile is evaluated by snakemake itself. ADR 0003
-requires the `fusable` rejection to fire at config-load time rather than after
-an expensive computation, which means the validator runs wherever snakemake
+`config_utils` is imported at the top of the `Snakefile` (`Snakefile:5`) and
+`config_schema` beside it (`Snakefile:13`), which runs this validator during
+Snakefile evaluation at `Snakefile:93`
+(`MULTISPACE_CONFIG = config_schema.from_legacy(config)`), and the Snakefile is
+evaluated by snakemake itself. ADR 0003 requires the `fusable` rejection to fire
+at config-load time rather than after an expensive computation, which means the
+validator runs wherever snakemake
 runs — `envs/cartography_tidy.yml`.
 
 **2. That environment is closed.** Adding dependencies to
@@ -54,12 +57,24 @@ class BlockConfig:
         _require_choice("normalization", self.normalization, NORMALIZATIONS)
 ```
 
+> **The sketch is left as written; two of its fields were superseded and the
+> helper names were always shorthand.** `fusable` is now
+> `fusable: bool = True` paired with `not_fusable_reason: str | None = None`
+> (`config_schema.py:314-315`), with the tri-state the comment describes moved
+> into `from_dict` (`:392-399`). `normalization` is now
+> `normalization: str | None = None` (`config_schema.py:324`), because
+> defaulting it to a concrete value made every provider's own default
+> unreachable (`:316-323`), so the choice check is conditional
+> (`:346-347`) and takes the full dotted path rather than a bare name. There is
+> no `_require_identifier`: the real check is `_require_str` followed by a blank
+> test (`config_schema.py:341-342`).
+
 Supporting helpers give pydantic-shaped error messages — the field path, the
 offending value, and the allowed set — because the error text is the part of
 validation users actually interact with:
 
 ```
-spaces.multiview.blocks[2]: block 'taxonomy' cannot be fused.
+spaces.multiview.blocks[2]: block 'taxonomy' cannot be fused into space 'multiview'.
 Reason: fusing taxonomy makes every taxon-specific cluster claim circular ...
 ```
 

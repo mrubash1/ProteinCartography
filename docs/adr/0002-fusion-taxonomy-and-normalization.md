@@ -22,14 +22,24 @@ aromaticity, molecular weight. Concatenate them and run one PCA, and the
 biophysics block contributes essentially nothing while the config file implies
 the two are peers. The user gets a structure map labelled as a multimodal map.
 
+> **Superseded: the biophysics block as built has four default descriptors, not
+> five.** `gravy`, `aromaticity`, `isoelectric_point` and `charge_per_residue`
+> (`blocks/biophys.py:312`). `molecular_weight` and `length` are defined but
+> excluded from the default because they grow with the protein, so a space
+> containing one is partly a map of length (`blocks/biophys.py:276-311`); "net
+> charge" became the intensive `charge_per_residue`. The argument is unchanged —
+> D ≈ N against D of a handful — and the `D=5` in the sample warning below is the
+> same illustrative figure, left as written.
+
 The second failure is **silent zero contribution**: a block that is present in
 the config, computed, weighted, and contributes ~0% of the final distance, with
 nothing in the output saying so.
 
 ## Decision
 
-**Four strategies behind one `FusionStrategy` protocol**, plus the no-fusion
-default:
+**Four strategies behind one dispatch point**, plus the no-fusion default. No
+`FusionStrategy` protocol was built: the four are plain functions selected by
+`fuse()` over `FUSION_STRATEGIES` (`fusion.py:87`, `:911-931`):
 
 | Strategy | Joins at | Implementation | Default? |
 |---|---|---|---|
@@ -38,6 +48,17 @@ default:
 | `late` | distance space | `D² = Σ wᵢ · d̃ᵢ²`, `d̃ᵢ = dᵢ / mean(dᵢ)` | **yes, for fusion** |
 | `graph` | affinity space | SNF (`snfpy`) or WNN per-protein weights | opt-in |
 | `coregistered` | never | N independent spaces + cross-space diagnostics | **yes, overall** |
+
+> **Two cells of that table were superseded by the implementation.** `late`'s
+> formula divides by the weight total: `D² = Σ wᵢ·d̃ᵢ² / Σ wᵢ`
+> (`fusion.py:566`, `:584-587`). That is one global scale factor and moves no
+> relative distance; it buys the property that fusing a single block reproduces
+> exactly that block's unit-mean geometry, rather than that geometry times a
+> constant depending on how many blocks happened to be listed. And `graph` uses
+> neither `snfpy` nor WNN: SNF is hand-rolled numpy (`fusion.py:45`, `:640-`,
+> `:721-`), for the reason the 2026-08-17 amendment below gives — an optional
+> dependency would make `graph` the one strategy that vanishes in the bare
+> environment (ADR 0006). No WNN path was written.
 
 **The normalization contract: block scale is normalized before weighting, always,
 with no way to opt out.** Each block's distances are divided by their mean, so
@@ -77,8 +98,12 @@ fused output records it, and no fused map renders without it visible.
 
 **Live weight-slider re-embedding is not offered.** It requires recomputing a
 distance matrix and a projection, which is not feasible client-side at realistic
-N. The explorer switches between **precomputed named presets** and says so. A
-slider that silently snaps to the nearest preset is worse than labeled buttons.
+N. No preset switcher was built either. The explorer renders one panel per space
+the config declares, side by side (`explorer/payload.py:990`,
+`explorer/template.py:1006-1025`); nothing switches weight sets. A slider that
+silently snapped to the nearest preset would be worse than labeled buttons, and
+labeled buttons would still need precomputed alternative weightings, which this
+work does not produce (ADR 0005 item 6).
 
 ## Consequences
 

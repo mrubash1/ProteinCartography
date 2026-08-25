@@ -49,10 +49,11 @@ cohort, `tmscore` and `biophys` genuinely list the same proteins in different
 orders.
 
 So `reduce_space` takes the intersection, in the first listed block's order,
-aligns every block to it through `ProteinIndex.align`, and names every dropped
-protein on stderr. This is ADR 0011 §1 applied *inside* a space rather than
-between spaces, and for the same reason: a fused geometry conditioned on an
-overlap nobody chose looks exactly like one that is not.
+aligns every block to it through `ProteinIndex.align`, and reports the dropped
+proteins on stderr, naming the first five per block and counting the rest. This
+is ADR 0011 §1 applied *inside* a space rather than between spaces, and for the
+same reason: a fused geometry conditioned on an overlap nobody chose looks
+exactly like one that is not.
 
 ### 3. Two contribution shares, because ADR 0002's cannot say anything
 

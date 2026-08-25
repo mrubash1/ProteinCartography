@@ -127,6 +127,15 @@ Rejected for now. There is no demonstrated legitimate use, and the hatch would
 appear in copied configs and spread. It can be added later if a real case
 appears; it cannot easily be removed once it exists.
 
+> **Superseded, and the reversal was deliberate.** A hatch exists under a
+> stricter name. Setting `fusable: true` on a known overlay-only block is
+> accepted when `fusable_override_reason` carries a written justification, which
+> is folded into `params` and recorded in the manifest so anyone reading the
+> result can see the choice was made on purpose (`config_schema.py:399-419`). A
+> sentence rather than a boolean, so it cannot travel between copied configs
+> without its reason travelling with it — which is the objection above, met
+> rather than ignored.
+
 **Leave `struclusters` fusable, since it is structurally gated after all.**
 Rejected. The gating makes it *not purely sequence*, which is a correction to how
 we describe it — it does not make it safe as structural ground truth in a

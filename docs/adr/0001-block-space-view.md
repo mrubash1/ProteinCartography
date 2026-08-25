@@ -66,6 +66,17 @@ class BlockResult:
     manifest: dict                 # provenance
 ```
 
+> **Superseded in two places by the implementation, noted rather than rewritten.**
+> `kind` gained a third value, `"pairwise_directed"`, so that a genuinely
+> asymmetric measurement can keep both directions rather than be collapsed to one
+> number (`spaces/base.py:41`, `:179-187`). And `BlockResult.mask` became one
+> entry in a named `channels` dict whose polarity is fixed by `CHANNEL_SEMANTICS`
+> (`spaces/base.py:58-87`, `:240-260`): an anonymous mask declared neither
+> polarity nor meaning, and the array is written to disk, where that ambiguity
+> becomes permanent. `mask=` is still accepted and is recorded as
+> `channels["censored"]`. `BlockSpec` also gained `version`, `symmetrization` and
+> `distance_metric`.
+
 Providers are discovered through `pyproject.toml` entry points, so **a third
 party can add a representation without editing any existing file**.
 
@@ -73,16 +84,20 @@ Two consequences of the split are load-bearing and worth stating explicitly:
 
 - **Overlay never moves points; fusion always does.** The distinction is visible
   in the API, the config schema, the output filenames, and the UI. A `View` has
-  no way to alter coordinates, because it is handed coordinates rather than
-  blocks.
+  no way to alter coordinates, because it imports neither a reducer nor `fusion`
+  and reads coordinates from the finished `embedding_*.tsv`
+  (`explorer/payload.py:997`). It is not literally kept away from blocks: a
+  single-block space's panel opens that block's `features.npy` to report which
+  columns carry its variance (`explorer/payload.py:797-805`). Reading a block is
+  allowed; computing a geometry from one is what the seam forbids.
 - **Co-registration is the default product, not fusion.** Several spaces computed
   independently over one `protid` index, displayed side by side with linked
   selection. The primary discovery signal is *disagreement between spaces*.
   Fusion is an explicitly invoked analysis (ADR 0002).
 
 **The canonical `protid` index is the contract between blocks.**
-`index.align(block_result, index)` **raises** on a missing protid rather than
-reindexing to NaN. Silent reindexing is the single most likely source of a
+`ProteinIndex.align(protids, values, *, axis=0, what="data")` (`index.py:123`)
+**raises** on a missing protid rather than reindexing to NaN. Silent reindexing is the single most likely source of a
 subtle wrong answer in this design, and pandas will do it by default, so the
 guard is explicit.
 
@@ -102,8 +117,13 @@ kept-asymmetric it applied, in the manifest. It may not assume symmetry.
   CLI exactly.
 - New capability is new files in new directories. The existing-file diff is
   concentrated in the Snakefile.
-- Every space carries a manifest sufficient to recompute it exactly: block
-  versions, weights, normalization, metric, reducer params, seeds, input hashes.
+- Every space carries a manifest sufficient to recompute it exactly: weights,
+  reducer params, seeds, and one input hash per block
+  (`reduce_space.py:231-247`). A block's version, normalization and metric are
+  not fields of the space manifest; they live in that block's own
+  `manifest.json` (`spaces/store.py:259-273`), reached from the space through
+  the block's cache key. `BlockSpec.version` is excluded from that cache key, so
+  a version bump does not invalidate a cached block (`docs/FOLLOWUPS.md` #46).
 - Cost: three concepts where there was one script. Justified only because the
   questions in the Context section each require more than one representation;
   if only one were ever needed, this would be over-engineering.

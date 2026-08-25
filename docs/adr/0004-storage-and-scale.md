@@ -29,8 +29,8 @@ the N=2530 row above is measured; the rest follow from the confirmed cap
 mechanism, which reproduces the measured row to two decimal places.
 
 Two further costs compound this. PCA is forced to `svd_solver="full"`
-(`dim_reduction.py:76`) for determinism, which is O(N³) and requires the dense
-matrix resident. And `pandas.read_csv` peaks at roughly 2–3× the final frame
+(`spaces/reducers/core.py:106`) for determinism, which is O(N³) and requires the
+dense matrix resident. And `pandas.read_csv` peaks at roughly 2–3× the final frame
 size while parsing.
 
 The practical ceiling today is therefore around N≈5,000 — which is exactly the
@@ -48,6 +48,14 @@ OUTPUT_DIR/blocks/{block_id}/
 ├── protids.txt                     # canonical order, one per line
 └── manifest.json
 ```
+
+> **Superseded: `mask.npy` became named channels.** Per-cell annotations are
+> written as `channel_{name}.npy`, with polarity fixed by `CHANNEL_SEMANTICS`
+> (`spaces/store.py:40`, `:100-106`; `spaces/base.py:58-87`). `mask.npy` is
+> still read, for blocks written under the old layout (`spaces/store.py:39`,
+> `:208-212`). One anonymous mask had no declared polarity and no declared
+> meaning, and three providers would have filled the same slot with three
+> different facts — permanently, because the array goes to disk.
 
 Specifically:
 
@@ -104,12 +112,16 @@ the measured memory estimate rather than dying in an allocator.
 **Keep everything as TSV.** Rejected on measurement: 10.3 GB at N=50,000, and
 99.2% of it a repeated fill token. Also loses dtype and the mask.
 
-**Parquet for everything.** Parquet is a good fit for the tabular per-protein
-artifacts (`neighbors_k{K}.parquet`, `stability.parquet`) and is used for those.
-It is a poor fit for a dense numeric matrix: columnar encoding of an N×N float
-block adds metadata overhead per column, and at N=50,000 that is 50,000 column
-chunks. `.npy` is the right shape for arrays, Parquet for tables. We use both,
-each where it fits.
+**Parquet for everything.** Parquet would be a good fit for the tabular
+per-protein artifacts, and **it is used nowhere in this repository**: nothing
+reads or writes it, and neither `neighbors_k{K}.parquet` nor `stability.parquet`
+exists in any format. Those artifacts are TSV — `stability.tsv` and
+`embedding_{reducer}.tsv` (`spaces/layout.py:79`, `:95`) — and no `neighbors_k*`
+file is produced at all. Parquet is in any case a poor fit for a dense numeric
+matrix: columnar encoding of an N×N float block adds metadata overhead per
+column, and at N=50,000 that is 50,000 column chunks. `.npy` is the right shape
+for arrays; if a tabular artifact later needs a binary format, Parquet is the
+candidate, but nothing uses it today.
 
 **HDF5 / Zarr.** Rejected for this PR as a dependency cost with no present
 payoff. Either becomes attractive at the point an out-of-core backend is

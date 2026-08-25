@@ -9,12 +9,12 @@ Which proteins reach the map is decided upstream of every space, by a truncation
 nobody sees:
 
 ```python
-# download_pdbs.py:53-54
+# download_pdbs.py:53-54, at the fork point; replaced by this ADR's `select_cohort`
 if maximum is not None:
     accessions = accessions[:maximum]
 ```
 
-`max_structures` defaults to **5000** (`config.yml:62`). **No warning, log line,
+`max_structures` defaults to **5000** (`config.yml:120`). **No warning, log line,
 or record is emitted when the truncation fires** — verified by reading the whole
 path; the only prints are a tqdm label and a per-accession fetch error.
 
@@ -40,7 +40,7 @@ with open(output_file, "w+") as f:
 ```
 
 and that TSV is written in UniProt batch-response order
-(`fetch_uniprot_metadata.py:255`), unsorted. So the in-code comment at
+(`fetch_uniprot_metadata.py:275`), unsorted. So the in-code comment at
 `aggregate_hits.py:51-54` — *"The ids are sorted because this file is truncated
 to `max_structures` by `download_pdbs`"* — states an intent the code does not
 achieve. **Truncation order currently depends on UniProt response ordering,
@@ -115,6 +115,22 @@ the serious one.
    reading the column named `evalue` silently gets a quantity with the opposite
    polarity.
 
+> **Superseded in part, after this record was written.** Commit `c393498` made
+> the search mode a config value and recorded it. `Snakefile:167` resolves
+> `FOLDSEEK_MODE` from `config.yml:61` `foldseek_mode: "3diaa"`, `Snakefile:403`
+> and `:421` pass `--mode {FOLDSEEK_MODE}`, and `Snakefile:599` passes
+> `--foldseek-mode` to `download_pdbs.py:282`, which puts it in the cohort
+> report's `extra` slot (`download_pdbs.py:192`, serialized at
+> `cohort.py:388-389`). Point 1's "never passes `--mode`" and point 3's "not
+> recorded anywhere" no longer hold; point 2 does. The *outcome* point 1
+> described is now deliberate rather than accidental: `config_utils.py:28`
+> `RUNNABLE_MODES = ["3diaa"]` is what the config is validated against, so
+> `tmalign` is refused at config-parse time (`config_utils.py:199-212`) instead
+> of failing inside the rule. And the consequence predicted below — that
+> TM-score ranking becomes an opt-in once the mode is recorded — did **not**
+> follow: `hit_significance.py:147` still refuses tmalign-shaped input
+> unconditionally.
+
 That third point is not hypothetical. On the live response above,
 `extract_foldseek_hits.py`'s default filter — `evalue < 0.01` — keeps **0 of 938
 hits**. And a significance ranking that trusted the column name would order the
@@ -155,7 +171,7 @@ run records candidate counts, whether truncation fired, and — when the rule is
 not reproducible. A user does not have to opt into being told their cohort was
 arbitrarily cut.
 
-**3. Truncation is recorded in the manifest and surfaced as a first-class
+**4. Truncation is recorded in the manifest and surfaced as a first-class
 diagnostic**, never silent:
 
 - candidate count before filtering
@@ -170,7 +186,7 @@ the discarded set is taxonomically different from the retained set, every clade
 claim downstream is conditioned on that difference, and the user should see it
 before believing a result.
 
-**4. "Reproducible" and "principled" are tracked as separate properties.**
+**5. "Reproducible" and "principled" are tracked as separate properties.**
 Alphabetical selection is reproducible and not principled. The manifest records
 which rule ran so the distinction is auditable after the fact.
 
@@ -190,11 +206,14 @@ which rule ran so the distinction is auditable after the fact.
 - Cohort selection sits upstream of every block, so this is the one decision in
   the design that no downstream diagnostic can compensate for. It deserves its
   prominence.
-- The determinism fix is a behavior change in the sense that output becomes
-  stable where it previously depended on UniProt ordering. It cannot change a
-  *correct* previous result into an incorrect one, but two runs that previously
-  differed will now agree — which may surprise someone comparing to an archived
-  run.
+- Opting into `accession` or `significance` is a behavior change in the sense
+  that output becomes stable where it previously depended on UniProt ordering.
+  It cannot change a *correct* previous result into an incorrect one, but two
+  runs that previously differed will now agree — which may surprise someone
+  comparing to an archived run. Nothing of the sort happens on the default path:
+  `as_filtered` still keeps the incoming order untouched (`cohort.py:145-147`)
+  and is still the default (`download_pdbs.py:158`), which is the point of the
+  bullet three above.
 
 ## Alternatives rejected
 

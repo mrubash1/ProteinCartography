@@ -6,6 +6,18 @@ Companion to ADR 0011, which decided what co-registration compares. This decides
 what a *single* map's clusters are compared against, which turned out to raise a
 different set of questions.
 
+**Superseded in part by ADR 0015 (2026-08-18).** §1 below records that spaces do
+not cluster and that adding a clustering algorithm is deliberately out of scope.
+ADR 0015 Decision 1 reverses both — `diagnose_space` now clusters each space
+with scanpy's Leiden and writes `clusters.tsv` — and it also answers §1's
+stated reason, since the resolution was to use scanpy rather than to
+reimplement it. §1's prediction that a clusterer and a cross-space cluster ARI
+"arrive together or not at all" held: both landed in the same group of work, and
+the ARI is the column `coregister.py` writes today. The
+enrichment table itself is unchanged: the Snakefile still points `--clusters` at
+`leiden_features.tsv`, so it still describes the `structure` space and still
+names the clustering in every row.
+
 ## Context
 
 The pipeline already asks what a cluster is made of, and answers it only as a

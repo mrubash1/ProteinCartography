@@ -2,7 +2,8 @@
 
 Status: accepted
 Date: 2026-08-16
-Supersedes nothing. Written because Phase 0.5 claim A was **confirmed**.
+Supersedes the group 4 `.m8` reconstruction design (see the note under decision
+2 below). Written because Phase 0.5 claim A was **confirmed**.
 
 ## Context
 
@@ -10,7 +11,7 @@ Supersedes nothing. Written because Phase 0.5 claim A was **confirmed**.
 has no score for with a literal string:
 
 ```python
-# foldseek_clustering.py:241-245
+# foldseek_clustering.py:257-261
 protid, targets_to_scores = protid_and_targets
 scores = []
 for target in targets:
@@ -18,7 +19,7 @@ for target in targets:
 return [protid] + scores
 ```
 
-The docstring states the intent plainly (`:237`):
+The docstring states the intent plainly (`:253`):
 *"This allows setting 0.0 as fillna(0.0) did with pandas."*
 
 **Measured on a production run of 2530 proteins**, independently derived twice:
@@ -32,7 +33,7 @@ The docstring states the intent plainly (`:237`):
 | non-zeros per column | min 4, median ~896, max 2328 — no cap |
 
 **The cause is `foldseek search --max-seqs`, default 1000**, which the pipeline
-never overrides (`foldseek_clustering.py:87` passes only `-a`). The arithmetic
+never overrides (`foldseek_clustering.py:65` passes only `-a`). The arithmetic
 closes to the cell: predicted zeros `2530 × (2530 − 1000) = 3,870,900`, observed
 `3,871,045`, and the 145-cell difference is exactly the shortfall of the 55 rows
 that fell under the cap. The E-value default is **10**, not 0.001, so E-value is
@@ -55,7 +56,7 @@ this matrix is **0.0549** and the median reported score is 0.801.
 
 The distinction survives perfectly *in the file* — fills are the 3-character
 `0.0`, measured values are 9-character `%.3E`. It is destroyed one step later by
-the consumer, at `dim_reduction.py:57`:
+the consumer, at `dim_reduction.py:89`:
 `pivoted_df = pd.read_csv(pivot_file, sep="\t", index_col="protid")`, where
 pandas coerces both to float64 zero.
 
@@ -63,7 +64,7 @@ pandas coerces both to float64 zero.
 hypothetical new ones:
 
 1. `calculate_key_protid_tmscores.py` reuses the same `pivot_foldseek_results`
-   with the same fill, and `calculate_concordance.py:61` computes
+   with the same fill, and `calculate_concordance.py:81` computes
    `distance = tmscore - fident` with a default filter of strict `> 0`. A
    censored pair therefore yields `concordance = 0 − fident`, an artificial
    strong-negative reading as "sequence-similar but structurally divergent".
@@ -81,6 +82,16 @@ hypothetical new ones:
 **1. Carry an explicit boolean mask.** `BlockResult.mask` is a `bool` array,
 stored as `mask.npy` beside the values (ADR 0004). It is never a sentinel value
 inside the float array — sentinels are how this problem happened.
+
+> **Superseded, after this record was written.** One anonymous `mask` had no
+> declared polarity and no declared meaning, so per-cell annotations became
+> *named channels* instead: `spaces/base.py:225-236` gives the argument, and
+> `channels["censored"]` is the authoritative form, with `mask=` kept as an
+> accepted alias (`spaces/base.py:246-260`). On disk the file is
+> `channel_censored.npy` (`spaces/store.py:40`, written at `:105`);
+> `spaces/store.py:39` keeps `mask.npy` as a legacy name that is still read
+> (`:210`). The decision itself — an explicit boolean beside the values, never a
+> sentinel inside them — is unchanged.
 
 **2. Build the mask by string form during parse, in `matrix_io.py`.** A cell is
 censored iff its token is exactly `"0.0"`. This works on **any matrix this

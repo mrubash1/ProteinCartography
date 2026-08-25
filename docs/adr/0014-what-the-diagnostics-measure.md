@@ -5,6 +5,13 @@ Date: 2026-08-17
 
 (Commit group 8b.)
 **Supersedes:** nothing. **Amends:** nothing.
+**Superseded in part by:** ADR 0015 (group 8c), which gives every space a
+partition of its own. Two statements below are now historical. Decision 7's
+"today that comes from the legacy Leiden path" — `diagnose_space` clusters the
+space and falls back to the legacy partition only when it cannot. And "nothing
+that needs a per-space clustering", under *What this deliberately does not do* —
+`stability`, `resolution_sweep` and `negative_controls` are now three of
+`SECTIONS`' seven.
 **Related:** ADR 0002 (fusion and normalization), ADR 0004 (storage and scale),
 ADR 0009 (censoring semantics), ADR 0013 (what fusion reports).
 

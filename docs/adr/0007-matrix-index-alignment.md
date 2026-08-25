@@ -10,7 +10,7 @@ iterating a target collection to produce the header, and separately iterating
 the entries to produce the rows:
 
 ```python
-# foldseek_clustering.py:261-268
+# foldseek_clustering.py:277-284
 with open(output_file, "w", newline="") as fh:
     csv_writer = csv.writer(fh, delimiter="\t")
     header = ["protid"] + [f"{column_prefix}{target}" for target in targets]

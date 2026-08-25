@@ -40,12 +40,20 @@ a pub from three years ago should still open.
 
 Contents, in priority order:
 
-1. **Multi-panel layout** — 2–4 co-registered spaces over one `protid` index.
+1. **Multi-panel layout** — co-registered spaces over one `protid` index, one
+   panel per space the config declares, with no cap in the code
+   (`explorer/payload.py:990`). The shipped demo declares seven
+   (`demo/multispace/config.yml`), not the 2–4 anticipated here.
 2. **Linked selection.** Built first; everything else is secondary. Selecting
    points in one panel highlights the same proteins in all others. This is the
    feature that makes co-registration legible.
-3. **Global overlay selector**, consuming the existing `plotting_rules`
-   vocabulary unchanged.
+3. **Global overlay selector.** Built, but not from `plotting_rules`: the
+   vocabulary is whatever columns the run's aggregated feature table already
+   carries, kept only where a column is usable as a colour
+   (`explorer/payload.py:682-700`). `plotting_rules` is a code-level dict in
+   `plot_cluster_distributions.py`, and nothing under `explorer/` imports from
+   it — which is what the last paragraph of "Alternatives rejected" already says.
+   The two statements had been contradicting each other.
 4. **Disagreement mode** — color by cross-space neighborhood Jaccard. One click,
    not buried in a menu.
 5. **Diagnostics overlays** in the same dropdown but **visually grouped
@@ -60,7 +68,12 @@ Contents, in priority order:
    written to `enrichment/cluster_enrichment.tsv`; nothing in the explorer reads
    it yet.
 8. **Provenance footer** — manifest, versions, dates, seeds, N, cohort rule.
-   Always visible, never collapsed.
+   Always visible, never collapsed. **Superseded on one item: the date was
+   deliberately dropped.** Two runs of the same inputs must produce the same
+   bytes, and a generation timestamp would be the one field guaranteeing they
+   never do (`explorer/payload.py:1746-1753`). The page says so in the footer,
+   where the date would otherwise have been
+   (`explorer/template.py:2961-2962`).
 
 **Be honest about the one real constraint.** Live weight-slider re-embedding
 requires recomputing a distance matrix and a projection, which is not feasible
@@ -99,9 +112,10 @@ realistic N anyway. Kept in the fork for local exploratory use.
 **Jupyter notebook / voila.** Rejected: requires a running kernel, does not
 archive, and does not survive being sent to a collaborator.
 
-**Extend `plot_interactive.py` to render all panels.** Rejected: it is 1105
-lines, has no rule-injection mechanism, and derives its axes positionally from
-`df.columns[1]` and `[2]`. Extending it would mean a large diff in an existing
+**Extend `plot_interactive.py` to render all panels.** Rejected: it is over
+1,100 lines — 1,105 when this was written, 1,144 at HEAD, since #110 and this
+branch both touched it — has no rule-injection mechanism, and derives its axes
+positionally from `df.columns[1]` and `[2]` (`plot_interactive.py:877-878`). Extending it would mean a large diff in an existing
 file to serve a use case it was not shaped for. The explorer shares no code
 with it: it defines its own overlay vocabulary in `explorer/`, and
 `generate_plotting_rules` is imported nowhere under `ProteinCartography/explorer/`

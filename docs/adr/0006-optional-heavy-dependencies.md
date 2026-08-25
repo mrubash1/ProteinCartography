@@ -29,10 +29,14 @@ constrains the solution:
 - The CI conda cache key hashes the env files, so CI never re-solves while they
   are unchanged — which is precisely why the drift went undetected for so long.
   It was `hashFiles('envs/*.yml')` when this record was written and is now the
-  six files a `conda:` directive actually names, because hashing all ten meant
-  editing an env no rule solves evicted a multi-gigabyte cache and rebuilt every
-  pipeline environment. The narrowing does not weaken the point above: the four
-  excluded files are not solved by snakemake at all.
+  six files a `conda:` directive actually names, because hashing every env file
+  meant editing an env no rule solves evicted a multi-gigabyte cache and rebuilt
+  every pipeline environment. The narrowing does not weaken the point above: at
+  HEAD there are **nine** env files and the **three** excluded ones —
+  `cartography_pub`, `cartography_test`, `cartography_tidy` — are not solved by
+  snakemake at all. It was ten and four when this was written; the
+  `cartography_dev.yml` deletion recorded below is what changed the count, and
+  the same stale "all ten" is copied into `multispace.yml:98` and `:308`.
 - `mamba` 2.x removed the `mamba env create` CLI that snakemake 7.25.3 invokes,
   so any new env that leaves mamba unpinned breaks `--conda-frontend mamba`.
 
@@ -48,9 +52,18 @@ constrains the solution:
 > that no rule solved, pinning sklearn 1.3.2 against the determinism
 > guarantee's 1.2.2; see FOLLOWUPS #2. Rule 1 below is about what enters an env
 > file, and nothing entered one. Every provider implements
-> `is_available`, no optional dependency is load-bearing, and the CI job proving
-> it is the `end-to-end-with-no-optional-dependencies` job in
-> `.github/workflows/multispace.yml`. Items marked **(deferred)** below arrive
+> `is_available`. **No optional dependency is load-bearing in the driver
+> environment** — the `end-to-end-with-no-optional-dependencies` job in
+> `.github/workflows/multispace.yml` guards that env (`:72-85`) and runs the demo
+> through it (`:114`), and
+> `ProteinCartography/tests/test_snakefile_parses_without_optional_dependencies.py`
+> pins the same property in a subprocess. That test exists because the property
+> was not true when this was written: `Snakefile:167` reached `bioservices`
+> through `config_utils`, so `snakemake -n` could not parse the Snakefile in any
+> environment built from `envs/cartography_test.yml`. It says nothing about the
+> blocks: `compute_block` and `reduce_space` run under `envs/analysis.yml`
+> (`Snakefile:932`, `:966`), which ships scikit-learn, umap-learn and scanpy.
+> Items marked **(deferred)** below arrive
 > with the phase that needs them and do not exist yet; a reviewer following one
 > of them today reaches nothing.
 
@@ -64,14 +77,23 @@ three envs took `plotting.yml` from ~74 s to over 12 minutes without finishing.
 
 **2. Every provider implements `is_available() -> tuple[bool, str]`.**
 It reports whether both the package *and* its weights are present, and the
-string explains what is missing and how to get it. The Snakefile skips
-unavailable spaces with a clear log line rather than failing the DAG. A missing
-optional dependency is a reduced result, never an error.
+string explains what is missing and how to get it. `compute_block` skips an
+unavailable **block** with a log line on stderr and exits 0
+(`compute_block.py:105-108`); the Snakefile itself never consults availability
+and does not import the registry at all, which `spaces/registry.py:196-199`
+states outright. A missing optional dependency is a reduced result, never an
+error.
 
-**3. The default config names only free, ungated blocks.** `tmscore`, `threedi`,
-`biophys`, `domains`. The framework and all four must be fully functional and
-tested with zero optional dependencies installed. Where a gated model has a free
-counterpart, the free one is the default — `plm` defaults to ESM-2 650M (open
+**3. The shipped multispace config names only free, ungated blocks.** `tmscore`,
+`threedi`, `biophys`, `domains`, in `demo/multispace/config.yml`; the default
+`config.yml` names no `blocks:` and no `spaces:` at all, so the legacy pipeline
+carries none of this either way. The framework and all four must be fully
+functional and tested with zero optional dependencies installed. Today only
+`tmscore`'s `profile` path has a bare-environment test
+(`tests/test_optional_dependencies.py:134`); the rules themselves run under
+`envs/analysis.yml`, so the rest of the rule is a requirement, not a measured
+fact. Where a gated model has a free counterpart, the free one
+is the default — `plm` defaults to ESM-2 650M (open
 weights on the HF hub) rather than ESM-C (licence acceptance required), so the
 PLM code path is CI-testable upstream without anyone accepting anything.
 
@@ -114,8 +136,10 @@ nothing yet to record or fetch.
 - Provider code is slightly more verbose — every provider carries an
   availability check even when it is trivially `True`.
 - Blocks that are skipped produce absent columns, so downstream code must
-  tolerate missing spaces. This is enforced by the co-registration metrics
-  operating on whatever spaces exist rather than a fixed list.
+  tolerate missing spaces. Nothing enforces that today: co-registration works
+  from the explicit `coregistration.compare` list in the config
+  (`config_schema.py:613`, each entry validated against the defined spaces at
+  `:855`), not from whatever spaces exist.
 
 ## Alternatives rejected
 

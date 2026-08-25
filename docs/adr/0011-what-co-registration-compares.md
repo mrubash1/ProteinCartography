@@ -36,8 +36,9 @@ conditioned on an overlap nobody chose, and nothing downstream can detect it.
 We intersect rather than refuse, because a provider legitimately has no data
 for some protein — no UniProt record, no foldable structure — and that is a
 fact about the cohort. But the loss is **enumerated, not counted**: every
-dropped protid is named in `coregistration/index.json` and on stderr. A count
-tells you something happened; the list tells you whether it matters.
+dropped protid is named in `coregistration/index.json`, and stderr names the
+first five per space and counts the rest. A count tells you something happened;
+the list tells you whether it matters.
 
 The one hard error is an empty intersection. That is not a small overlap, it is
 the absence of anything to compare.
@@ -105,6 +106,11 @@ on the geometry, it is the weakest of the three for that reason, and it is the
 only one that answers "could a reader have superimposed these two plots by
 eye". It is reported as such.
 
+**Superseded in part by ADR 0015 (2026-08-18): there are now four.** Once a
+space has a partition of its own, `coregister` also reports a cross-space
+cluster ARI (`PairComparison.cluster_ari`), so "the weakest of the three" reads
+as "of the four" from group 8c onward. Nothing else in this decision changes.
+
 Reflections are permitted. UMAP and t-SNE output has no canonical handedness —
 the same data with a different seed routinely returns a mirrored layout — so
 forbidding reflection would report two identical maps as maximally different.
@@ -114,7 +120,8 @@ forbidding reflection would report two identical maps as maximally different.
 - A comparison cannot silently be about an overlap. It can still *be* about an
   overlap; it just cannot be about one silently.
 - Every score is qualified by a diagnostic that can invalidate it. Consumers
-  must read `boundary_ties` and `rank_correlation_undefined`, not just the mean.
+  must read `boundary_ties_a`, `boundary_ties_b` and
+  `rank_correlation_undefined`, not just the mean.
 - The metrics are numpy, with no scipy or scikit-learn dependency, per ADR 0006.
   Both Spearman and Procrustes agree with scipy's implementations to 3e-16,
   including Spearman on a matrix with 60% of its **cells** written as exact

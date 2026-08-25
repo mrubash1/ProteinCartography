@@ -184,13 +184,14 @@ it.
 - Six of Phase 5's nine diagnostics became nine. `NOT_YET_CONSUMED` is empty and
   FOLLOWUPS #36 is discharged: every `DiagnosticsConfig` field is read by
   something, proved by a test that parses for the attribute access.
-- The default DAG is unchanged at 16 rules, the search DAG at 25, and the
-  multispace demo at 35. No new rule; `diagnose_space` does more inside the one
+- The default DAG is unchanged at 17 rules, the search DAG at 26, and the
+  multispace demo at 37. No new rule; `diagnose_space` does more inside the one
   it already had.
 - A reviewer who objects to scanpy in the diagnostics path can delete
-  `clustering.py`, three sections of `diagnose_space.py` and two config fields.
-  Nothing else imports it, which is the droppability ADR 0006 asks of every
-  optional capability, applied to one that is not optional.
+  `clustering.py`, three sections of `diagnose_space.py`, `coregister.py`'s
+  cluster-ARI column and two config fields. Those two modules are its only
+  importers, which is the droppability ADR 0006 asks of every optional
+  capability, applied to one that is not optional.
 - **The partition is not reproducible across environments at very small N**, and
   neither is the pre-existing `leiden_clustering` rule's. Two environments
   agreeing on scanpy, leidenalg, igraph, numpy and scikit-learn, and differing
