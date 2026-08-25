@@ -441,6 +441,57 @@ def test_two_runs_over_the_same_input_produce_the_same_bytes(monkeypatch, run_di
     ).read_bytes()
 
 
+def test_the_cache_key_does_not_move_with_the_output_directory(monkeypatch, run_dir):
+    """Where a run happened is not part of what it computed.
+
+    `Manifest.cache_key` folds in `extra`, and `extra` is this script's report.
+    The report recorded `clusters_path` and `annotations_path` as ABSOLUTE
+    paths, so two runs over byte-identical inputs in two directories produced
+    two different cache keys -- which is the one thing `cache_key`'s own
+    docstring says must not happen: "rebuilding on a different machine with the
+    same package versions should hit the cache."
+
+    The sibling byte-stability test above compares `cluster_enrichment.tsv` and
+    only that, which is why this went unseen. Found by the space mutation
+    suite's nondeterminism-floor guard, which refused to run because
+    `enrichment/manifest.json` differed between two runs of identical code.
+    """
+    tmp_path, clusters, annotations = run_dir
+    config = write_config(tmp_path)
+    first, second = tmp_path / "first", tmp_path / "second"
+    run(monkeypatch, config, first, clusters, annotations)
+    run(monkeypatch, config, second, clusters, annotations)
+
+    a = json.loads((first / "enrichment" / "manifest.json").read_text())
+    b = json.loads((second / "enrichment" / "manifest.json").read_text())
+    assert a["cache_key"] == b["cache_key"]
+    # And the whole manifest, since a key that matches while the body differs
+    # would be a cache that returns the wrong thing.
+    assert a == b
+    # This fixture's input tables sit OUTSIDE the run tree it writes into, so
+    # both fall back to the basename. That is the fallback working, not a
+    # shortfall: the in-tree case -- which is what the pipeline produces -- is
+    # pinned in the test below, and either way what must not appear is a leading
+    # slash.
+    for key in ("clusters_path", "annotations_path"):
+        assert not a["extra"][key].startswith("/"), a["extra"][key]
+        assert str(tmp_path) not in a["extra"][key]
+
+
+def test_an_input_from_outside_the_run_is_named_by_its_basename(tmp_path):
+    """The fallback, and why it is not `os.path.relpath` alone: a `../../..`
+    chain out of the run tree is as machine-specific as the absolute path it
+    came from."""
+    from enrich_clusters import _within_run
+
+    output_dir = tmp_path / "run" / "output" / "enrichment"
+    output_dir.mkdir(parents=True)
+    inside = tmp_path / "run" / "output" / "protein_features" / "uniprot_features.tsv"
+    assert _within_run(str(inside), str(output_dir)) == "protein_features/uniprot_features.tsv"
+    outside = tmp_path / "elsewhere" / "clusters.tsv"
+    assert _within_run(str(outside), str(output_dir)) == "clusters.tsv"
+
+
 def test_the_table_is_sorted_by_q_with_untested_rows_last(default_run):
     table = numeric_table(default_run.output)
     q_values = table["q_value"].to_numpy()

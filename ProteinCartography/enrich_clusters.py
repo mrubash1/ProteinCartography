@@ -356,6 +356,19 @@ def describe(report: dict) -> str:
     return "; ".join(parts)
 
 
+def _within_run(path: str, output_dir: str) -> str:
+    """`path` named relative to the run that produced it, or by its basename.
+
+    A run's own directory is not part of what it computed, so nothing that
+    identifies an artifact may depend on it. The fallback is the basename rather
+    than the absolute path because a `../../..` chain is just as machine-specific
+    as the absolute form it came from.
+    """
+    root = os.path.dirname(os.path.abspath(output_dir))
+    relative = os.path.relpath(os.path.abspath(path), start=root)
+    return os.path.basename(path) if relative.startswith(os.pardir) else relative
+
+
 def main() -> int:
     args = parse_args()
     config = from_legacy(load_config(args.configfile))
@@ -426,8 +439,18 @@ def main() -> int:
 
     report = {
         "clustering": settings.cluster_column,
-        "clusters_path": args.clusters,
-        "annotations_path": args.annotations,
+        # Relative to the run, not absolute. `report` becomes the manifest's
+        # `extra`, and `extra` is folded into `cache_key` -- so an absolute path
+        # made the cache key of this artifact depend on WHERE the run happened.
+        # Two runs over byte-identical inputs in two directories produced two
+        # different keys, which is exactly what `Manifest.cache_key`'s own
+        # docstring says must not happen: "rebuilding on a different machine
+        # with the same package versions should hit the cache."
+        #
+        # These two fields are for a person reading the report. IDENTITY lives
+        # in `inputs` below, which has always been a content digest.
+        "clusters_path": _within_run(args.clusters, output_dir),
+        "annotations_path": _within_run(args.annotations, output_dir),
         "n_proteins": len(frame),
         "n_clusters": len(cluster_labels),
         "n_tested": int(sum(1 for row in rows if not row["note"])),
