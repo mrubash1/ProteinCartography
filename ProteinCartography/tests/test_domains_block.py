@@ -135,7 +135,7 @@ def test_an_unannotated_protein_is_kept_with_an_empty_list():
 
 
 def test_the_matrix_is_binary_presence():
-    protids, features, vocabulary, _ = domain_matrix(
+    protids, features, vocabulary, _, _ = domain_matrix(
         {"P1": ["PF00022"], "P2": ["PF00022", "PF00125"]}
     )
     assert protids == ["P1", "P2"]
@@ -150,7 +150,7 @@ def test_the_vocabulary_is_sorted_and_observed_only():
 
 
 def test_an_unannotated_protein_is_reported_and_left_at_the_origin():
-    protids, features, _, without = domain_matrix({"P1": ["PF00022"], "P2": []})
+    protids, features, _, without, _ = domain_matrix({"P1": ["PF00022"], "P2": []})
     assert without == ["P2"]
     assert protids == ["P1", "P2"]
     assert features[1].sum() == 0.0
@@ -164,14 +164,14 @@ def test_two_unannotated_proteins_are_identical_which_is_why_they_are_reported()
     them on. What the block can do is refuse to let that coincidence be read as
     a finding.
     """
-    _, features, _, without = domain_matrix({"P1": ["PF00022"], "P2": [], "P3": []})
+    _, features, _, without, _ = domain_matrix({"P1": ["PF00022"], "P2": [], "P3": []})
     assert np.array_equal(features[1], features[2])
     assert without == ["P2", "P3"]
 
 
 def test_an_explicit_vocabulary_is_honored():
     """So two cohorts can be compared on the same columns when that is wanted."""
-    _, features, vocabulary, _ = domain_matrix(
+    _, features, vocabulary, _, _ = domain_matrix(
         {"P1": ["PF00022"]}, vocabulary=["PF00022", "PF99999"]
     )
     assert vocabulary == ["PF00022", "PF99999"]
@@ -318,3 +318,71 @@ def test_the_provider_registers_under_its_name():
 
     domains.register()
     assert isinstance(get_provider(BLOCK_GROUP, "domains"), DomainsProvider)
+
+
+# ==========================================================================
+# PC-012 phase 2 -- annotated-but-outside is not the same as unannotated
+# (FOLLOWUPS #31)
+# ==========================================================================
+
+
+def test_an_annotated_protein_outside_the_vocabulary_is_named_separately():
+    """THE DEFECT. Three different things produced identical all-zero rows and
+    only two of them had names.
+
+    `P2` carries a real Pfam family. Pin a vocabulary that does not include it
+    and its row is zeros -- exactly like `P3`, which carries nothing at all.
+    Before this, `without_domains` collected `P3` and nobody collected `P2`.
+    """
+    protids, features, _, without, outside = domain_matrix(
+        {"P1": ["PF00022"], "P2": ["PF99999"], "P3": []}, vocabulary=["PF00022"]
+    )
+    assert protids == ["P1", "P2", "P3"]
+    # The two zero rows are indistinguishable in the matrix, which is the point.
+    assert features[1].tolist() == features[2].tolist() == [0.0]
+    # And distinguishable in the report, which is the fix.
+    assert without == ["P3"], "P3 carries no annotation at all"
+    assert outside == ["P2"], (
+        "P2 IS annotated and its family is not in this vocabulary. That is a "
+        "different fact from being unannotated and it needs its own name."
+    )
+
+
+def test_a_partial_match_is_not_outside_the_vocabulary():
+    """One family in the vocabulary is enough. `outside` means NOTHING matched,
+    not that something was dropped -- otherwise a protein with three families
+    and two of them pinned would be reported as unrepresented."""
+    _, features, _, without, outside = domain_matrix(
+        {"P1": ["PF00022", "PF99999"]}, vocabulary=["PF00022"]
+    )
+    assert features[0].tolist() == [1.0]
+    assert without == []
+    assert outside == []
+
+
+def test_an_observed_vocabulary_leaves_the_new_list_empty():
+    """The no-op half, proven rather than asserted. An observed vocabulary
+    contains every family any protein carries, so nothing can fall outside it
+    and every call the pipeline makes today is unchanged."""
+    _, _, vocabulary, without, outside = domain_matrix(
+        {"P1": ["PF00022"], "P2": ["PF00023", "PF00024"], "P3": []}
+    )
+    assert set(vocabulary) == {"PF00022", "PF00023", "PF00024"}
+    assert without == ["P3"]
+    assert outside == []
+
+
+def test_the_manifest_separates_the_two_counts(tmp_path):
+    """A number computed and not recorded is a number nobody can act on."""
+    from blocks.domains import DomainsProvider
+    from blocks.tmscore import PipelineContext
+
+    directory = tmp_path / "protein_features"
+    directory.mkdir(parents=True)
+    (directory / "uniprot_features.tsv").write_text(
+        "protid\tPfam\nP1\tPF00022\nP2\tPF00023\nP3\t\n"
+    )
+    result = DomainsProvider().compute(PipelineContext(output_dir=str(tmp_path)), {})
+    extra = result.manifest["extra"]
+    assert extra["proteins_without_domains"] == ["P3"]
+    assert extra["proteins_annotated_outside_vocabulary"] == []

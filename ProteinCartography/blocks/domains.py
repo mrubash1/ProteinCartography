@@ -165,10 +165,23 @@ def domain_matrix(domains, vocabulary=None):
     """The (N, V) binary presence matrix, its protids, and its vocabulary.
 
     Returns:
-        A ``(protids, features, vocabulary, without_domains)`` tuple.
-        ``without_domains`` lists protids with no annotation at all. Their rows
-        are zeros, which under any distance makes them look alike -- they are
-        not alike, they are jointly unannotated, and the caller is told so.
+        A ``(protids, features, vocabulary, without_domains, outside_vocabulary)``
+        tuple. ``without_domains`` lists protids with no annotation at all.
+        Their rows are zeros, which under any distance makes them look alike --
+        they are not alike, they are jointly unannotated, and the caller is told
+        so.
+
+    **``outside_vocabulary`` is the case that used to be folded into the first
+    one, silently.** A protein that IS annotated, but whose every family falls
+    outside the vocabulary, also gets an all-zero row -- and was reported
+    nowhere, because `without_domains` only ever collected proteins with no
+    annotation at all. Three different things produced identical zero rows and
+    only two of them had names: unannotated, annotated-but-outside, and (once a
+    vocabulary can be pinned) annotated-and-deliberately-excluded.
+
+    Empty today by construction, because an observed vocabulary contains every
+    family any protein carries. It stops being empty the moment a vocabulary is
+    pinned from config, which is what FOLLOWUPS #31 asks for.
     """
     protids = list(domains)
     if vocabulary is None:
@@ -177,17 +190,22 @@ def domain_matrix(domains, vocabulary=None):
 
     features = np.zeros((len(protids), len(vocabulary)), dtype=np.float64)
     without_domains = []
+    outside_vocabulary = []
     for row, protid in enumerate(protids):
         accessions = domains[protid]
         if not accessions:
             without_domains.append(protid)
             continue
+        matched = 0
         for accession in accessions:
             index = position.get(accession)
             if index is not None:
                 features[row, index] = 1.0
+                matched += 1
+        if not matched:
+            outside_vocabulary.append(protid)
 
-    return protids, features.astype(np.float32), vocabulary, without_domains
+    return protids, features.astype(np.float32), vocabulary, without_domains, outside_vocabulary
 
 
 def validate_params(params: dict) -> dict:
@@ -322,7 +340,7 @@ class DomainsProvider:
         if not domains:
             raise DomainsError(f"{path} lists no proteins.")
 
-        protids, features, vocabulary, without_domains = domain_matrix(domains)
+        protids, features, vocabulary, without_domains, outside_vocabulary = domain_matrix(domains)
         if not vocabulary:
             raise DomainsError(
                 f"none of the {len(protids)} proteins in {path} carry a "
@@ -346,6 +364,11 @@ class DomainsProvider:
                 # origin point that resembles every other unannotated protein,
                 # and the resemblance is an artifact of the annotation effort.
                 "proteins_without_domains": without_domains,
+                # A DIFFERENT fact from the line above, and it used to be folded
+                # into it. These proteins ARE annotated; their families are not
+                # in the vocabulary. Empty while the vocabulary is observed from
+                # these same annotations, which is every call today.
+                "proteins_annotated_outside_vocabulary": outside_vocabulary,
                 "annotated_fraction": round(1.0 - len(without_domains) / len(protids), 6),
             },
         )
