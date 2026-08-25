@@ -79,11 +79,22 @@ Reason: fusing taxonomy makes every taxon-specific cluster claim circular ...
 ```
 
 **Provider parameter schemas stay pluggable.** `BlockProvider.spec_schema` is a
-callable that validates and normalizes a params dict and raises
-`ConfigError` on bad input. A provider living in a third-party package that
-already depends on pydantic is free to implement `spec_schema` with a pydantic
-model — the contract is the callable, not the library. This keeps the door open
-without making the core depend on it.
+callable that validates and normalizes a params dict and raises a `ValueError`
+on bad input. A provider living in a third-party package that already depends on
+pydantic is free to implement `spec_schema` with a pydantic model — the contract
+is the callable, not the library. This keeps the door open without making the
+core depend on it.
+
+`ValueError`, and not `ConfigError`, and the distinction is the whole point of
+the sentence above it. `ConfigError` is a `ValueError` (`config_schema.py:162`),
+so naming the base class keeps every implementation honest at once: the four
+built-in providers raise bare `ValueError`, a pydantic model raises
+`ValidationError`, which is also a `ValueError`, and a provider that wants to
+import `config_schema` and raise `ConfigError` still satisfies it. This record
+said `ConfigError` until 2026-08-25, and **no provider has ever raised one** —
+requiring it would have made a provider import the config layer, inverting the
+dependency ADR 0001 and ADR 0006 set up, in order to satisfy a type nothing
+catches (`git grep 'except.*ConfigError'` returns nothing).
 
 **If pydantic is ever added to the driver environment for another reason**, the
 dataclasses can be swapped for `pydantic.dataclasses` with essentially no call-site
