@@ -83,8 +83,9 @@ __all__ = [
 #: Stated on every comparison, because both are true of the geometry it
 #: measured and neither is visible in the numbers.
 GEOMETRY_CAVEATS = (
-    "distances are euclidean: `spec.metric` is recorded on a block and never "
-    "consulted by anything that reduces it (FOLLOWUPS #29)",
+    "distances are euclidean, and that is enforced rather than assumed: "
+    "`reduce_space.read_blocks` refuses a block declaring any other metric, "
+    "because the reducer cannot honor one",
     "features are normalized as the block declares: `spec.normalization` is "
     "applied by `reduce_space` before fusion and by `diagnose_space` before "
     "redundancy, so this describes the geometry the map is drawn from",

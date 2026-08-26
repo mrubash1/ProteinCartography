@@ -37,11 +37,21 @@ substrate specificities. Structural similarity is evidence about fold, and fold
 is only sometimes evidence about function.
 
 **Recorded on every comparison** (`coregistration.GEOMETRY_CAVEATS`): distances
-are euclidean because `spec.metric` is recorded on a block and consulted by
-nothing that reduces it, and features are unnormalized because
-`spec.normalization` is likewise recorded and applied nowhere. Those are honest
-descriptions of the geometry the map is drawn from rather than the one the
-config declares. They are `docs/FOLLOWUPS.md` #29 and #32.
+are euclidean, and features are normalized as the block declares. Both are
+descriptions of the geometry the map is actually drawn from rather than the one
+the config declares, which is the only reason they are worth stating.
+
+Both used to say the opposite, and the history is worth keeping because it is
+the failure mode this whole document exists to guard against. `spec.metric` and
+`spec.normalization` were validated, written into every manifest and quoted on
+the page, and read by nothing — `docs/FOLLOWUPS.md` #29 and #32, now closed.
+They were closed in opposite directions, which is the point: normalization
+could be honored, so `reduce_space` honors it; a metric could not, because the
+reducer is euclidean and a metric-aware one is a separate piece of work, so
+`read_blocks` **refuses** a block declaring anything else instead of recording
+a distance no map was drawn with. Measured on the production `chymo_A1` cohort
+at N=367: isoelectric point was 97.9% of the biophysical block's raw variance
+and is 25.0% of the geometry once the declared `zscore_within` is applied.
 
 **And with `representation: direct`, the distance may not be a distance.** That
 mode reads the similarity matrix as a matrix and hands `1 - TM` downstream. Its
