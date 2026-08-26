@@ -79,6 +79,67 @@ def test_a_single_block_space_is_unchanged_by_going_through_fusion(store_root, c
     assert [b.spec.id for b in blocks] == [WIDE_BLOCK]
 
 
+def test_the_declared_normalization_reaches_the_geometry(store_root, cohort):
+    """FOLLOWUPS #32, end to end: the declared value must change the map.
+
+    `spec.normalization` was recorded on every block and applied by nothing, so
+    `zscore_within` and `unit_mean_distance` sat in every manifest on disk while
+    `reduce_space` fed raw features to the reducer. This asserts the wiring,
+    not the arithmetic -- `test_normalization_is_honored.py` owns the functions.
+
+    Two specs differing ONLY in `normalization`, over one block whose columns
+    have the spread that produced "made of: isoelectric_point 97.1%" on the
+    production actin cohort. If the field is ignored the two fused matrices are
+    identical, which is what this went red on before the fix.
+    """
+    import numpy as np
+    from index import ProteinIndex
+    from spaces.base import BlockResult, BlockSpec
+
+    protids = cohort.protids[:20]
+    rng = np.random.default_rng(11)
+    values = np.column_stack(
+        [
+            rng.uniform(4.0, 12.0, len(protids)),  # isoelectric point
+            rng.uniform(-1.0, 0.5, len(protids)),  # GRAVY
+        ]
+    ).astype(np.float32)
+
+    def fused_with(rule):
+        spec = BlockSpec(
+            id="chem",
+            kind="features",
+            fusable=True,
+            metric="euclidean",
+            normalization=rule,
+            provider="biophys",
+        )
+        block = BlockResult(protids=list(protids), features=values, spec=spec)
+        index = ProteinIndex(list(protids))
+        return reduce_space.fuse_blocks(space("s", ["chem"], "none"), [block], index).values
+
+    raw = fused_with("none")
+    scored = fused_with("zscore_within")
+
+    assert not np.allclose(raw, scored), (
+        "declaring zscore_within changed nothing -- spec.normalization is being "
+        "recorded and ignored, which is FOLLOWUPS #32"
+    )
+
+    # And it changed it in the direction the field promises: the wide column
+    # stops being the map.
+    def share(m):
+        var = np.asarray(m, dtype=np.float64).var(axis=0)
+        return var / var.sum()
+
+    assert share(raw)[0] > 0.9, f"fixture should be pI-dominated raw, got {share(raw)}"
+    assert (
+        abs(share(scored)[0] - 0.5) < 0.05
+    ), f"expected parity after z-scoring, got {share(scored)}"
+    # The store's dtype survives: promoting to float64 doubles every block.
+    assert raw.dtype == np.float32 and scored.dtype == np.float32
+
+
 def test_a_missing_block_is_named(store_root):
     from spaces.store import StoreError
 

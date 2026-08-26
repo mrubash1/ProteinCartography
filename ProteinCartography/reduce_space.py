@@ -32,6 +32,7 @@ from fusion import FusionError, FusionInput, fuse
 from index import IndexAlignmentError, ProteinIndex
 from spaces import layout
 from spaces.manifest import Manifest
+from spaces.normalize import normalize_block
 from spaces.reducers.core import reduce_pca, reduce_tsne, reduce_umap
 from spaces.store import BlockStore
 
@@ -136,6 +137,30 @@ def fuse_blocks(space, blocks, index: ProteinIndex):
         values = index.align(
             block.protids,
             block.features,
+            what=f"space {space.id!r} block {block.spec.id!r}",
+        )
+        # HONOR `spec.normalization`, recorded on every block since the schema
+        # existed and applied by nothing (FOLLOWUPS #32, the same shape as #29
+        # for `spec.metric`). This call is the fix.
+        #
+        # It is NOT the normalization `fusion.py` already does. That one scales
+        # each block to unit mean distance before weighting -- ADR 0002's
+        # BETWEEN-block contract, one scalar per block -- so it cannot change
+        # the relative scale of the COLUMNS inside a block. `zscore_within`
+        # can, and that difference is why `physicochemistry` on the production
+        # actin cohort reported "made of: isoelectric_point 97.1%": pI runs 4 to
+        # 12, GRAVY about -1 to 0.5 and charge per residue near zero, so the
+        # widest column was the map, while `biophys` declared `zscore_within`
+        # the whole time.
+        #
+        # WITHIN-BLOCK FIRST, then fusion's between-block scaling. PC-011 found
+        # that order written down nowhere. It is the only one that leaves
+        # `fuse_late` invariant for a block declaring `unit_mean_distance`: the
+        # block arrives at unit mean distance and fusion's scaling is then a
+        # no-op, where the reverse double-normalizes.
+        values = normalize_block(
+            values,
+            block.spec.normalization,
             what=f"space {space.id!r} block {block.spec.id!r}",
         )
         inputs.append(FusionInput(block.spec.id, values, space.weight_for(block.spec.id)))
