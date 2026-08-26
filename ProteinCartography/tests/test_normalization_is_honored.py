@@ -155,3 +155,103 @@ def test_a_block_declaring_a_metric_the_reducer_cannot_honor_is_refused(tmp_path
 
     with pytest.raises(SystemExit, match="declares metric 'cosine'"):
         reduce_space.read_blocks(_Space(), _Store())
+
+
+def test_mean_pairwise_distance_agrees_with_a_naive_reference():
+    """The Gram identity `|a-b|^2 = |a|^2 + |b|^2 - 2a.b` is an exact rewrite,
+    so this must hold to machine precision rather than approximately.
+
+    It is worth pinning because the identity has a known failure mode -- it
+    subtracts two large numbers to get a small one, so it loses relative
+    accuracy when points are close together and far from the origin. The last
+    case below is that shape deliberately.
+    """
+    import itertools
+
+    def naive(a):
+        a = np.asarray(a, dtype=np.float64)
+        pairs = list(itertools.combinations(range(len(a)), 2))
+        return sum(float(np.sqrt(((a[i] - a[j]) ** 2).sum())) for i, j in pairs) / len(pairs)
+
+    rng = np.random.default_rng(20260826)
+    for shape in [(5, 3), (11, 4), (60, 7), (37, 37)]:
+        values = rng.random(shape).astype(np.float32)
+        assert mean_pairwise_distance(values) == pytest.approx(naive(values), rel=1e-9)
+
+    # Across a chunk boundary, which is where an off-by-one in the triangle
+    # mask would hide: 700 rows at chunk=128 is six chunks, the last partial.
+    values = rng.random((700, 9)).astype(np.float32)
+    assert mean_pairwise_distance(values, chunk=128) == pytest.approx(naive(values), rel=1e-9)
+
+    # Tight cluster far from the origin -- the identity's worst case, and the
+    # reason the implementation centres before it does anything else. Without
+    # centring this case fails at 1e-5; with it, 1e-12 holds.
+    values = (rng.random((40, 6)) * 1e-3 + 500.0).astype(np.float64)
+    assert mean_pairwise_distance(values) == pytest.approx(naive(values), rel=1e-12)
+
+
+def test_mean_pairwise_distance_does_not_materialise_a_cubic_intermediate(tmp_path):
+    """The production-scale bug that a 367-protein cohort cannot show.
+
+    `tmscore` with `representation: profile` -- the pipeline's own
+    representation, where a protein IS its row of the similarity matrix -- gives
+    a block whose column count EQUALS its row count. The obvious way to write
+    this function, `block[:, None, :] - values[None, :, :]`, then allocates
+    `chunk * N**2`. Measured on the old implementation: 66 MB peak at N=200,
+    325 MB at N=400, 938 MB at N=600, and **29.9 GB at the production cohort
+    size of 2,703** -- which is not slow, it is dead.
+
+    Nothing exercised it until PC-011, because `unit_mean_distance` was declared
+    by that block and applied by nothing. Honoring the field is what put a
+    cubic allocation on the production path, and PC-041 phase 1 at N=367 ran
+    green through it at 395 MB. This is CLAUDE.md's "a fixture at or below 500
+    proteins cannot exercise the bug" in a second place.
+
+    Measured in a SUBPROCESS because `ru_maxrss` is a high-water mark: read in
+    this process it would report the whole suite's peak and prove nothing.
+    """
+    import subprocess
+    import sys
+
+    pytest.importorskip("numpy")
+    if sys.platform.startswith("win"):
+        pytest.skip("ru_maxrss is not available on Windows")
+
+    n = 1200
+    # What the old implementation would have needed, stated so a reader can see
+    # the bound below is not arbitrary.
+    cubic_bytes = min(512, n) * n * n * 8
+    assert cubic_bytes > 5e9, "the fixture stopped being big enough to prove anything"
+
+    script = tmp_path / "peak.py"
+    script.write_text(
+        "import resource, sys, numpy as np\n"
+        f"sys.path.insert(0, {str(_source_root())!r})\n"
+        "from spaces.normalize import mean_pairwise_distance\n"
+        f"a = np.random.default_rng(0).random(({n}, {n})).astype(np.float32)\n"
+        "mean_pairwise_distance(a)\n"
+        "peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss\n"
+        # macOS reports bytes, Linux kilobytes.
+        "print(peak if sys.platform == 'darwin' else peak * 1024)\n"
+    )
+    finished = subprocess.run(
+        [sys.executable, str(script)], capture_output=True, text=True, timeout=300
+    )
+    assert finished.returncode == 0, finished.stderr
+    peak_bytes = int(finished.stdout.strip())
+
+    # The array itself is 1200**2 float64 = 11.5 MB, plus a (chunk, N) working
+    # set of 4.9 MB and the interpreter. A gigabyte is far above that and far
+    # below the 5.9 GB the cubic form needs at this N.
+    assert peak_bytes < 1_000_000_000, (
+        f"peak RSS {peak_bytes / 1e6:.0f} MB at N={n}: this is allocating per-pair "
+        f"differences again, which needs {cubic_bytes / 1e9:.1f} GB at this size and "
+        "29.9 GB on the production cohort"
+    )
+
+
+def _source_root() -> str:
+    """The `ProteinCartography/` directory, for the subprocess's `sys.path`."""
+    import pathlib
+
+    return str(pathlib.Path(__file__).resolve().parent.parent)

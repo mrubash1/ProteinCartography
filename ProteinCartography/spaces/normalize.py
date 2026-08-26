@@ -40,10 +40,24 @@ __all__ = ["normalize_block", "mean_pairwise_distance"]
 def mean_pairwise_distance(values: np.ndarray, chunk: int = 512) -> float:
     """Mean Euclidean distance over all unordered pairs of rows.
 
-    Chunked rather than materialising the full (N, N) matrix: at the production
-    cohort size of ~2,800 proteins that matrix is 62 MB, and this runs on the
-    path ADR 0006 requires to work in an environment with no scipy, so
+    Chunked rather than materialising the full (N, N) matrix, and computed
+    through the Gram identity rather than by subtracting rows. This runs on the
+    path ADR 0006 requires to work with no scipy, so
     `scipy.spatial.distance.pdist` is not available to call.
+
+    **The identity is not an optimisation, it is what makes this usable at all.**
+    The obvious form, ``block[:, None, :] - values[None, :, :]``, materialises a
+    ``(chunk, N, D)`` intermediate. For most blocks D is small and that is fine.
+    For the `tmscore` block with ``representation: profile`` -- the pipeline's
+    own representation, where each protein IS its row of the similarity matrix --
+    D equals N, so the intermediate is ``chunk * N**2``. Measured: 938 MB peak at
+    N=600, and **29.9 GB at the production cohort size of 2,703**. Nothing here
+    ran before PC-011, because `unit_mean_distance` was declared and never
+    applied; honoring the field put this on the production path.
+
+    ``|a - b|^2 = |a|^2 + |b|^2 - 2 a.b`` needs only the ``(chunk, N)`` inner
+    products, which is 11 MB at N=2,703 instead of 29.9 GB, and hands the work
+    to BLAS besides.
 
     Returns 0.0 for fewer than two rows, which the caller must treat as "no
     scale to normalize" rather than dividing by it.
@@ -51,14 +65,28 @@ def mean_pairwise_distance(values: np.ndarray, chunk: int = 512) -> float:
     n = values.shape[0]
     if n < 2:
         return 0.0
+    # CENTRE FIRST. The identity subtracts two large numbers to get a small
+    # one, so it loses relative accuracy exactly when the rows are tightly
+    # clustered far from the origin -- measured at 1e-5 relative error on rows
+    # spread by 1e-3 around 500. A pairwise distance is translation-invariant,
+    # so removing the column mean changes no distance and leaves the norms on
+    # the order of the spread instead of the offset. That takes the same case
+    # to 1e-12.
+    array = np.asarray(values, dtype=np.float64)
+    array = array - array.mean(axis=0)
+    square_norms = np.einsum("ij,ij->i", array, array)
     total = 0.0
     count = 0
     for start in range(0, n, chunk):
-        block = values[start : start + chunk]
+        stop = min(start + chunk, n)
+        block = array[start:stop]
+        squared = square_norms[start:stop, None] + square_norms[None, :] - 2.0 * (block @ array.T)
+        # A squared distance is never negative; rounding in the identity can
+        # make one very slightly so, and `sqrt` would return nan rather than 0.
+        np.maximum(squared, 0.0, out=squared)
+        dist = np.sqrt(squared)
         # Only the strictly-upper triangle, accumulated blockwise.
-        diff = block[:, None, :] - values[None, :, :]
-        dist = np.sqrt(np.einsum("ijk,ijk->ij", diff, diff))
-        rows = np.arange(start, min(start + chunk, n))[:, None]
+        rows = np.arange(start, stop)[:, None]
         cols = np.arange(n)[None, :]
         mask = cols > rows
         total += float(dist[mask].sum())
