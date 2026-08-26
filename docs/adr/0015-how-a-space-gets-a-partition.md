@@ -57,6 +57,17 @@ clamping rather than importing it — importing would pull scanpy in at module
 scope and break the bare environment — and that agreement test is the only thing
 keeping the duplication honest.
 
+**That agreement holds and the duplication is honest — both re-verified at
+n=2689 on 2026-08-26, ARI 1.0000 under numba 0.60.0 and 0.9949 under 0.66.0.
+What the test does NOT do is what a reader assumes from it.** It hands both
+paths the same matrix, and since PC-011 production hands one path the raw matrix
+and the other the same matrix scaled to unit mean distance; it runs both in one
+interpreter, so it cannot see an environment delta; its fixture is healthy in
+both environments; and `test_clustering.py` is collected by no CI job. The two
+paths agreeing with each other is a weaker guarantee than it reads as: they
+agree, and still write different partitions into the same output tree. See
+FOLLOWUPS #105 and #106.
+
 **Availability degrades rather than fails.** The import is deferred,
 `is_available()` reports in the shape ADR 0006 rule 2 specifies, and a space
 that cannot be clustered loses the partition-dependent sections and keeps
@@ -192,12 +203,39 @@ it.
   cluster-ARI column and two config fields. Those two modules are its only
   importers, which is the droppability ADR 0006 asks of every optional
   capability, applied to one that is not optional.
-- **The partition is not reproducible across environments at very small N**, and
-  neither is the pre-existing `leiden_clustering` rule's. Two environments
-  agreeing on scanpy, leidenalg, igraph, numpy and scikit-learn, and differing
-  only in scipy 1.13.1 against 1.15.2, give different two-cluster memberships at
-  N=11 and identical ones at N=250. `envs/analysis.yml` does not pin scipy.
-  Recorded as FOLLOWUPS #42; not caused by this work, only made visible by it.
+- **The partition is not reproducible across environments, and this bullet used
+  to be wrong about both the cause and the scale.** It said the failure was "at
+  very small N", that the environments differed "only in scipy 1.13.1 against
+  1.15.2", and that N=250 agreement bounded the problem. All three are refuted,
+  measured 2026-08-26 on two production cohorts:
+
+  * **The cause is `numba`, not scipy.** `umap 0.5.3` compiles
+    `umap.umap_.smooth_knn_dist` with `@numba.njit(fastmath=True)`; under numba
+    0.66.0 / llvmlite 0.48.0 that returns `sigma = +inf` where numba 0.60.0 and
+    umap's own pure-Python source return a finite value. scipy is never called
+    inside it, and PCA output is bitwise identical across both environments and
+    across `svd_solver` `arpack`/`full`/`randomized`. `envs/analysis.yml` pins
+    nine packages and pins neither numba nor llvmlite.
+  * **The failure is at LARGE N and raw scale**, not small N. On `actin_full`
+    (n=2689) it merges 13 clusters into 6. N=250 agreement is a property of the
+    parity fixture, not a bound on the problem — the fixture is healthy in both
+    environments, so it can never show this.
+  * **It is silent below the point where the cluster count moves.** At n=308
+    both environments return k=8 while saturated graph edges differ 412 to 624.
+
+  Recorded as FOLLOWUPS #105, which supersedes #42's attribution. Not caused by
+  this work, only made visible by it.
+
+- **Decision 1's central argument has been false in production since PC-011.**
+  It argues that a diagnostic about a partition must be about the partition that
+  ships. `reduce_space.py:179` now applies `normalize_block` before fusion, so
+  `diagnose_space.py:422` clusters the tmscore block scaled to unit mean
+  distance while `Snakefile:1090` clusters the raw matrix — and on `actin_full`
+  those give 13 clusters and 6. The cross-path agreement test cannot see it: it
+  hands both paths the same raw matrix, in one interpreter, on a fixture healthy
+  in both environments, and `test_clustering.py` runs in zero CI jobs. Either
+  the paths are re-aligned or that test is fed what production feeds them.
+  FOLLOWUPS #106.
 
 ## Alternatives rejected
 
