@@ -139,15 +139,20 @@ def _biophys(facts: dict, params: dict) -> dict:
             "pKa table, in pH units. `charge_per_residue` is net charge at pH "
             f"{ph} divided by the number of standard residues, roughly -0.1 to "
             "+0.1.",
-            "Two proteins' distance is the plain Euclidean distance between " "those four numbers.",
+            "Two proteins' distance is the Euclidean distance between those "
+            "four numbers, each standardized across the cohort first because "
+            'the block declares `normalization="zscore_within"`.',
         ],
         hazards=[
-            'The block declares `normalization="zscore_within"` and nothing '
-            "reads `spec.normalization` (FOLLOWUPS #32), so the four columns "
-            "enter the distance on their own scales. Isoelectric point spans "
-            "about 4 to 12 pH units while charge per residue spans about 0.2, "
-            "so the Euclidean distance is dominated by isoelectric point and "
-            "this map is close to a map of pI. Read it as one.",
+            "The four descriptors are on wildly different scales -- isoelectric "
+            "point spans about 4 to 12 pH units while charge per residue spans "
+            "about 0.2 -- so on raw columns the Euclidean distance is almost "
+            "entirely isoelectric point. Measured on the `chymo_A1` cohort at "
+            "N=367: 97.9% of the block's raw variance. The block declares "
+            '`normalization="zscore_within"` and the reducer applies it, so '
+            "each column contributes 25% and this is not a map of pI. It said "
+            "the opposite until the declared field was honored (FOLLOWUPS #32), "
+            "so a page or a figure predating that shows a different geometry.",
         ],
         sources=[
             "blocks/biophys.py:276",

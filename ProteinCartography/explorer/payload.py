@@ -778,10 +778,20 @@ def _column_shares(output_dir: str, config, space) -> list:
     own columns, and it is the same question one level down: what is this
     picture actually made of.
 
-    The arithmetic is exact rather than an analogy. Euclidean distance on raw
-    columns is a sum of per-column squared differences, so a column's share of
-    the total variance IS its share of the squared distance, averaged over
-    pairs. Nothing here is a proxy for the thing; it is the thing.
+    The arithmetic is exact rather than an analogy. Euclidean distance is a sum
+    of per-column squared differences, so a column's share of the total
+    variance IS its share of the squared distance, averaged over pairs. Nothing
+    here is a proxy for the thing; it is the thing.
+
+    **It is the thing only for the array the distance was computed on**, and
+    that stopped being ``features.npy`` at PC-011. The store holds what the
+    provider measured; ``reduce_space.fuse_blocks`` applies the block's declared
+    ``normalization`` in memory and reduces THAT. So this normalizes too, by
+    the same call, and reports the raw share beside it under ``share_raw``.
+    Before that, the shipped demo's biophys panel read "made of:
+    isoelectric_point 99.9%" about a map in which isoelectric point is one
+    quarter -- a true statement about the stored block and a false one about
+    the picture it labelled.
 
     Returns ``[]`` unless the space has exactly one block and that block names
     its columns -- with several blocks the apportionment is the fused
@@ -789,6 +799,7 @@ def _column_shares(output_dir: str, config, space) -> list:
     columns there is nothing a reader could do with the answer.
     """
     import numpy as np
+    from spaces.normalize import normalize_block
 
     blocks = list(getattr(space, "blocks", ()) or ())
     if len(blocks) != 1:
@@ -803,20 +814,38 @@ def _column_shares(output_dir: str, config, space) -> list:
     values = np.load(features_path)
     if values.ndim != 2 or values.shape[1] != len(names):
         return []
-    variance = values.var(axis=0)
+    raw_variance = values.var(axis=0)
+    raw_total = float(raw_variance.sum())
+    if raw_total <= 0:
+        return []
+    # The rule the RUN used, which is the manifest's, not the one the config
+    # declares now: the manifest describes this tree and the config describes
+    # the next run. `reduce_space` reads it from the same recorded spec. The
+    # config is the fallback for a tree written before the spec was recorded.
+    declared = ((manifest.get("derived") or {}).get("spec") or {}).get("normalization")
+    if declared is None:
+        declared = getattr(config.blocks.get(block_id), "normalization", None)
+    try:
+        geometry = normalize_block(values, declared or "none")
+    except ValueError:
+        # A tree written by a version whose normalization vocabulary this one
+        # does not have. Reporting the raw columns and dropping the claim about
+        # which rule produced them beats guessing at the rule.
+        geometry, declared = values, None
+    variance = geometry.var(axis=0)
     total = float(variance.sum())
     if total <= 0:
         return []
-    # What the block's own declared normalization would have produced. Every
-    # column standardized has equal variance by construction, so this is 1/n --
-    # stated as a number rather than left for the reader to work out, because
-    # the gap between the two columns is the whole point of showing either.
-    declared = getattr(config.blocks.get(block_id), "normalization", None)
+    # What standardizing every column would produce. Equal variance by
+    # construction, so this is 1/n -- stated as a number rather than left for
+    # the reader to work out, because the gap between it and `share` is the
+    # whole point of showing either.
     return [
         {
             "column": name,
             "variance": float(variance[index]),
             "share": float(variance[index] / total),
+            "share_raw": float(raw_variance[index] / raw_total),
             "share_if_standardized": 1.0 / len(names),
             "declared_normalization": declared,
         }
@@ -834,12 +863,15 @@ def _block_column_overlays(output_dir: str, config, protids: list) -> dict:
     them answers "which descriptor is this picture actually made of" -- a
     question no feature-table overlay can answer.
 
-    That is worth having for a specific reason. The biophysical block declares
-    `normalization="zscore_within"` and nothing reads the field (FOLLOWUPS #32),
-    so its four columns enter the distance in their raw units: isoelectric point
-    runs about 4 to 12 and charge per residue about -0.1 to 0.1. The prediction
-    is that the map is mostly pI. Before this, that was an argument; now it is
-    something a reader can see by changing a dropdown.
+    That is worth having for a specific reason, and the reason outlived the
+    defect that prompted it. The biophysical block declares
+    `normalization="zscore_within"`; for a long time nothing read the field
+    (FOLLOWUPS #32), so its four columns entered the distance in their raw
+    units -- isoelectric point runs about 4 to 12 and charge per residue about
+    -0.1 to 0.1 -- and the map was mostly pI. PC-011 made the reducer honor the
+    field, so it no longer is. These overlays are what let a reader CHECK that
+    rather than take it on faith: colour the map by each descriptor in turn and
+    see whether any one of them still reads off the layout.
 
     Named ``<block_id>:<column>`` so the source travels with the number and a
     descriptor cannot collide with a same-named column of the features table.

@@ -1028,9 +1028,14 @@ function panelShell(space) {
   // The within-block twin of the line above. A fused space is apportioned
   // between its blocks; a one-block feature space is apportioned between its
   // own columns, and it is the same question one level down: what is this
-  // picture actually made of. Euclidean distance on raw columns is a sum of
-  // per-column squared differences, so a column's share of the variance IS its
-  // share of the squared distance -- this is the quantity, not a proxy for it.
+  // picture actually made of. Euclidean distance is a sum of per-column squared
+  // differences, so a column's share of the variance IS its share of the
+  // squared distance -- this is the quantity, not a proxy for it.
+  //
+  // `share` is measured on the array the reducer actually reduced, i.e. after
+  // the block's declared normalization. `share_raw` is the same quantity on the
+  // stored columns. The two differ exactly when the declared rule does
+  // something, which is why both are here.
   if ((space.column_shares || []).length) {
     const columns = space.column_shares.slice().sort((a, b) => b.share - a.share);
     const top = columns[0];
@@ -1043,22 +1048,44 @@ function panelShell(space) {
         .map((c) => `<b>${escapeHtml(String(c.column))}</b> ${(100 * c.share).toFixed(1)}%`)
         .join(" · ");
     panel.append(bar);
+    // What the raw units would have made this map, when normalization moved it.
+    // Worth stating rather than silently showing the corrected number: the
+    // production physicochemistry map WAS 97% isoelectric point, and a reader
+    // comparing against an older page needs to know why it no longer is.
+    const rawTop = columns
+      .slice()
+      .sort((a, b) => (b.share_raw ?? 0) - (a.share_raw ?? 0))[0];
+    if (rawTop && rawTop.share_raw != null && rawTop.share_raw - rawTop.share > 0.1) {
+      const moved = document.createElement("div");
+      moved.className = "shares";
+      moved.innerHTML =
+        `In raw units this would be <b>${escapeHtml(String(rawTop.column))}</b> ` +
+        `${(100 * rawTop.share_raw).toFixed(1)}% — these columns are on incomparable ` +
+        "scales. The block declares <code>" +
+        `${escapeHtml(String(top.declared_normalization))}</code>, which the reducer ` +
+        "applies, so the map above is not that.";
+      panel.append(moved);
+    }
     // A single column carrying almost the whole distance is not a fact about
     // the proteins, it is a fact about the units. Said here rather than in the
     // fold-out, because a reader who does not open the fold-out will otherwise
     // read this map as a map of physicochemistry.
     if (even && top.share > 2 * even) {
+      const rule = top.declared_normalization;
       const warn = document.createElement("div");
       warn.className = "shares column-warn";
       warn.innerHTML =
         `<b>This map is mostly ${escapeHtml(String(top.column))}.</b> ` +
         `Its ${(100 * top.share).toFixed(1)}% is a fact about the units, not about the ` +
-        "proteins: these columns enter the distance raw, on incomparable scales. " +
-        (top.declared_normalization
-          ? `The block declares <code>${escapeHtml(String(top.declared_normalization))}</code>, ` +
-            "which would give every column " + (100 * even).toFixed(0) + "% — but nothing " +
-            "reads that field (FOLLOWUPS #32). "
-          : "") +
+        "proteins: these columns enter the distance on incomparable scales. " +
+        (rule && rule !== "none"
+          ? `The block declares <code>${escapeHtml(String(rule))}</code> and the reducer ` +
+            "applies it, but that rule scales the block as a whole and so cannot change " +
+            "the balance between its columns; <code>zscore_within</code> is the one that " +
+            "would, and it would give every column " + (100 * even).toFixed(0) + "%. "
+          : "The block declares no within-block normalization; " +
+            "<code>zscore_within</code> would give every column " +
+            (100 * even).toFixed(0) + "%. ") +
         "Colour by each descriptor in turn to see which structure is which.";
       panel.append(warn);
     }

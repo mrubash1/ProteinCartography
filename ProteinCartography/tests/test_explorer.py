@@ -1166,17 +1166,26 @@ def test_a_provider_with_no_description_says_so_rather_than_inventing_one():
     assert "some_future_provider" in text
 
 
-def test_the_biophys_hazard_names_the_unapplied_normalization():
-    """FOLLOWUPS #32, on the page rather than in a follow-up file.
+def test_the_biophys_hazard_says_the_normalization_is_applied():
+    """FOLLOWUPS #32, on the page rather than in a follow-up file -- and the
+    sentence had to be reversed when the field started being read.
 
-    The block asks for `zscore_within`, nothing reads `spec.normalization`, and
-    the consequence is that the euclidean distance is mostly isoelectric point.
-    A physicochemistry map read as "chemistry" rather than "pI" is the
-    misreading this sentence exists to stop.
+    It used to end "this map is close to a map of pI. Read it as one." That was
+    true and is now the exact opposite of the truth: `reduce_space` applies the
+    declared `zscore_within`, so every column contributes a quarter. An
+    instruction to misread the map is worse than no hazard at all, and it
+    survived the fix because the hazard lives in a third file that neither the
+    reducer's tests nor the panel's tests reach.
+
+    The scales are still the hazard -- that is why the rule is declared -- so
+    the sentence keeps them and states what was done about them.
     """
     hazards = " ".join(describe_block("biophys")["hazards"])
     assert "zscore_within" in hazards
     assert "isoelectric point" in hazards
+    assert "the reducer applies it" in hazards
+    assert "this is not a map of pI" in hazards
+    assert "Read it as one" not in hazards, "the page still tells a reader to misread the map"
 
 
 def test_the_domains_hazards_name_both_the_blank_row_and_the_ties():
@@ -2600,9 +2609,17 @@ def test_a_descriptor_never_displaces_a_feature_table_column_of_the_same_name():
 
 
 def test_each_column_s_share_of_the_distance_is_reported(tmp_path):
-    """Euclidean distance on raw columns is a sum of per-column squared
-    differences, so a column's share of the variance IS its share of the
-    squared distance. This is the quantity, not a proxy for it."""
+    """Euclidean distance is a sum of per-column squared differences, so a
+    column's share of the variance IS its share of the squared distance. This
+    is the quantity, not a proxy for it.
+
+    `flat` is constant, so it contributes nothing to any distance and
+    standardizing cannot give it something to contribute -- `normalize_block`
+    leaves a zero-variance column alone. That is why this fixture reads the
+    same before and after PC-011, and why it is NOT the test that catches the
+    normalization bug; see
+    `test_column_shares_describe_the_geometry_that_was_built_not_the_raw_columns`.
+    """
     pytest.importorskip("numpy")
 
     class Block:
@@ -2641,16 +2658,25 @@ def test_a_fused_space_reports_block_contributions_and_not_column_shares(tmp_pat
 
 
 def test_the_map_says_when_one_column_carries_almost_all_of_it():
-    """FOLLOWUPS #32, made visible. The biophysical block declares
-    `zscore_within` and nothing reads the field, so its columns enter the
-    distance raw: on both shipped cohorts isoelectric point is over 97% of it.
-    A reader who does not open the fold-out would otherwise read that map as a
-    map of physicochemistry."""
+    """The units warning, which PC-011 narrowed rather than removed.
+
+    It was written for FOLLOWUPS #32 -- the biophysical block declared
+    `zscore_within`, nothing read the field, and isoelectric point was over 97%
+    of the production physicochemistry map. The reducer honors the field now,
+    so that block is no longer the case. The warning still is: a block
+    declaring `none`, or declaring `unit_mean_distance` -- which is a single
+    scalar for the whole block and so cannot rebalance its columns -- still
+    reaches the reducer on incomparable scales.
+
+    A reader who does not open the fold-out would otherwise read such a map as
+    a map of physicochemistry, so it stays in the panel's own footprint.
+    """
     html = EMPTY_PAGE
     assert "space.column_shares" in html, "the shares never reach the panel"
     assert "This map is mostly" in html
     assert "a fact about the units, not about the" in html
-    assert "FOLLOWUPS #32" in html, "the unread field is not named"
+    assert "cannot change " in html, "the warning no longer says why the declared rule did not help"
+    assert "In raw units this would be" in html, "the before/after contrast is not rendered"
 
 
 def test_a_report_with_no_faithfulness_section_is_not_read_as_a_clean_one():
@@ -4603,3 +4629,92 @@ def test_every_payload_string_at_an_innerHTML_sink_goes_through_escapeHtml():
     ):
         assert unescaped not in html, f"unescaped interpolation still in the page: {unescaped}"
         assert escaped in html, f"escaped interpolation missing from the page: {escaped}"
+
+
+def test_column_shares_describe_the_geometry_that_was_built_not_the_raw_columns(tmp_path):
+    """PC-011 made `spec.normalization` real, and this panel still read the raw
+    block.
+
+    `_column_shares` answers "what is this picture made of", and its arithmetic
+    only holds for the array the distance was actually computed on. Until
+    commit 252 that WAS the raw column block, because nothing applied the
+    declared rule -- so reading `features.npy` off the store was correct. It is
+    not any more: `reduce_space.fuse_blocks` normalizes in memory and the store
+    keeps the raw values, so a block declaring `zscore_within` is drawn from
+    standardized columns while this panel reports the unstandardized ones.
+
+    Measured on the shipped demo's own biophys block at HEAD: raw shares are
+    [0.13%, 0.00%, 99.85%, 0.02%] and the geometry's are [25%, 25%, 25%, 25%].
+    The page said "made of: isoelectric_point 99.9%" about a map in which
+    isoelectric point is one quarter.
+    """
+    pytest.importorskip("numpy")
+
+    class Block:
+        normalization = "zscore_within"
+
+    class Space:
+        blocks = ("biophys",)
+
+    class Config:
+        blocks = {"biophys": Block()}
+
+    # One column with all the raw variance and one with almost none. Under
+    # `zscore_within` they contribute equally, and that is what the map shows.
+    _biophys_block(tmp_path, ["narrow", "wide"], [[1.0, 0.0], [1.001, 10.0]])
+    by_name = {row["column"]: row for row in _column_shares(str(tmp_path), Config(), Space())}
+
+    assert by_name["wide"]["share"] == pytest.approx(0.5), (
+        "the panel is still reporting the raw column share, which is not what "
+        "the reducer measured distances on"
+    )
+    assert by_name["narrow"]["share"] == pytest.approx(0.5)
+
+    # The raw share is kept beside it rather than thrown away: "the units would
+    # have made this map 99.9% one column, and the declared rule is why it is
+    # not" is the thing worth showing, and it needs both numbers.
+    assert by_name["wide"]["share_raw"] > 0.99
+    assert by_name["narrow"]["share_raw"] < 0.01
+    assert by_name["wide"]["declared_normalization"] == "zscore_within"
+
+
+def test_a_block_declaring_no_normalization_still_reports_its_raw_columns(tmp_path):
+    """The other half of the same fix, and the one that keeps the warning alive.
+
+    `normalization: none` is a real and legitimate choice, and for such a block
+    the raw share IS the geometry's share. If the fix above were written as
+    "always standardize before reporting" the panel would claim every map is
+    evenly made, and the units warning -- which is correct for exactly this
+    case -- would never fire again.
+    """
+    pytest.importorskip("numpy")
+
+    class Block:
+        normalization = "none"
+
+    class Space:
+        blocks = ("biophys",)
+
+    class Config:
+        blocks = {"biophys": Block()}
+
+    _biophys_block(tmp_path, ["narrow", "wide"], [[1.0, 0.0], [1.001, 10.0]])
+    by_name = {row["column"]: row for row in _column_shares(str(tmp_path), Config(), Space())}
+    assert by_name["wide"]["share"] > 0.99
+    assert by_name["wide"]["share"] == pytest.approx(by_name["wide"]["share_raw"])
+
+
+def test_the_page_does_not_tell_a_reader_that_normalization_is_unread():
+    """A shipping sentence that was true when written and is now false.
+
+    The panel rendered, verbatim, "The block declares `zscore_within`, which
+    would give every column 25% -- but nothing reads that field
+    (FOLLOWUPS #32)". PC-011 made something read it. A page that ships a
+    live-sounding defect report for a fixed defect is worse than one that says
+    nothing, because a reader has no way to tell it is stale.
+    """
+    html = EMPTY_PAGE
+    assert (
+        "reads that field" not in html
+    ), "the page still claims the declared normalization is unread"
+    assert "FOLLOWUPS #32" not in html, "a resolved follow-up is still cited as live"
