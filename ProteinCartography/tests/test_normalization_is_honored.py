@@ -116,3 +116,42 @@ def test_none_is_the_identity_and_every_vocabulary_member_is_implemented():
 def test_an_unknown_rule_is_refused_rather_than_ignored():
     with pytest.raises(ValueError, match="unknown normalization"):
         normalize_block(np.zeros((3, 2)), "whatever-the-config-said")
+
+
+def test_a_block_declaring_a_metric_the_reducer_cannot_honor_is_refused(tmp_path):
+    """FOLLOWUPS #29, the sibling of #32.
+
+    `spec.metric` was validated against the vocabulary, written into every
+    manifest and consulted by nothing, so a block declaring `cosine` was reduced
+    with a euclidean PCA and carried a manifest that said otherwise. Refusing is
+    the honest half of the pair: #32 was fixed by honoring the declaration,
+    #29 by admitting it cannot be.
+    """
+    import reduce_space
+    from spaces.base import BlockResult, BlockSpec
+
+    class _Store:
+        def block_dir(self, block_id):
+            return str(tmp_path)
+
+        def read_block(self, block_id):
+            spec = BlockSpec(
+                id=block_id,
+                kind="features",
+                fusable=True,
+                metric="cosine",
+                normalization="none",
+                provider="biophys",
+            )
+            return BlockResult(
+                protids=["a", "b"],
+                features=np.zeros((2, 2), dtype=np.float32),
+                spec=spec,
+            )
+
+    class _Space:
+        id = "s"
+        blocks = ("chem",)
+
+    with pytest.raises(SystemExit, match="declares metric 'cosine'"):
+        reduce_space.read_blocks(_Space(), _Store())

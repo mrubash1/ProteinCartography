@@ -46,12 +46,13 @@ different questions and only one of them is available for each metric.
   that answers "could a reader have superimposed these two plots by eye".
 
 **The distances are computed on the features as the reducer consumes them:
-unnormalized, and euclidean.** `spec.normalization` is recorded on every block
-and applied nowhere -- `reduce_space` feeds `block.features` straight into PCA
--- and `spec.metric` is likewise never consulted (FOLLOWUPS #29). Applying
-either here and not there would make this module describe a geometry that no
-map is drawn from, which is worse than describing the real one imperfectly. The
-report says so in `geometry_caveats` rather than leaving it to be inferred.
+normalized as the block declares, and euclidean.** `spec.normalization` is now
+applied before fusion (`reduce_space`) and before redundancy
+(`diagnose_space`), so all three places describe ONE geometry -- which is the
+property this paragraph used to record the absence of. `spec.metric` is still
+euclidean everywhere, and a block declaring anything else is refused rather than
+silently reduced as euclidean. The report states both in `geometry_caveats`
+rather than leaving them to be inferred.
 
 Everything below is numpy. Spearman, Procrustes and neighbor search all have
 one-line scipy or scikit-learn equivalents, and ADR 0006 requires that the
@@ -84,9 +85,9 @@ __all__ = [
 GEOMETRY_CAVEATS = (
     "distances are euclidean: `spec.metric` is recorded on a block and never "
     "consulted by anything that reduces it (FOLLOWUPS #29)",
-    "features are unnormalized: `spec.normalization` is recorded on a block and "
-    "applied nowhere, so this describes the geometry the map is actually drawn "
-    "from rather than the one the spec declares",
+    "features are normalized as the block declares: `spec.normalization` is "
+    "applied by `reduce_space` before fusion and by `diagnose_space` before "
+    "redundancy, so this describes the geometry the map is drawn from",
 )
 
 

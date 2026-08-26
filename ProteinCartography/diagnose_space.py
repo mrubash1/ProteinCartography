@@ -63,6 +63,7 @@ from diagnostics.stability import neighborhood_stability
 from reduce_space import features_for
 from spaces import layout
 from spaces.manifest import Manifest
+from spaces.normalize import normalize_block
 from spaces.store import BlockStore
 
 DIAGNOSTICS_FILENAME = layout.DIAGNOSTICS_FILENAME
@@ -280,10 +281,20 @@ def main() -> int:
 
     # 3. do the blocks say different things
     if len(blocks) > 1:
+        # Normalized, because `reduce_space` normalizes before fusing and this
+        # has to measure the geometry the map is DRAWN FROM. PC-011 phase 3 is
+        # "honor it in the three places that describe one geometry"; this is the
+        # second, and skipping it would make redundancy compare blocks on raw
+        # scales while the map compares them on normalized ones -- the exact
+        # mismatch `coregistration`'s docstring warns about.
         aligned = {
-            block.spec.id: index.align(
-                block.protids,
-                block.features,
+            block.spec.id: normalize_block(
+                index.align(
+                    block.protids,
+                    block.features,
+                    what=f"space {args.space_id!r} block {block.spec.id!r}",
+                ),
+                block.spec.normalization,
                 what=f"space {args.space_id!r} block {block.spec.id!r}",
             )
             for block in blocks

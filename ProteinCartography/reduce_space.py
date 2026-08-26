@@ -98,6 +98,24 @@ def read_blocks(space, store: BlockStore) -> list:
                 "distance needs a metric-aware reducer, which is not implemented yet; "
                 "use representation: profile."
             )
+        # REFUSE a metric this cannot honor, rather than record it and ignore
+        # it. FOLLOWUPS #29: `spec.metric` was validated against the vocabulary,
+        # written into every manifest, quoted on the page, and consulted by
+        # nothing -- so a block declaring `cosine` got a euclidean PCA and a
+        # manifest saying otherwise. The reducer is euclidean; the honest
+        # options are to make it metric-aware or to say so, and this says so.
+        # Same shape as the pairwise refusal above, and the same shape as the
+        # `foldseek_mode` refusal: fail where the config is read, not silently
+        # somewhere the user cannot see.
+        if result.spec.metric != "euclidean":
+            raise SystemExit(
+                f"block {block_id!r} declares metric {result.spec.metric!r}, and the "
+                "reducer is euclidean. A metric-aware reducer is not implemented, so "
+                "honoring this would need one and ignoring it would put a distance in "
+                "the manifest that no map was drawn with. Declare 'euclidean', or use "
+                "a provider that refuses the block outright the way `domains` refuses "
+                "'jaccard'."
+            )
         results.append(result)
     return results
 
