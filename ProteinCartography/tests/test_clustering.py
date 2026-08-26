@@ -360,3 +360,63 @@ def test_the_threshold_is_not_written_out_anywhere_it_is_used():
     assert not offenders, "the clusterability threshold is hardcoded again:\n" + "\n".join(
         offenders
     )
+
+
+needs_umap = pytest.mark.skipif(
+    __import__("importlib").util.find_spec("umap") is None,
+    reason=(
+        "umap-learn is not importable. It is pinned in envs/analysis.yml, which is the "
+        "environment `rule leiden_clustering` and `rule diagnose_space` declare; this "
+        "path is only reached outside that environment."
+    ),
+)
+
+
+@needs_umap
+def test_the_installed_numba_computes_umaps_kernel_correctly():
+    """The toolchain decides the cluster count, so the toolchain gets a test.
+
+    FOLLOWUPS #105. `umap-learn` compiles `umap.umap_.smooth_knn_dist` with
+    `@numba.njit(fastmath=True)`. Under numba 0.66.0 / llvmlite 0.48.0 that
+    codegen breaks the bisection's `hi == NPY_INFINITY` doubling branch and
+    returns `sigma = +inf`, which drives every membership strength
+    `exp(-(d - rho) / sigma)` to exactly 1.0, saturates the neighbour graph, and
+    makes Leiden return a handful of huge clusters. Measured on the production
+    cohorts: 1877 of 2656 rows on chymo_full, 1067 of 2689 on actin_full, and
+    the maps went from 20 clusters to 5 and from 13 to 6.
+
+    **Nothing in the pipeline imports numba**, which is exactly why this needs a
+    test rather than a version assertion: the dependency that decides the answer
+    is transitive, and `envs/analysis.yml` pinned nine packages without it until
+    2026-08-26.
+
+    The oracle is umap's own source. `smooth_knn_dist.py_func` is the
+    undecorated Python that numba compiled, so comparing the two asks "did the
+    compiler preserve the meaning of this function", which is the actual
+    question, and it stays true if umap changes the algorithm.
+
+    THE SCALES MATTER. The bad branch is only entered when distances are large
+    relative to umap's hard-coded bisection seed `mid = 1.0`, so a probe at
+    scale 1 alone passes on a broken toolchain -- verified: numba 0.66.0 returns
+    the correct 0.14472389 there and `inf` at 20.
+    """
+    import numpy as np
+    from umap.umap_ import smooth_knn_dist
+
+    for scale in (1.0, 5.0, 20.0, 100.0, 500.0):
+        distances = np.linspace(0, scale, 32).astype(np.float32).reshape(1, 32)
+        compiled, _ = smooth_knn_dist(distances, 32.0)
+        reference, _ = smooth_knn_dist.py_func(distances, 32.0)
+
+        assert np.isfinite(compiled[0]), (
+            f"umap's smooth_knn_dist returned {compiled[0]} at distance scale {scale}. "
+            "The installed numba/llvmlite miscompiles it under fastmath, every "
+            "membership weight in an affected row collapses to 1.0, and the cluster "
+            "count this pipeline reports is wrong. Pin numba in envs/analysis.yml; "
+            "see docs/FOLLOWUPS.md #105."
+        )
+        assert compiled[0] == pytest.approx(reference[0], rel=1e-6), (
+            f"at distance scale {scale} the compiled smooth_knn_dist returns "
+            f"{compiled[0]} where umap's own uncompiled source returns {reference[0]}. "
+            "The compiler changed the meaning of the function."
+        )

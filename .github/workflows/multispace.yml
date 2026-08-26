@@ -330,6 +330,50 @@ jobs:
           fi
         shell: micromamba-shell {0}
 
+      - name: The clustering agreement and the toolchain probe, which run nowhere else
+        # `tests/test_clustering.py` IS collected by `test.yml` -- 12 passed
+        # there -- but its 15 scanpy-gated tests all SKIP, because no CI job ran
+        # it in an environment that has scanpy. Among those 15 are the two
+        # cross-path agreement tests, and ADR 0015 calls that agreement "the only
+        # thing keeping the duplication honest" in `clustering._clamped`. It was
+        # keeping nothing honest: it had never executed in CI.
+        #
+        # It also carries `test_the_installed_numba_computes_umaps_kernel_correctly`,
+        # which is why this step matters beyond unskipping. `umap-learn` compiles
+        # `smooth_knn_dist` with `@numba.njit(fastmath=True)`, and numba 0.66.0
+        # miscompiles it to return `sigma = +inf`, saturating the neighbour graph
+        # and collapsing 20 clusters to 5 on a production cohort. NOTHING IN THIS
+        # REPOSITORY IMPORTS NUMBA -- it is transitive, it decides the answer, and
+        # `envs/analysis.yml` did not pin it until 2026-08-26. See FOLLOWUPS #105.
+        #
+        # This job is the only one that installs `envs/analysis.yml`, so it is
+        # the only place either check can run. One pytest path, not a new job.
+        #
+        # The SKIPPED check is the point of the step: these tests skipping is
+        # precisely the failure it exists to end, so a skip here is an error
+        # rather than a shrug.
+        run: |
+          set +e
+          python -m pytest ProteinCartography/tests/test_clustering.py \
+            -q --runslow -rs -p no:cacheprovider > /tmp/clustering.txt 2>&1
+          status=$?
+          cat /tmp/clustering.txt
+          if [ $status -ne 0 ]; then exit $status; fi
+          # TWO skips are correct here and must not fail the step: this file
+          # also carries INVERSE-gated tests that exercise the no-scanpy path,
+          # and they skip precisely because this environment HAS scanpy. Their
+          # reason string is "scanpy is installed here". Anything else skipping
+          # is the failure this step exists to end, so it is an error.
+          #
+          # Measured before this was written: 26 passed, 2 skipped, both of them
+          # that inverse gate. A blanket `grep -q SKIPPED` here would have made
+          # this step fail on its first CI run.
+          if grep "SKIPPED" /tmp/clustering.txt | grep -qv "scanpy is installed here"; then
+            echo "::error::a clustering test skipped for a reason other than the no-scanpy inverse gate; the cross-path agreement and the numba probe are exactly what this step exists to run"
+            exit 1
+          fi
+        shell: micromamba-shell {0}
+
   parity:
     # The evidence for this PR's central claim -- that the default configuration
     # produces byte-identical output -- is `test_parity.py`. Every test in it
