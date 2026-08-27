@@ -355,3 +355,90 @@ def test_report_flags_a_measured_zero_as_invalidating_the_shortcut(tmp_path):
 def test_report_includes_per_protein_summary(tmp_path, labels):
     report = censoring_report(dense_matrix(tmp_path, labels))
     assert set(report["per_protein"]) == {"min", "median", "max", "mean"}
+
+
+def _capped_by_top_k(n_clusters=8, per_cluster=50, cap=100, seed=20260826):
+    """A similarity matrix censored ONLY by the per-query top-k rule.
+
+    Nothing here places a zero by hand. Scores are drawn from two overlapping
+    normal distributions -- within-cluster N(0.52, 0.16), between-cluster
+    N(0.44, 0.16) -- and then each row keeps its `cap` highest-scoring partners
+    and loses the rest, which is exactly what foldseek's `--max-seqs` does.
+    Everything the test asserts is a CONSEQUENCE of that rule.
+
+    The overlap is load-bearing and was tuned by measurement, because both
+    obvious parameterisations produce a test that cannot fail:
+
+        clusters tighter than the cap   within 1.000, between 0.143
+        distributions barely overlapping within 0.591, between 0.000
+
+    A retention of exactly 1.0 or exactly 0.0 makes the ratio trivial and the
+    assertions vacuous. These numbers land at within 0.471 / between 0.217 /
+    ratio 0.461, against the production chymo_full cohort's 0.628 / 0.344 /
+    0.548 -- the same regime, arrived at without any production data.
+    """
+    from matrix_io import LabeledMatrix
+
+    rng = np.random.default_rng(seed)
+    n = n_clusters * per_cluster
+    labels = np.repeat(np.arange(n_clusters), per_cluster)
+    same = labels[:, None] == labels[None, :]
+
+    scores = rng.normal(0.44, 0.16, (n, n))
+    scores[same] = rng.normal(0.52, 0.16, int(same.sum()))
+    scores = np.clip((scores + scores.T) / 2, 0.02, 0.99)
+    np.fill_diagonal(scores, 1.0)
+
+    keep = np.zeros((n, n), dtype=bool)
+    for row in range(n):
+        keep[row, np.argsort(-scores[row])[:cap]] = True
+    np.fill_diagonal(keep, True)
+
+    protids = [f"p{i:04d}" for i in range(n)]
+    values = np.where(keep, scores, 0.0)
+    matrix = LabeledMatrix(
+        protids=protids,
+        columns=list(protids),
+        values=values,
+        censored=~keep,
+        source="synthetic:top_k_cap",
+    )
+    clusters = {p: f"c{labels[i]}" for i, p in enumerate(protids)}
+    return matrix, clusters
+
+
+def test_the_cap_alone_produces_the_crisp_cluster_trap():
+    """The trap DEMONSTRATED rather than assumed, on a matrix above the cap.
+
+    `test_cross_cluster_retention_detects_the_crisp_cluster_trap` above censors
+    every between-cluster cell by hand and checks the arithmetic. That is worth
+    having and it takes the interesting part as given: it assumes the per-query
+    cut preferentially removes between-cluster edges. Here nothing is placed by
+    hand. A top-k rule is applied to overlapping score distributions and the
+    bias FALLS OUT, which is the claim `diagnostics/censoring.py` opens with --
+    "the map gets more convincing and less true at the same time".
+
+    It also exercises the regime the real pipeline is in: 400 proteins against a
+    cap of 100, so the cap binds, where the hand-made fixture is 8 proteins and
+    cannot bind anything.
+
+    Measured on the production chymo_full cohort for comparison: within 0.628,
+    between 0.344, ratio 0.548.
+    """
+    matrix, clusters = _capped_by_top_k()
+    _table, summary = cross_cluster_edge_retention(matrix, clusters)
+
+    within = summary["within_retention"]
+    between = summary["between_retention"]
+    ratio = summary["between_over_within"]
+
+    # The finding: a cross-cluster relationship is far less likely to survive.
+    assert between < within
+    assert ratio < 0.7, f"between/within {ratio:.3f} shows no preferential loss"
+
+    # NEITHER SIDE MAY BE DEGENERATE. Both degenerate parameterisations pass the
+    # assertions above while proving nothing -- within 1.0 means the cap never
+    # bit inside a cluster, between 0.0 means the score bands never overlapped.
+    # This is the guard that keeps the fixture honest if anyone retunes it.
+    assert 0.0 < within < 1.0, f"within_retention {within} is degenerate"
+    assert 0.0 < between, f"between_retention {between} is degenerate"
