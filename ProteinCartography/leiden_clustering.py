@@ -3,10 +3,26 @@
 
 For N < 3, assign every protein to a single cluster and skip Scanpy. Otherwise
 clamp ``n_neighbors`` / ``n_pcs`` to valid ranges for the matrix size.
+
+**Optionally records what it ran with.** ``--manifest`` writes a sidecar JSON
+naming the input and its digest, the parameters as REQUESTED and as USED after
+clamping, the library versions, and the resolution -- which is scanpy's default
+because this module never passes one, and is therefore the parameter most likely
+to differ between two runs that look identical from the command line.
+
+That option exists because four archived ``leiden_features.tsv`` files in this
+project could not be regenerated from their own inputs, and none of them carried
+any record of the settings that produced them, so the disagreement could not be
+diagnosed -- only observed (FOLLOWUPS #78).
+
+It is OPT-IN, and that is deliberate rather than timid: this script runs on the
+default output path, so writing a file unconditionally would add an output to
+the default DAG and the parity suite would see it as a differing file.
 """
 
 from __future__ import annotations
 import argparse
+import os
 
 import numpy as np
 import pandas as pd
@@ -39,6 +55,15 @@ def parse_args():
         help="Number of n_pcs to pass to sc.pp.neighbors().",
     )
     parser.add_argument(
+        "--manifest",
+        default=None,
+        help=(
+            "Optional path for a sidecar JSON recording the input digest and the "
+            "parameters actually used. Omitted by the default pipeline, so the "
+            "default DAG's outputs are unchanged."
+        ),
+    )
+    parser.add_argument(
         "-l",
         "--cluster-name",
         default="LeidenCluster",
@@ -65,6 +90,65 @@ def _singleton_membership(
     )
 
 
+def _module_version(name: str):
+    """The version of an installed library, however that library spells it.
+
+    `leidenalg` carries its version as `leidenalg.version` and has no
+    `__version__` at all, so asking only for the dunder records null for the
+    library that chose the partition. `scipy` and `igraph` are read for the same
+    reason: FOLLOWUPS #42 names scipy as the leading hypothesis for two
+    environments returning different Leiden partitions from one matrix, and a
+    manifest that omits it cannot settle that.
+    """
+    try:
+        module = __import__(name)
+    except Exception:
+        return None
+    for attr in ("__version__", "version"):
+        value = getattr(module, attr, None)
+        if isinstance(value, str):
+            return value
+    return None
+
+
+def _write_manifest(path, *, input_file, requested, used, cluster_name, n_proteins, n_clusters):
+    """What this run actually did, beside its own output.
+
+    The USED values matter more than the requested ones: `n_neighbors` is raised
+    to `round(n/10)` and both are clamped to the matrix, so two runs invoked
+    identically on different-sized cohorts do different things (FOLLOWUPS #79).
+    `resolution` is recorded as scanpy's default because this module never
+    passes one -- and it is the parameter that most plausibly explains an
+    archive nobody can reproduce.
+    """
+    import json
+    import platform
+
+    versions = {"python": platform.python_version()}
+    for name in ("scanpy", "leidenalg", "igraph", "scipy", "sklearn", "numpy", "pandas"):
+        versions[name] = _module_version(name)
+    try:
+        from spaces.manifest import file_digest
+
+        digest = file_digest(input_file)
+    except Exception:
+        digest = None
+    payload = {
+        "input": {"path": os.path.abspath(input_file), "sha256": digest},
+        "requested": requested,
+        "used": used,
+        "resolution": "scanpy default (this module passes none)",
+        "cluster_column": cluster_name,
+        "n_proteins": n_proteins,
+        "n_clusters": n_clusters,
+        "versions": versions,
+    }
+    os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
+    with open(path, "w") as handle:
+        json.dump(payload, handle, indent=2, sort_keys=True)
+    print(f"[leiden_clustering] wrote {path}", flush=True)
+
+
 def scanpy_leiden_cluster(
     input_file: str,
     savefile=None,
@@ -72,6 +156,7 @@ def scanpy_leiden_cluster(
     n_pcs=30,
     cluster_name="LeidenCluster",
     cluster_abbrev="LC",
+    manifest_path=None,
     **kwargs,
 ):
     """
@@ -94,6 +179,16 @@ def scanpy_leiden_cluster(
         membership = _singleton_membership(list(adata.obs_names), cluster_name, cluster_abbrev)
         if savefile is not None:
             membership.to_csv(savefile, sep="\t", index=None)
+        if manifest_path is not None:
+            _write_manifest(
+                manifest_path,
+                input_file=input_file,
+                requested={"n_neighbors": int(n_neighbors), "n_pcs": int(n_pcs)},
+                used={"n_neighbors": None, "n_pcs": None, "path": "singleton, N<3"},
+                cluster_name=cluster_name,
+                n_proteins=n,
+                n_clusters=1,
+            )
         return membership
 
     sc.tl.pca(adata, svd_solver="arpack")
@@ -121,6 +216,17 @@ def scanpy_leiden_cluster(
     if savefile is not None:
         membership.to_csv(savefile, sep="\t", index=None)
 
+    if manifest_path is not None:
+        _write_manifest(
+            manifest_path,
+            input_file=input_file,
+            requested={"n_neighbors": int(n_neighbors), "n_pcs": int(n_pcs)},
+            used={"n_neighbors": n_neighbors_used, "n_pcs": n_pcs_used},
+            cluster_name=cluster_name,
+            n_proteins=n,
+            n_clusters=int(membership[cluster_name].nunique()),
+        )
+
     return membership
 
 
@@ -136,6 +242,7 @@ def main():
         n_pcs=n_pcs,
         cluster_name=args.cluster_name,
         cluster_abbrev=args.cluster_abbrev,
+        manifest_path=args.manifest,
     )
 
 

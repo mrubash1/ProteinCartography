@@ -1,0 +1,474 @@
+# Proves ADR 0006 rule 4 rather than asserting it: the multi-space pipeline runs
+# end to end with **zero optional dependencies** installed in the driver
+# environment, and the determinism guard runs at a cohort size where it can
+# actually fail.
+#
+# Two things this job exists to catch that `test.yml` cannot:
+#
+#   1. `make test` runs the unit suite. A unit suite passing is not evidence the
+#      entry points work -- seven defects in this work were reachable only by
+#      running the pipeline, several of them pure small-N. This runs the DAG.
+#   2. `test_determinism.py` is marked `slow`, so `make test` collects it and
+#      runs nothing. A guard that never executes is not a guard.
+name: multispace
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+    # No `labeled` here. `test.yml` carries it because `test.yml:66` actually
+    # gates a step on a label; nothing in this file does, so `labeled` only
+    # re-ran three heavy jobs -- the whole DAG, the slow determinism suite,
+    # and parity -- every time anyone put any label on any PR.
+    types: [opened, reopened, synchronize]
+  workflow_dispatch:
+
+jobs:
+  end-to-end-with-no-optional-dependencies:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash -leo pipefail {0}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history: "The default DAGs are unchanged" resolves the commit
+          # this branch forked from and checks it out as a second worktree, and
+          # a shallow clone has neither the merge-base nor the commit.
+          fetch-depth: 0
+
+      - name: Check out the upstream commit this branch forked from
+        # The same step, for the same reason, as in the `parity` job below: the
+        # rule-count check compares HEAD against the fork point, so the fork
+        # point has to be on disk. `test -f` rather than a trusting `cd`,
+        # because a missing baseline would otherwise make the comparison
+        # compare nothing.
+        run: |
+          git remote get-url upstream 2>/dev/null \
+            || git remote add upstream https://github.com/Arcadia-Science/ProteinCartography.git
+          git fetch --quiet upstream main
+          base=$(git merge-base HEAD upstream/main)
+          echo "baseline is $base"
+          git worktree add --detach ../pc-baseline "$base"
+          test -f ../pc-baseline/Snakefile
+        shell: bash -leo pipefail {0}
+
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          # Deliberately the same env `test.yml` uses: python, snakemake,
+          # requests, pandas, pytest. No scikit-learn, no umap, no scipy, no
+          # scanpy. The per-rule `conda:` environments supply those to the rules
+          # that need them, which is the separation ADR 0006 is about.
+          environment-file: envs/cartography_test.yml
+          environment-name: test-env
+          cache-environment: true
+          cache-downloads: true
+          generate-run-shell: true
+          init-shell: bash
+
+      - name: Guard the guard — the driver env must lack the optional stack
+        # If this env ever gains scikit-learn, every "works without optional
+        # dependencies" claim below becomes vacuous while still passing.
+        run: |
+          python - <<'PY'
+          import importlib.util, sys
+          present = [m for m in ("sklearn", "umap", "scipy", "scanpy", "torch")
+                     if importlib.util.find_spec(m) is not None]
+          if present:
+              sys.exit(f"envs/cartography_test.yml has gained {present}; "
+                       "this job no longer proves ADR 0006 rule 4.")
+          print("driver env is clean: none of sklearn, umap, scipy, scanpy, torch")
+          PY
+        shell: micromamba-shell {0}
+
+      - name: Cache snakemake conda envs
+        uses: actions/cache@v4
+        id: cache-snakemake-conda-envs
+        with:
+          path: .snakemake/conda
+          # Same key as `test.yml` on purpose, so the two jobs share one cache
+          # rather than each building a multi-gigabyte copy.
+          key: conda-${{ runner.os }}--${{ runner.arch }}--${{ hashFiles(
+            'envs/analysis.yml', 'envs/blast.yml', 'envs/foldseek.yml',
+            'envs/pandas.yml', 'envs/plotting.yml', 'envs/web_apis.yml') }}
+          # Scoped to the six env files the Snakefile rules actually name in a
+          # `conda:` directive. There are nine env files and three are excluded
+          # -- cartography_pub, cartography_test, cartography_tidy -- none of
+          # which snakemake solves. `envs/*.yml` meant that editing a
+          # developer or publication env -- which no rule solves -- evicted a
+          # multi-gigabyte cache and rebuilt every pipeline environment.
+
+      - name: Create the snakemake conda envs
+        if: steps.cache-snakemake-conda-envs.outputs.cache-hit != 'true'
+        run: |
+          rm -rf .snakemake/conda
+          snakemake \
+            --configfile demo/multispace/config.yml \
+            --use-conda \
+            --conda-frontend conda \
+            --conda-create-envs-only \
+            --cores 1
+        shell: micromamba-shell {0}
+
+      - name: The multi-space demo must RUN, not merely resolve
+        # A dry run checks the graph; it does not check the jobs. Both of the
+        # defects the demo found in group 8c were invisible to `-n`.
+        run: |
+          rm -rf demo/multispace/output
+          snakemake \
+            --configfile demo/multispace/config.yml \
+            --use-conda \
+            --conda-frontend conda \
+            --cores 2
+        shell: micromamba-shell {0}
+
+      - name: Every space produced its diagnostics
+        run: |
+          python - <<'PY'
+          import json, pathlib, sys
+          spaces = sorted(pathlib.Path("demo/multispace/output/spaces").iterdir())
+          if len(spaces) != 7:
+              sys.exit(f"expected 7 spaces, found {len(spaces)}: {[s.name for s in spaces]}")
+          for space in spaces:
+              report = space / "diagnostics.json"
+              if not report.exists():
+                  sys.exit(f"{space.name} produced no diagnostics.json")
+              body = json.loads(report.read_text())
+              # `stability` needs no optional dependency, so it must be present
+              # for every space whatever else was skipped.
+              if "stability" not in body:
+                  sys.exit(f"{space.name} has no stability section")
+          print(f"all {len(spaces)} spaces produced diagnostics")
+          PY
+        shell: micromamba-shell {0}
+
+      - name: The default DAGs are unchanged
+        # The whole PR rests on the default pipeline being untouched: nothing
+        # here may add a rule to a config that does not ask for one. That claim
+        # is a *comparison*, so this measures it as one -- the same dry run is
+        # resolved on the commit this branch forked from and on HEAD, and the
+        # two counts must agree.
+        #
+        # The expected counts used to be written here as 17 and 26, and before
+        # upstream #110 as 16 and 25. #110 added `domain_query_gate`, a
+        # checkpoint that enters BOTH default DAGs: `rule all` always includes
+        # `domain_final_outputs`, whose gate function calls
+        # `checkpoints.domain_query_gate.get()` whenever `domain_map` is not
+        # "off". The domain rules downstream of it are correctly skipped for a
+        # single-domain query; the gate itself is not. That +1 was upstream's
+        # and not this work's -- and with the numbers hardcoded it failed this
+        # job for a reason the check does not exist to catch. Deriving the
+        # expectation from the fork point keeps the claim and drops the
+        # snapshot.
+        #
+        # Each side uses its own copy of the config, so a config change that
+        # adds a rule still fails here, which is intended: that would be this
+        # branch changing the default DAG.
+        #
+        # On a push to `main` the fork point is HEAD, so the comparison is
+        # trivially satisfied. There is no branch to compare on `main`; the
+        # check earns its keep on pull requests.
+        run: |
+          base=$(git -C ../pc-baseline rev-parse HEAD)
+          echo "fork point: $base"
+
+          # <repo dir> <config path, relative to that repo dir> <stderr file>
+          #
+          # stderr goes to a file rather than to /dev/null. A Snakefile that
+          # cannot be PARSED prints its traceback there and produces no count on
+          # stdout, so discarding it reported the failure as "produced no rule
+          # count" -- true, useless, and pointing at the wrong thing. That is not
+          # hypothetical: on 2026-08-25 this branch could not parse its own
+          # Snakefile in an environment built from `envs/cartography_test.yml`,
+          # and this step would have blamed the counter rather than the import.
+          count_rules() {
+            ( cd "$1" \
+              && snakemake --configfile "$2" -n --quiet --rerun-incomplete 2>"$3" \
+                 | awk '/^total/ {print $2}' )
+          }
+
+          # The rule NAME SET, from the same job-stats table the count is read
+          # from. A COUNT IS NOT A SET: one rule added and one dropped nets to
+          # zero and passes the comparison below, and so does a rule renamed
+          # consistently -- measured, not argued. Renaming
+          # `plot_similarity_strucluster` and its one `rules.` reference leaves
+          # the cluster DAG at 17 jobs on both sides while changing the set,
+          # and a workflow's rule names are part of what a user can target.
+          # `total` is a JOB count, not a rule count, so this does not replace
+          # it -- a rule that runs twice moves one and not the other.
+          rule_set() {
+            ( cd "$1" \
+              && snakemake --configfile "$2" -n --quiet --rerun-incomplete 2>"$3" \
+                 | awk '/^-----/ {f=1; next} f && /^total/ {f=0} f && NF >= 2 {print $1}' \
+                 | sort )
+          }
+
+          status=0
+          for cfg in demo/cluster-mode/config.yml demo/search-mode/config_actin_small.yml; do
+            want=$(count_rules ../pc-baseline "$cfg" /tmp/dag_base.err)
+            got=$(count_rules . "$cfg" /tmp/dag_head.err)
+            if [ -z "$want" ] || [ -z "$got" ]; then
+              echo "::error::$cfg produced no rule count (fork point: '$want', HEAD: '$got')"
+              echo "--- snakemake stderr, fork point ---"; tail -30 /tmp/dag_base.err || true
+              echo "--- snakemake stderr, HEAD ---";       tail -30 /tmp/dag_head.err || true
+              status=1
+            elif [ "$got" != "$want" ]; then
+              echo "::error::$cfg resolves to $got rules on this branch but $want at $base"
+              status=1
+            else
+              echo "$cfg: $got jobs, unchanged from the fork point"
+            fi
+
+            rule_set ../pc-baseline "$cfg" /tmp/set_base.err > /tmp/set_base.txt
+            rule_set . "$cfg" /tmp/set_head.err > /tmp/set_head.txt
+            if [ ! -s /tmp/set_base.txt ] || [ ! -s /tmp/set_head.txt ]; then
+              echo "::error::$cfg produced no rule NAME set on one side"
+              status=1
+            elif ! diff -u /tmp/set_base.txt /tmp/set_head.txt > /tmp/set.diff; then
+              echo "::error::$cfg resolves a DIFFERENT SET of rules than the fork point"
+              cat /tmp/set.diff
+              status=1
+            else
+              echo "$cfg: $(wc -l < /tmp/set_head.txt | tr -d ' ') rule names, set unchanged"
+            fi
+          done
+          exit $status
+        shell: micromamba-shell {0}
+
+  determinism:
+    # `test_determinism.py` is marked `slow`, so `make test` never runs it. This
+    # is the job that does. It needs the analysis environment's scikit-learn, so
+    # it runs against the per-rule conda envs rather than the driver env.
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash -leo pipefail {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-file: envs/analysis.yml
+          environment-name: analysis-env
+          cache-environment: true
+          cache-downloads: true
+          generate-run-shell: true
+          init-shell: bash
+
+      - name: Install pytest into the analysis environment
+        # `envs/analysis.yml` is a pipeline environment and does not carry a
+        # test runner. Installed here rather than added to the env file, which
+        # would change what every rule solves.
+        run: micromamba install -y -n analysis-env pytest=7.4.3
+        shell: bash -leo pipefail {0}
+
+      - name: Two runs above N=500 must be bit-identical, and must not skip
+        # ONE run, not two. This step used to execute the entire slow determinism
+        # suite twice -- once for its exit status, then again through `tee` only
+        # to grep the output for SKIPPED. That doubled the job's runtime, and it
+        # split the two things being checked across two invocations that were
+        # free to disagree with each other.
+        #
+        # Redirect and replay rather than `| tee`, which is what the parity job
+        # below already does and for the reason recorded there: these steps run
+        # under `micromamba-shell`, which does not carry the job's `pipefail`,
+        # so a piped pytest reports `tee`'s exit status and a failing suite
+        # reads as a green step. The parity job's comment records that happening
+        # for real -- four failures, one green step.
+        #
+        # The SKIPPED grep stays because `test_determinism.py` uses
+        # `importorskip`: a guard can be written, be correct, and never execute.
+        # Note the ordering -- a non-zero pytest status is reported first, so a
+        # genuine failure is never relabelled as a skip.
+        run: |
+          set +e
+          python -m pytest ProteinCartography/tests/test_determinism.py \
+            -q --runslow -rs -p no:cacheprovider > /tmp/determinism.txt 2>&1
+          status=$?
+          cat /tmp/determinism.txt
+          if [ $status -ne 0 ]; then exit $status; fi
+          if grep -q "SKIPPED" /tmp/determinism.txt; then
+            echo "::error::a determinism test skipped; this job proves nothing"
+            exit 1
+          fi
+        shell: micromamba-shell {0}
+
+      - name: The reducers must run somewhere, and this is the only job that can
+        # `tests/test_reducers.py` gates on scikit-learn at MODULE level, so in
+        # the driver environment the whole file collapses to a single skip and
+        # its 19 tests execute NOWHERE: `test.yml` cannot run them and no other
+        # step here reaches them. Measured 2026-08-25 -- of 61 test files, this
+        # one and `test_live_ted.py` ran in no CI job at all, and `test_live_ted`
+        # is deselected by `-m "not live_ted"` on purpose.
+        #
+        # It belongs in THIS job because this job already installs
+        # `envs/analysis.yml`, which carries scikit-learn 1.2.2, umap-learn and
+        # scanpy. That makes it one pytest path rather than a new job -- worth
+        # saying, because this PR already asks upstream to accept a second
+        # workflow file and should not ask for a third.
+        #
+        # A separate step from the determinism run above, deliberately: that
+        # step's SKIPPED check carries a message about determinism, and folding
+        # a second file into it would make that message wrong for half of what
+        # it guards.
+        #
+        # No `--runslow`: nothing in the file is marked slow, and the whole file
+        # is ~9 s.
+        run: |
+          set +e
+          python -m pytest ProteinCartography/tests/test_reducers.py \
+            -q -rs -p no:cacheprovider > /tmp/reducers.txt 2>&1
+          status=$?
+          cat /tmp/reducers.txt
+          if [ $status -ne 0 ]; then exit $status; fi
+          if grep -q "SKIPPED" /tmp/reducers.txt; then
+            echo "::error::a reducer test skipped; this environment no longer carries the stack this step exists to exercise"
+            exit 1
+          fi
+        shell: micromamba-shell {0}
+
+      - name: The clustering agreement and the toolchain probe, which run nowhere else
+        # `tests/test_clustering.py` IS collected by `test.yml` -- 12 passed
+        # there -- but its 15 scanpy-gated tests all SKIP, because no CI job ran
+        # it in an environment that has scanpy. Among those 15 are the two
+        # cross-path agreement tests, and ADR 0015 calls that agreement "the only
+        # thing keeping the duplication honest" in `clustering._clamped`. It was
+        # keeping nothing honest: it had never executed in CI.
+        #
+        # It also carries `test_the_installed_numba_computes_umaps_kernel_correctly`,
+        # which is why this step matters beyond unskipping. `umap-learn` compiles
+        # `smooth_knn_dist` with `@numba.njit(fastmath=True)`, and numba 0.66.0
+        # miscompiles it to return `sigma = +inf`, saturating the neighbour graph
+        # and collapsing 20 clusters to 5 on a production cohort. NOTHING IN THIS
+        # REPOSITORY IMPORTS NUMBA -- it is transitive, it decides the answer, and
+        # `envs/analysis.yml` did not pin it until 2026-08-26. See FOLLOWUPS #105.
+        #
+        # This job is the only one that installs `envs/analysis.yml`, so it is
+        # the only place either check can run. One pytest path, not a new job.
+        #
+        # The SKIPPED check is the point of the step: these tests skipping is
+        # precisely the failure it exists to end, so a skip here is an error
+        # rather than a shrug.
+        run: |
+          set +e
+          python -m pytest ProteinCartography/tests/test_clustering.py \
+            -q --runslow -rs -p no:cacheprovider > /tmp/clustering.txt 2>&1
+          status=$?
+          cat /tmp/clustering.txt
+          if [ $status -ne 0 ]; then exit $status; fi
+          # TWO skips are correct here and must not fail the step: this file
+          # also carries INVERSE-gated tests that exercise the no-scanpy path,
+          # and they skip precisely because this environment HAS scanpy. Their
+          # reason string is "scanpy is installed here". Anything else skipping
+          # is the failure this step exists to end, so it is an error.
+          #
+          # Measured before this was written: 26 passed, 2 skipped, both of them
+          # that inverse gate. A blanket `grep -q SKIPPED` here would have made
+          # this step fail on its first CI run.
+          if grep "SKIPPED" /tmp/clustering.txt | grep -qv "scanpy is installed here"; then
+            echo "::error::a clustering test skipped for a reason other than the no-scanpy inverse gate; the cross-path agreement and the numba probe are exactly what this step exists to run"
+            exit 1
+          fi
+        shell: micromamba-shell {0}
+
+  parity:
+    # The evidence for this PR's central claim -- that the default configuration
+    # produces byte-identical output -- is `test_parity.py`. Every test in it
+    # that runs the pipeline is marked `slow`, so `make test` collects them and
+    # runs none, and `test.yml` passes a hundred percent green while proving
+    # nothing about backwards compatibility. Until this job existed the claim
+    # rested on one manual run on one laptop.
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash -leo pipefail {0}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The baseline is the merge-base with upstream, so the full history is
+          # required. The default depth-1 checkout cannot resolve it.
+          fetch-depth: 0
+
+      - name: Check out the upstream commit this branch forked from
+        # `baseline_repo` *skips* when ../pc-baseline is absent rather than
+        # failing, so without this step the job would be green and empty --
+        # which is the exact failure mode the job exists to close.
+        run: |
+          git remote get-url upstream 2>/dev/null \
+            || git remote add upstream https://github.com/Arcadia-Science/ProteinCartography.git
+          git fetch --quiet upstream main
+          base=$(git merge-base HEAD upstream/main)
+          echo "baseline is $base"
+          git worktree add --detach ../pc-baseline "$base"
+          test -f ../pc-baseline/Snakefile
+        shell: bash -leo pipefail {0}
+
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-file: envs/cartography_test.yml
+          environment-name: test-env
+          cache-environment: true
+          cache-downloads: true
+          generate-run-shell: true
+          init-shell: bash
+
+      - name: Cache snakemake conda envs
+        uses: actions/cache@v4
+        id: cache-snakemake-conda-envs
+        with:
+          path: .snakemake/conda
+          key: conda-${{ runner.os }}--${{ runner.arch }}--${{ hashFiles(
+            'envs/analysis.yml', 'envs/blast.yml', 'envs/foldseek.yml',
+            'envs/pandas.yml', 'envs/plotting.yml', 'envs/web_apis.yml') }}
+          # Scoped to the six env files the Snakefile rules actually name in a
+          # `conda:` directive. There are nine env files and three are excluded
+          # -- cartography_pub, cartography_test, cartography_tidy -- none of
+          # which snakemake solves. `envs/*.yml` meant that editing a
+          # developer or publication env -- which no rule solves -- evicted a
+          # multi-gigabyte cache and rebuilt every pipeline environment.
+
+      - name: Create the snakemake conda envs
+        # Both checkouts share this prefix, so the baseline does not rebuild it.
+        if: steps.cache-snakemake-conda-envs.outputs.cache-hit != 'true'
+        run: |
+          snakemake \
+            --configfile demo/search-mode/config_actin_small.yml \
+            --use-conda \
+            --conda-frontend conda \
+            --conda-create-envs-only \
+            --cores 1
+        shell: micromamba-shell {0}
+
+      - name: The default output must be byte-identical to the baseline
+        # Redirect and replay rather than `| tee`: this step does not run under
+        # the job's `pipefail` default, so a pipeline's status is `tee`'s and a
+        # failing pytest reported success. On the job's first run that is exactly
+        # what happened -- four real failures, a green step, and only the guard
+        # below caught them.
+        run: |
+          set +e
+          python -m pytest ProteinCartography/tests/test_parity.py \
+            -q --runslow -rs -p no:cacheprovider > /tmp/parity.txt 2>&1
+          status=$?
+          cat /tmp/parity.txt
+          exit $status
+        shell: micromamba-shell {0}
+
+      - name: The comparison must have run, not skipped
+        # `baseline_repo` and `conda_prefix` both skip when their prerequisite is
+        # missing. A skipped parity suite is indistinguishable from a passing one
+        # in the summary line, and it is the more likely of the two to be wrong.
+        run: |
+          for reason in "no baseline checkout" "no built conda environments"; do
+            if grep -qF "$reason" /tmp/parity.txt; then
+              echo "::error::parity skipped ($reason); this job proves nothing"
+              exit 1
+            fi
+          done
+          grep -qE "^[0-9]+ passed" /tmp/parity.txt \
+            || { echo "::error::no all-passing pytest summary line in /tmp/parity.txt;"\
+                      " the run either failed or did not complete"; exit 1; }
+        shell: bash -leo pipefail {0}

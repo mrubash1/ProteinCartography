@@ -1,6 +1,12 @@
 # packages installed in editable mode
 envs/src/**
 
+# Local git worktrees (never commit)
+.worktrees/
+
+# Local live-run fixtures (not part of the repo)
+/testdata/
+
 # Snakemake-related folders and files
 .snakemake/
 /input/
@@ -40,28 +46,16 @@ pip-delete-this-directory.txt
 
 # Unit test / coverage reports
 htmlcov/
-.tox/
 .coverage
 .coverage.*
 .cache
-nosetests.xml
 coverage.xml
 *,cover
 .hypothesis/
-.napari_cache
 
 # Translations
 *.mo
 *.pot
-
-# Sphinx documentation
-docs/_build/
-
-# MkDocs documentation
-/site/
-
-# PyBuilder
-target/
 
 # Pycharm and VSCode
 .idea/
@@ -76,10 +70,3 @@ venv/
 
 # OS
 .DS_Store
-
-# written by setuptools_scm
-**/_version.py
-
-# Nextflow related folders and files
-.nextflow*
-work/

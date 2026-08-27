@@ -16,3 +16,25 @@ dependencies:
   - matplotlib=3.7.1
   # `umap-learn` imports `pkg_resources`, which setuptools removed in version 81.
   - setuptools<81
+  # NUMBA DECIDES THE CLUSTER COUNT, so it is pinned. `umap-learn` compiles
+  # `umap.umap_.smooth_knn_dist` with `@numba.njit(fastmath=True)`, and under
+  # numba 0.66.0 / llvmlite 0.48.0 the fastmath codegen breaks the bisection's
+  # `hi == NPY_INFINITY` doubling branch and returns `sigma = +inf`. A sigma of
+  # infinity makes every membership strength `exp(-(d-rho)/sigma)` collapse to
+  # exactly 1.0, saturating the neighbour graph, and Leiden on a saturated graph
+  # returns a handful of huge clusters. Measured on the 2,689-protein actin
+  # production cohort: 943 of 2,689 rows blow up and the map goes from 13
+  # clusters to 6. numba 0.60.0 agrees with umap's own pure-Python source to
+  # 6.9e-07, so 0.60.0 is the correct answer and 0.66.0 is a wrong one.
+  #
+  # Reproduce in six lines, no cohort data needed:
+  #   from umap.umap_ import smooth_knn_dist
+  #   d = np.linspace(0, 20, 32).astype(np.float32).reshape(1, 32)
+  #   smooth_knn_dist(d, 32.0)          # 2.89447021 here, inf under 0.66.0
+  #   smooth_knn_dist.py_func(d, 32.0)  # 2.89447021 always
+  #
+  # THE FAILURE IS SILENT below the point where the cluster count moves: at
+  # n=308 both toolchains return 8 clusters while the saturated-edge count
+  # differs 412 to 624. See docs/FOLLOWUPS.md #105.
+  - numba=0.60.0
+  - llvmlite=0.43.0

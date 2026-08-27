@@ -10,6 +10,7 @@ import pandas as pd
 
 # only import these functions when using import *
 __all__ = [
+    "run_tmscore_pass",
     "run_foldseek_clustering",
     "make_struclusters_file",
     "reading_data",
@@ -36,6 +37,38 @@ def parse_args():
     args = parser.parse_args()
 
     return args
+
+
+def run_tmscore_pass(
+    query_db,
+    target_db,
+    foldseek_out,
+    foldseek_tmp,
+    tmscore_prefix,
+    distances_tsv,
+    exhaustive=False,
+) -> str:
+    """The three foldseek calls that turn two databases into a TM-score TSV.
+
+    Shared by the all-vs-all clustering pass below and by
+    `calculate_key_protid_tmscores.run_foldseek_clustering`, which carried a
+    `TODO (KC)` asking for exactly this. The two differ in three ways and only
+    three, all of them arguments here: which database is the target, whether the
+    search is exhaustive, and what the intermediates are called. The clustering
+    pass ALSO runs `clust` afterwards, which is why that step stayed at its call
+    site rather than becoming a fourth parameter nobody would read.
+
+    Paths are passed to `subprocess.run` as-is -- `Path` objects included, which
+    is what both callers already did -- so the argv this builds is the argv they
+    built, element for element.
+    """
+    search = ["foldseek", "search", query_db, target_db, foldseek_out, foldseek_tmp, "-a"]
+    if exhaustive:
+        search.append("--exhaustive-search")
+    subprocess.run(search)
+    subprocess.run(["foldseek", "aln2tmscore", query_db, target_db, foldseek_out, tmscore_prefix])
+    subprocess.run(["foldseek", "createtsv", query_db, target_db, tmscore_prefix, distances_tsv])
+    return str(distances_tsv)
 
 
 def run_foldseek_clustering(
@@ -83,31 +116,14 @@ def run_foldseek_clustering(
     subprocess.run(["foldseek", "createdb", query_path, db_prefix])
 
     foldseek_out = temp_path / "all_by_all"
-    foldseek_tmp = temp_path / "tmp"
-    subprocess.run(["foldseek", "search", db_prefix, db_prefix, foldseek_out, foldseek_tmp, "-a"])
-
-    foldseek_tmscore = temp_path / "all_by_all_tmscore"
-    subprocess.run(
-        [
-            "foldseek",
-            "aln2tmscore",
-            db_prefix,
-            db_prefix,
-            foldseek_out,
-            foldseek_tmscore,
-        ]
-    )
-
     foldseek_distances_tsv = results_path / distances_filename
-    subprocess.run(
-        [
-            "foldseek",
-            "createtsv",
-            db_prefix,
-            db_prefix,
-            foldseek_tmscore,
-            foldseek_distances_tsv,
-        ]
+    run_tmscore_pass(
+        db_prefix,
+        db_prefix,
+        foldseek_out,
+        temp_path / "tmp",
+        temp_path / "all_by_all_tmscore",
+        foldseek_distances_tsv,
     )
 
     foldseek_cluster = temp_path / "clu"
@@ -218,7 +234,11 @@ def reading_data(input_file: str):
                 entries[protid][target] = score
             targets.add(target)
 
-    return entries, targets
+    # The targets are sorted because they become the columns of the similarity matrix, in the
+    # order they are iterated in. Iterating the set directly ordered the columns by Python's
+    # per-process hash randomization, so the same input produced a differently-ordered matrix on
+    # every run. Sorting also makes the column order match the row order, which is already sorted.
+    return entries, sorted(targets)
 
 
 def get_line_for_protid(protid_and_targets: tuple, targets: set):

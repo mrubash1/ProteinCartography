@@ -1,7 +1,7 @@
 <!--
-# Arcadia-Science/ProteinCartography-private pull request
+# Arcadia-Science/ProteinCartography pull request
 
-Many thanks for contributing to Arcadia-Science/ProteinCartography-private!
+Many thanks for contributing to Arcadia-Science/ProteinCartography!
 
 Please fill in the appropriate checklist below (delete whatever is not relevant).
 These are the most common things requested on pull requests (PRs).

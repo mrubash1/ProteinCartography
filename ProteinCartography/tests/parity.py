@@ -1,0 +1,1087 @@
+#!/usr/bin/env python
+"""Machinery for comparing two pipeline runs file by file.
+
+The promise this work makes is that the default configuration produces the same
+output it always has. That promise is only worth something if it is checked
+mechanically, so this module runs the pipeline twice -- from two checkouts, or
+twice from one -- and compares every file that lands in the output tree.
+
+**It compares everything and excludes by explicit rule**, rather than comparing
+an allowlist. An allowlist silently ignores files nobody thought to list, which
+is the wrong failure direction: a new output that differs should break the test
+and make someone justify it.
+
+Four kinds of difference are known and are handled openly:
+
+*Normalized.* Plotly stamps one random ``<div>`` uuid into each HTML figure.
+Strip it and three of the four HTML outputs are byte-identical, so they are
+compared after normalization rather than skipped.
+
+*Excluded by rule.* Clock readings, and foldseek's internal working directories.
+Each exclusion carries its reason, and every one was arrived at by measurement:
+the first version of this harness excluded far more, and the first version after
+that excluded far less and failed. Foldseek's `temp/` in particular cannot be
+compared at all -- its scratch subdirectory is named with a random integer, so
+the *set* of files differs between runs, and which shard a record lands in
+depends on thread scheduling.
+
+*Added by this work.* A new diagnostic file that the baseline has no equivalent
+for. Listed by exact path in :data:`ADDITIVE_OUTPUTS` with its reason, and
+allowed to be missing **from the baseline side only** -- which side that is has
+to be named by the caller, because this function is called with the arguments in
+both orders and inferring it would silently accept a deleted file half the time.
+When the file appears in both trees it is compared like anything else, so the
+self-diff still has to prove it is deterministic.
+
+*Genuinely nondeterministic.* The semantic-analysis wordcloud has a stochastic
+layout. Rather than assert in advance that it does not matter, the harness runs
+the pipeline twice from the *same* code and records what differs -- a self-diff.
+Anything that differs there cannot be evidence in the cross-version comparison;
+anything that does not must be identical there.
+
+Two things keep this honest. The self-diff establishes the floor empirically
+instead of trusting the exclusion list, and
+:func:`assert_critical_outputs_compared` names the artifacts that carry the
+promise and checks they were actually reached -- because a parity test can be
+hollowed out one reasonable-looking exclusion at a time.
+
+Run it directly for a report:
+
+    python ProteinCartography/tests/parity.py --baseline ../pc-baseline
+"""
+
+from __future__ import annotations
+import argparse
+import atexit
+import filecmp
+import fnmatch
+import hashlib
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from collections import OrderedDict
+from dataclasses import dataclass, field
+from pathlib import Path
+
+__all__ = [
+    "foldseek_sleep_user_base",
+    "ADDITIVE_OUTPUTS",
+    "CRITICAL_OUTPUTS",
+    "EXCLUSIONS",
+    "assert_critical_outputs_compared",
+    "ParityReport",
+    "MINIMAL_SPACES",
+    "FUSED_SPACES",
+    "compare_trees",
+    "normalize_bytes",
+    "run_pipeline",
+]
+
+#: The smallest config that puts a space in the DAG. `diagnose_space` is the
+#: only consumer of the cohort report, so this is what makes the report appear.
+#:
+#: Here rather than in `test_parity.py`, where it used to live, because
+#: `mutation_check.py` needs the same spelling and imports this module, not that
+#: one. A second copy is how the two would come to mean different things.
+MINIMAL_SPACES = {
+    "blocks": {"tmscore": {"provider": "tmscore", "representation": "profile"}},
+    "spaces": {"legacy": {"blocks": ["tmscore"], "strategy": "none", "reducers": ["pca"]}},
+}
+
+#: The smallest config that reaches the four modules THIS BRANCH ADDED and the
+#: `MUTATIONS` list above never touches: `fusion.py`, `diagnose_space.py`,
+#: `diagnostics/*` and `enrich_clusters.py`.
+#:
+#: Every key earns its place and none is decoration:
+#:
+#: * two blocks and a `late` space, because fusion needs something to fuse and
+#:   `strategy: none` reaches `reduce_space` without reaching `fusion.py`;
+#: * `coregistration`, because a second space is only comparable to the first
+#:   through it, and it is where `coregister.py` writes;
+#: * `enrichment`, which is the SOLE gate on `enrich_clusters` -- the rule's own
+#:   docstring says it is unreachable unless this key names a column;
+#: * `diagnostics`, which configures the sweep and the controls. Note that
+#:   `diagnose_space` runs for every space with or without this key -- the demo
+#:   config says so in as many words -- so this key widens what is diagnosed
+#:   rather than switching diagnosis on.
+#:
+#: Measured cost on the mocked 10-protein search-mode fixture: 25.1 s against
+#: 18.9 s for the legacy config. That 6-second difference is what makes a
+#: per-mutant end-to-end run affordable here at all, and it is a measurement
+#: rather than an estimate because every mutant pays it.
+FUSED_SPACES = {
+    "blocks": {
+        "tmscore": {"provider": "tmscore", "representation": "profile"},
+        "biophys": {"provider": "biophys"},
+    },
+    "spaces": {
+        "legacy": {"blocks": ["tmscore"], "strategy": "none", "reducers": ["pca"]},
+        "fused": {"blocks": ["tmscore", "biophys"], "strategy": "late", "reducers": ["pca"]},
+    },
+    "coregistration": {"reference_space": "legacy", "compare": ["legacy", "fused"], "k": 3},
+    "enrichment": {
+        "cluster_column": "LeidenCluster",
+        "continuous": ["Length"],
+        "categorical": ["Organism"],
+        "min_term_count": 1,
+        "fdr": 0.05,
+    },
+    "diagnostics": {
+        "leiden_resolution_sweep": [0.5, 1.0],
+        "negative_controls": ["shuffled_labels"],
+    },
+}
+
+#: Everything `FUSED_SPACES` adds to the output tree, by prefix. A space mutant
+#: that changes nothing under one of these was detected through the legacy path
+#: and proves nothing about the module it mutated.
+SPACE_OUTPUT_PREFIXES = ("spaces/", "coregistration/", "enrichment/")
+
+# One random uuid per Plotly figure, in the div id and the matching script call.
+_PLOTLY_UUID = re.compile(rb"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+
+#: Glob patterns excluded from comparison, each with the reason it is excluded.
+#: An exclusion silences a file forever, so each one below is a claim -- checked
+#: against two real runs -- that the difference is about representation or
+#: scratch state rather than about the science.
+EXCLUSIONS = (
+    ("benchmarks/*", "snakemake benchmark files record wall-clock time"),
+    (
+        "*/temp/*",
+        "foldseek's internal working directory. Its split databases distribute "
+        "records across shards by thread scheduling, its scratch subdirectory is "
+        "named with a random integer, and its .lookup/.source files hold internal "
+        "numeric ids assigned in directory-scan order. None of it is a pipeline "
+        "output; the derived TSVs are compared and are what PR #106 made "
+        "deterministic. (Verified: including it produced 3 differing shards and 4 "
+        "randomly-named files per run, and *which* shard differed varied between "
+        "runs, so the self-diff floor could not stabilize it either.)",
+    ),
+    ("*/temp_tm/*", "as above, foldseek's working directory for key-protid TM-scores"),
+    (
+        "foldseek_clustering_results/all_by_all_tmscore.tsv",
+        "the raw pair list, emitted in foldseek shard order. Its sorted derivative "
+        "all_by_all_tmscore_pivoted.tsv IS compared and IS byte-identical, which is "
+        "precisely the guarantee PR #106 added.",
+    ),
+    (
+        "key_protid_tmscores_results/key_protid_tmscores.tsv",
+        "raw pair list, as above; the pivoted key_protid_tmscore_features.tsv IS "
+        "compared and IS byte-identical",
+    ),
+    ("*.pdf", "matplotlib embeds a creation timestamp in the PDF metadata"),
+    ("*.svg", "matplotlib embeds a creation timestamp"),
+    ("*.snakemake_timestamp", "snakemake bookkeeping, holds an mtime"),
+)
+
+#: New files this work adds to the output tree, each with the reason it is
+#: allowed to appear where the baseline has nothing.
+#:
+#: This is a much narrower allowance than an exclusion and it runs in one
+#: direction only: a path listed here may be missing from the *baseline* tree,
+#: and that is all. If it exists in both it is compared like anything else, so
+#: the self-diff still has to show it is deterministic. A file missing from the
+#: branch side is never additive and always fails, and when no baseline is named
+#: -- two runs of the same code -- the allowance does not apply at all.
+#:
+#: Adding an entry here is a claim that the file is *new*, not that a difference
+#: in it is acceptable. Keep it short; a long list means the port grew outputs
+#: nobody asked for.
+#:
+#: **Both entries are currently unreachable, and that is the correct state.**
+#: Gate E's GE.2 made each of these outputs conditional on the rule that reads
+#: it, so neither appears in a default run, and the default tree is byte-identical
+#: to the baseline file for file rather than "identical plus two". They are kept
+#: because the *mechanism* is what matters and is still exercised -- by
+#: `test_an_additive_output_missing_from_the_baseline_is_allowed` and its four
+#: siblings, on synthetic trees -- and because the next genuinely additive output
+#: needs this list to exist. If the list is still empty-in-practice when a second
+#: reader asks about it, that is an argument for deleting it, not for adding to it.
+ADDITIVE_OUTPUTS = (
+    (
+        "protein_features/cohort_report.json",
+        "the cohort diagnostic added by ADR 0008. The baseline truncates the hit "
+        "list silently, so it has no equivalent file. Its presence is the point: "
+        "the retained set was always a choice and now the run says so.",
+    ),
+    (
+        "domain_path/features/cohort_report.json",
+        "the domain cohort's own diagnostic, written by `domain_download_pdbs`. "
+        "The baseline has no domain path at all, so it has no equivalent file. "
+        "Like both entries beside it, it is UNREACHABLE in a default run -- the "
+        "domain gate resolves off for a single-domain cohort and this list's "
+        "docstring warns against growing it, so it earns its place only by being "
+        "genuinely additive rather than by being expected.",
+    ),
+    (
+        "blast_results/*.blast_hits.mapping.tsv",
+        "the RefSeq-to-UniProt pairs behind the hit list, which the baseline "
+        "computes and discards. Written sorted and deduplicated, so it is stable "
+        "run to run; needed to key a BLAST e-value to a cohort candidate.",
+    ),
+)
+
+#: The artifacts whose byte-identity *is* the backwards-compatibility promise.
+#: `compare_trees` reports whether each was actually compared, so a future
+#: exclusion cannot quietly remove one of them from the test's reach.
+CRITICAL_OUTPUTS = (
+    "final_results/{name}_aggregated_features.tsv",
+    "final_results/{name}_leiden_similarity.tsv",
+    "final_results/{name}_strucluster_similarity.tsv",
+    "foldseek_clustering_results/all_by_all_tmscore_pivoted.tsv",
+    "foldseek_clustering_results/all_by_all_tmscore_pivoted_pca_umap.tsv",
+    "foldseek_clustering_results/leiden_features.tsv",
+    "foldseek_clustering_results/struclusters_features.tsv",
+    "protein_features/key_protid_tmscore_features.tsv",
+    "protein_features/pdb_features.tsv",
+    "protein_features/source_features.tsv",
+    "protein_features/uniprot_features.tsv",
+)
+
+
+def _matches(relpath: str, table) -> str | None:
+    for pattern, reason in table:
+        if fnmatch.fnmatch(relpath, pattern) or fnmatch.fnmatch(f"/{relpath}", f"*/{pattern}"):
+            return reason
+    return None
+
+
+def _excluded_by(relpath: str):
+    return _matches(relpath, EXCLUSIONS)
+
+
+def _additive_reason(relpath: str):
+    return _matches(relpath, ADDITIVE_OUTPUTS)
+
+
+def normalize_bytes(relpath: str, data: bytes) -> bytes:
+    """Strip known-random, semantically empty content before comparing."""
+    if relpath.endswith(".html"):
+        # Plotly generates a fresh uuid for each figure's container div.
+        return _PLOTLY_UUID.sub(b"PLOTLY-DIV-UUID", data)
+    return data
+
+
+#: Normalized file contents, keyed on `(path, st_size, st_mtime_ns)`, most
+#: recently used last.
+_normalized_by_stat: OrderedDict[tuple[str, int, int], bytes] = OrderedDict()
+
+#: How much normalized content to keep. A single output tree holds 21 MB of
+#: Plotly HTML, and all four of those files reach the normalizer every time
+#: (their uuids always differ, so `filecmp` never short-circuits them). 128 MB
+#: therefore covers the four trees the parity fixture compares -- but the same
+#: cache is used by `mutation_check.py`, which produces fourteen trees in one
+#: process, and an unbounded memo there would be a 300 MB leak in exchange for
+#: a second. Eviction is least-recently-used rather than oldest-first because
+#: the entries worth keeping are the reference tree's: they are inserted first
+#: and touched by every subsequent comparison.
+_NORMALIZED_CACHE_BUDGET_BYTES = 128 * 1024 * 1024
+_normalized_cached_bytes = 0
+
+
+def _normalized_file_bytes(relpath: str, path: Path) -> bytes:
+    """`normalize_bytes` over a file on disk, memoised on path + size + mtime.
+
+    Only files that already failed `filecmp` reach here, which in a real run
+    means the Plotly HTMLs; the `re.sub` over them is 98% of the cost of
+    `compare_trees` (0.94 s per comparison, of which 0.005 s is I/O). Trees get
+    compared more than once -- each of `head_a` and `base_a` is read for its
+    self-diff and again for the parity comparison -- and the repeat is what this
+    recovers, ~0.7 s per parity run.
+
+    **The key is the file's content, not its path and stat.** The first version
+    keyed on ``(path, st_size, st_mtime_ns)`` and Gate E's adversarial pass broke
+    it: rewrite a file with a real payload change at the same byte length,
+    restore its mtime, and `compare_trees` reported two genuinely different
+    files as identical. That is the single failure this module must never
+    produce. The reviewer had to force the mtime with `os.utime` to trigger it --
+    2000 rapid rewrites on this box produced 2000 distinct `st_mtime_ns` -- but
+    a coarse-mtime filesystem, `cp -p`, `rsync -a`, `tar -x` or a restored
+    snapshot all preserve mtime, and "held off by convention" is not a property.
+
+    Hashing costs about 50 ms for the 21 MB of Plotly HTML in a tree, against
+    the ~940 ms `re.sub` it avoids, so the saving survives and the staleness
+    class of bug is gone by construction rather than by assumption.
+    """
+    global _normalized_cached_bytes
+    raw = path.read_bytes()
+    key = (relpath, hashlib.sha256(raw).hexdigest())
+    cached = _normalized_by_stat.get(key)
+    if cached is not None:
+        _normalized_by_stat.move_to_end(key)
+        return cached
+    cached = normalize_bytes(relpath, raw)
+    _normalized_by_stat[key] = cached
+    _normalized_cached_bytes += len(cached)
+    while (
+        _normalized_cached_bytes > _NORMALIZED_CACHE_BUDGET_BYTES and len(_normalized_by_stat) > 1
+    ):
+        _, evicted = _normalized_by_stat.popitem(last=False)
+        _normalized_cached_bytes -= len(evicted)
+    return cached
+
+
+@dataclass
+class ParityReport:
+    identical: list = field(default_factory=list)
+    normalized_identical: list = field(default_factory=list)
+    differing: list = field(default_factory=list)
+    only_in_a: list = field(default_factory=list)
+    only_in_b: list = field(default_factory=list)
+    added: dict = field(default_factory=dict)
+    excluded: dict = field(default_factory=dict)
+
+    @property
+    def ok(self) -> bool:
+        return not (self.differing or self.only_in_a or self.only_in_b)
+
+    @property
+    def n_compared(self) -> int:
+        return len(self.identical) + len(self.normalized_identical) + len(self.differing)
+
+    def describe(self, limit: int = 40) -> str:
+        lines = [
+            f"compared           : {self.n_compared}",
+            f"  byte-identical   : {len(self.identical)}",
+            f"  identical after normalization: {len(self.normalized_identical)}",
+            f"  DIFFERING        : {len(self.differing)}",
+            f"excluded by rule   : {len(self.excluded)}",
+            f"added by this work : {len(self.added)}",
+            f"only in A          : {len(self.only_in_a)}",
+            f"only in B          : {len(self.only_in_b)}",
+        ]
+        for rel in sorted(self.added):
+            lines.append(f"  + added: {rel}")
+        for rel in self.differing[:limit]:
+            lines.append(f"  ! {rel}")
+        if len(self.differing) > limit:
+            lines.append(f"  ... and {len(self.differing) - limit} more")
+        for rel in self.only_in_a[:limit]:
+            lines.append(f"  + only in A: {rel}")
+        for rel in self.only_in_b[:limit]:
+            lines.append(f"  - only in B: {rel}")
+        return "\n".join(lines)
+
+
+def _relative_files(root: Path) -> set:
+    return {
+        str(Path(dirpath, name).relative_to(root))
+        for dirpath, _dirs, names in os.walk(root)
+        for name in names
+    }
+
+
+def compare_trees(
+    a: Path, b: Path, *, ignore: set = frozenset(), baseline: str | None = None
+) -> ParityReport:
+    """Compare two output trees. `ignore` is a set of relpaths to skip entirely.
+
+    `ignore` is how the self-diff result is fed back in: paths already shown to
+    differ between two runs of identical code cannot be evidence about a code
+    change.
+
+    `baseline` names which argument, `"a"` or `"b"`, came from the pre-change
+    checkout. Only that side is allowed to be missing an :data:`ADDITIVE_OUTPUTS`
+    path. It has no default on purpose: callers pass the branch first and the
+    baseline first in roughly equal measure, so guessing would mean a deleted
+    output silently passing whenever the guess was wrong. Leave it unset when
+    both trees come from the same code, which is every self-diff and every
+    mutation run.
+    """
+    if baseline not in (None, "a", "b"):
+        raise ValueError(f"baseline must be 'a', 'b', or None; got {baseline!r}")
+    a, b = Path(a), Path(b)
+    report = ParityReport()
+    files_a, files_b = _relative_files(a), _relative_files(b)
+
+    for rel in sorted(files_a | files_b):
+        reason = _excluded_by(rel)
+        if reason is not None:
+            report.excluded[rel] = reason
+            continue
+        if rel in ignore:
+            report.excluded[rel] = "known nondeterministic (established by self-diff)"
+            continue
+        missing_from = None
+        if rel not in files_b:
+            missing_from = "b"
+        elif rel not in files_a:
+            missing_from = "a"
+        if missing_from is not None:
+            # Additive only when the side that lacks the file is the baseline.
+            # The other direction is a removal, whatever the file is called.
+            additive = _additive_reason(rel) if baseline == missing_from else None
+            if additive is not None:
+                report.added[rel] = additive
+            elif missing_from == "b":
+                report.only_in_a.append(rel)
+            else:
+                report.only_in_b.append(rel)
+            continue
+
+        if filecmp.cmp(a / rel, b / rel, shallow=False):
+            report.identical.append(rel)
+            continue
+        da = _normalized_file_bytes(rel, a / rel)
+        db = _normalized_file_bytes(rel, b / rel)
+        if da == db:
+            report.normalized_identical.append(rel)
+        else:
+            report.differing.append(rel)
+    return report
+
+
+# ---------------------------------------------------------------------------
+# the mocked Foldseek poll sleep
+# ---------------------------------------------------------------------------
+#
+# `foldseek_apiquery.py` waits 30 s between polls of the public Foldseek server.
+# Under mocks the ticket is answered instantly, so those 30 s are pure wall
+# clock -- measured at 31.2 s of a 49.3 s pipeline run, paid in every one of the
+# runs this harness makes, from both checkouts.
+#
+# It is removed here without editing any source file, by handing the child
+# processes a throwaway *user site* directory holding a `usercustomize` module.
+# CPython imports `usercustomize` at interpreter start-up from
+# `{PYTHONUSERBASE}/lib/pythonX.Y/site-packages`, and snakemake's `--use-conda`
+# job environment strips only `R_LIBS`, `PYTHONPATH`, `PERLLIB` and `PERL5LIB`
+# (`snakemake/shell.py`), so `PYTHONUSERBASE` reaches each rule's conda
+# interpreter intact.
+#
+# Two properties are why it is done this way rather than with a source patch or
+# with `PYTHONPATH`:
+#
+# * It is symmetric. `../pc-baseline` is a checkout of a commit that predates
+#   this branch and cannot be taught to read a new environment variable, but it
+#   runs on the same interpreters -- so an interpreter-level hook applies to it
+#   exactly as it applies to HEAD. An asymmetric speedup would be close to
+#   worthless: two of the four runs are the baseline's.
+# * It cannot redirect an import. A `sitecustomize` on `PYTHONPATH` would also
+#   put *this* checkout's `ProteinCartography` package on the baseline's import
+#   path, and a parity test that compares HEAD against HEAD passes vacuously.
+#
+# Measured: pipeline run 49.3 s -> 19.7 s, the `run_foldseek` benchmark 31.2 s
+# -> 1.64 s, with foldseek's `.tar.gz` byte-identical either way.
+#
+# The failure mode is silence. If a future environment is built with
+# `site.ENABLE_USER_SITE = False`, or some activation path sets
+# `PYTHONNOUSERSITE`, the hook is simply never imported and every run quietly
+# costs 30 s more again. So `run_pipeline` does not merely set the variable, it
+# checks the recorded benchmark afterwards.
+
+_FOLDSEEK_SLEEP_HOOK = '''\
+"""Return immediately from `time.sleep` inside the mocked Foldseek poll loop.
+
+Written by ProteinCartography/tests/parity.py, and imported by CPython at
+interpreter start-up in any process whose PYTHONUSERBASE points at the tree this
+file lives in. Nothing imports it explicitly.
+
+Each interception is also RECORDED, one line per call, in the file named by
+PC_FOLDSEEK_POLL_COUNTER. Short-circuiting the sleep made a spinning poll loop
+free, and free is invisible: the wall-clock guard on the other side of this
+cannot tell one poll from sixty once neither costs anything. The count can.
+"""
+import os
+import sys
+import time
+
+_real_sleep = time.sleep
+
+
+def _sleep(seconds):
+    # Evaluated at call time rather than at import time on purpose: every
+    # process snakemake launches imports this hook, and only the Foldseek poll
+    # loop may be short-circuited. `foldseek_apiquery.py` sleeps solely to wait
+    # for a server ticket, which under mocks is already answered.
+    if sys.argv and str(sys.argv[0]).endswith("foldseek_apiquery.py"):
+        # Read at call time too, so one hook serves runs with different
+        # counters -- `mutation_check.py` makes twelve run_pipeline calls in
+        # one process and up to four proceed at once.
+        counter = os.environ.get("PC_FOLDSEEK_POLL_COUNTER")
+        if counter:
+            # Append-only, one short line. A failure to write leaves the file
+            # absent or short, and the assertion treats both as a failure
+            # rather than as nothing to check -- so swallowing the error here
+            # cannot turn the guard off.
+            try:
+                with open(counter, "a") as handle:
+                    handle.write(str(sys.argv[0]) + " " + str(seconds) + chr(10))
+            except OSError:
+                pass
+        return _real_sleep(0)
+    return _real_sleep(seconds)
+
+
+time.sleep = _sleep
+'''
+
+#: `usercustomize` is looked up under the *running* interpreter's
+#: `lib/pythonX.Y`, so one user base covers an environment only if that
+#: environment's version is present. The rule environments are 3.9 today; the
+#: rest of the range is here so that rebuilding them onto a newer Python does
+#: not silently switch the 30 s sleep back on.
+_HOOK_PYTHON_VERSIONS = ("3.9", "3.10", "3.11", "3.12")
+
+_hook_user_base: Path | None = None
+
+
+def foldseek_sleep_user_base() -> Path:
+    """The user-site tree carrying the sleep hook, materialised once per process.
+
+    Cached rather than rebuilt per run because `mutation_check.py` calls
+    `run_pipeline` twelve times in one process, and because a single directory
+    shared by every child is what makes head and baseline runs identical in
+    this respect. It holds nothing but `usercustomize.py`, so putting it on the
+    user-site path cannot shadow an import.
+    """
+    global _hook_user_base
+    if _hook_user_base is not None:
+        return _hook_user_base
+    root = Path(tempfile.mkdtemp(prefix="pc-parity-usersite-"))
+    for version in _HOOK_PYTHON_VERSIONS:
+        site_packages = root / "lib" / f"python{version}" / "site-packages"
+        site_packages.mkdir(parents=True)
+        (site_packages / "usercustomize.py").write_text(_FOLDSEEK_SLEEP_HOOK)
+    atexit.register(shutil.rmtree, str(root), ignore_errors=True)
+    _hook_user_base = root
+    return root
+
+
+#: The mocked `run_foldseek` rule takes ~1.6 s with the hook installed and ~31 s
+#: without it, because the sleep is a fixed 30 s and the work either side of it
+#: is under two seconds. 15 s is nine times the working figure and half the
+#: failing one: a loaded machine cannot reach it, and one skipped hook cannot
+#: stay under it.
+#:
+#: **This is WALL time, and it stays wall time.** PC-033 proposed CPU time, so
+#: that a starved machine could not be mistaken for a skipped hook. Measured
+#: over 46 archived `run_foldseek` benchmarks, using the `mean_load` column
+#: because snakemake's `cpu_time` column is 0 for every row on this platform:
+#: the 19 SLOW rows (hook off, 31-34 s wall) imply 1.25-4.42 CPU seconds and
+#: the 27 FAST rows (hook on, 1-5 s wall) imply 0.97-5.08. The distributions
+#: OVERLAP ALMOST ENTIRELY, because a sleeping process burns no CPU -- which is
+#: precisely why wall time is the signal here. A CPU ceiling would not be
+#: robust; it would be vacuous.
+FOLDSEEK_BENCHMARK_CEILING_SECONDS = 15.0
+
+
+#: The environment variable naming the per-run poll counter. Per-run rather
+#: than shared: four `run_pipeline` calls proceed at once at `--cores 8`, two of
+#: them out of the baseline checkout, and one run's polls landing in another
+#: run's counter would fail an assertion about a pipeline that behaved.
+FOLDSEEK_POLL_COUNTER_VAR = "PC_FOLDSEEK_POLL_COUNTER"
+
+#: How many intercepted sleeps one query protein may cost.
+#:
+#: The mocked ticket answers COMPLETE on the first `GET`, so `foldseek_apiquery`
+#: sleeps exactly ONCE per query and the working figure is 1. A ticket that
+#: never completes costs 60 -- `FOLDSEEK_SERVER_TIMEOUT` 1800 s divided by the
+#: 30 s public-server poll interval. 5 is five times the working figure and a
+#: twelfth of the failing one, which is the same shape of margin
+#: `FOLDSEEK_BENCHMARK_CEILING_SECONDS` carries: a retry or a second database
+#: cannot reach it, and a spinning loop cannot stay under it.
+FOLDSEEK_POLLS_PER_QUERY_CEILING = 5
+
+
+def _assert_the_foldseek_polls_were_bounded(output_dir: Path, counter_path: Path) -> None:
+    """Fail unless the mocked Foldseek poll loop turned over about once per query.
+
+    The other half of the guard below, and the half it cannot do. Neutralising
+    the 30 s sleep also removed the only evidence a spinning loop ever left:
+    with the sleep free, sixty polls and one poll both take about 1.6 s, so the
+    wall-clock ceiling reads them as identical (FOLLOWUPS #45). Counting the
+    interceptions separates them.
+
+    A MISSING COUNTER RAISES rather than passes. "The hook never loaded" and
+    "the loop never slept" are indistinguishable from an absent file, and a
+    check that cannot tell those apart is satisfied by silence -- the same
+    self-disabling shape as an absence assertion whose phrase has drifted.
+    """
+    counter_path = Path(counter_path)
+    if not counter_path.exists():
+        raise RuntimeError(
+            f"no Foldseek poll counter at {counter_path}, so there is no evidence about "
+            "how many times the poll loop turned over. An absent counter cannot be told "
+            f"from a loop that never slept: check that {FOLDSEEK_POLL_COUNTER_VAR} "
+            "reached the rule environment and that the usercustomize hook loaded"
+        )
+    polls = len([line for line in counter_path.read_text().splitlines() if line.strip()])
+    queries = len(sorted((Path(output_dir) / "benchmarks").glob("*.run_foldseek.txt")))
+    if not queries:
+        raise RuntimeError(
+            f"{polls} Foldseek poll(s) recorded but no benchmarks/*.run_foldseek.txt under "
+            f"{output_dir}, so the count has no denominator"
+        )
+    ceiling = FOLDSEEK_POLLS_PER_QUERY_CEILING * queries
+    if polls > ceiling:
+        raise RuntimeError(
+            f"the mocked Foldseek poll loop turned over {polls} times across {queries} "
+            f"query protein(s), above the ceiling of {ceiling} "
+            f"({FOLDSEEK_POLLS_PER_QUERY_CEILING} per query). The ticket is answered "
+            "COMPLETE on the first GET, so this means the loop is spinning -- which "
+            "costs no wall clock now that the sleep is short-circuited, and is therefore "
+            "invisible to the benchmark ceiling"
+        )
+
+
+def _poll_evidence(counter_path) -> str:
+    """What the poll counter says, as CONTEXT for a wall-clock failure.
+
+    The wall-clock ceiling cannot tell a 30 s sleep from a starved machine, and
+    for one night it asserted the first and sent a reader to debug a hook that
+    was working (PC-033). It no longer names a cause it cannot see; it prints
+    what the counter recorded and lets that decide.
+    """
+    if counter_path is None:
+        return "POLL EVIDENCE: not collected for this call."
+    counter_path = Path(counter_path)
+    if not counter_path.exists():
+        return (
+            f"POLL EVIDENCE: no counter at {counter_path}, so the hook did NOT load "
+            "and the sleep is the likely explanation."
+        )
+    polls = len([line for line in counter_path.read_text().splitlines() if line.strip()])
+    return (
+        f"POLL EVIDENCE: the hook loaded and intercepted {polls} poll(s), so the "
+        "sleep WAS neutralised and a starved machine is the likely explanation."
+    )
+
+
+def _assert_the_foldseek_sleep_was_neutralised(output_dir: Path, counter_path=None) -> None:
+    """Fail unless the mocked Foldseek rule really did skip its poll sleep.
+
+    The hook above has no way to announce that it did not load, and a suite that
+    is 150 s slower than it should be looks exactly like a suite that is slow.
+    A comment describing the mechanism would not catch that; reading what the
+    run actually recorded does.
+
+    `counter_path` is optional and is used only to explain a failure. The
+    criterion is unchanged and the ceiling is unchanged -- weakening a check to
+    get green is the failure this branch documents repeatedly. What changed is
+    that the message no longer asserts a cause this measurement cannot see.
+
+    Missing benchmarks are treated as a failure rather than as "nothing to
+    check". Every configuration this harness runs is search mode over the actin
+    fixture, which always executes `run_foldseek`; if that stops being true, the
+    guard should be revisited deliberately and not quietly satisfied by absence.
+    """
+    benchmarks = sorted((Path(output_dir) / "benchmarks").glob("*.run_foldseek.txt"))
+    if not benchmarks:
+        raise RuntimeError(
+            f"no benchmarks/*.run_foldseek.txt under {output_dir}, so there is no "
+            "evidence the mocked Foldseek query skipped its 30 s poll sleep"
+        )
+    # snakemake writes a header row and then one row per repeat; column 0 is
+    # wall-clock seconds.
+    slow, measured = [], 0
+    for path in benchmarks:
+        for row in path.read_text().splitlines()[1:]:
+            if not row.strip():
+                continue
+            measured += 1
+            seconds = float(row.split("\t")[0])
+            if seconds >= FOLDSEEK_BENCHMARK_CEILING_SECONDS:
+                slow.append(f"{path.name}: {seconds:.1f} s")
+    if not measured:
+        # A header row and no data satisfied this guard silently, which is the
+        # "otherwise satisfied by silence" mode the docstring above says it
+        # refuses to accept -- found by Gate E's adversarial pass, which read
+        # the docstring's own promise back to it.
+        raise RuntimeError(
+            f"{len(benchmarks)} benchmark file(s) under {output_dir} contain a header "
+            "and no timings, so there is no evidence the mocked Foldseek query skipped "
+            "its 30 s poll sleep"
+        )
+    if slow:
+        raise RuntimeError(
+            f"run_foldseek exceeded the WALL-CLOCK ceiling: {', '.join(slow)} "
+            f"(ceiling {FOLDSEEK_BENCHMARK_CEILING_SECONDS} s over {measured} "
+            f"benchmark row(s)).\n"
+            f"{_poll_evidence(counter_path)}\n"
+            "TWO EXPLANATIONS REMAIN AND THIS MEASUREMENT CANNOT SEPARATE THEM: the "
+            "30 s poll sleep ran, or the machine was starved and the mocked work took "
+            "the wall clock without taking the CPU. Read the poll evidence above "
+            "first -- if the hook loaded and intercepted about one poll per query, "
+            "the sleep did NOT run and the machine was busy. If it did not load, "
+            "check that the rule environment has site.ENABLE_USER_SITE True and that "
+            "nothing sets PYTHONNOUSERSITE."
+        )
+
+
+def run_pipeline(
+    repo: Path,
+    workdir: Path,
+    *,
+    conda_prefix: Path | None = None,
+    cores: int = 8,
+    extra_config: dict | None = None,
+    dataset: str = "actin",
+) -> Path:
+    """Run the mocked search-mode pipeline from `repo` into `workdir`.
+
+    Mocked, so it needs no network. `conda_prefix` lets two checkouts share one
+    set of built conda environments, which is what makes running the baseline
+    affordable.
+    """
+    repo, workdir = Path(repo), Path(workdir)
+    if workdir.exists():
+        shutil.rmtree(workdir)
+    workdir.mkdir(parents=True)
+
+    input_dir, output_dir = workdir / "input", workdir / "output"
+    shutil.copytree(
+        repo
+        / "ProteinCartography"
+        / "tests"
+        / "integration-test-artifacts"
+        / "search-mode"
+        / dataset
+        / "input",
+        input_dir,
+    )
+
+    config = {
+        "mode": "search",
+        "analysis_name": "parity",
+        "input_dir": str(input_dir),
+        "output_dir": str(output_dir),
+        "plotting_modes": ["pca_umap"],
+        "max_blast_hits": 10,
+        "max_foldseek_hits": 10,
+        "max_structures": 10,
+    }
+    config.update(extra_config or {})
+
+    import yaml
+
+    config_path = workdir / "config.yaml"
+    with open(config_path, "w") as fh:
+        yaml.dump(config, fh)
+
+    env = dict(os.environ)
+    env["PROTEINCARTOGRAPHY_SHOULD_USE_MOCKS"] = "true"
+    env.pop("PROTEINCARTOGRAPHY_SHOULD_LOG_API_REQUESTS", None)
+    # Removes ~30 s of Foldseek poll sleep from this run, identically on both
+    # checkouts -- see the section above. PYTHONNOUSERSITE would disable the
+    # hook outright, and conda activation scripts are known to set it.
+    env["PYTHONUSERBASE"] = str(foldseek_sleep_user_base())
+    env.pop("PYTHONNOUSERSITE", None)
+    # Inside this run's workdir, not inside the shared user base: the user base
+    # is one directory for every run in the process, and four runs proceed at
+    # once.
+    poll_counter = workdir / "foldseek_polls.log"
+    env[FOLDSEEK_POLL_COUNTER_VAR] = str(poll_counter)
+
+    cmd = [
+        sys.executable,
+        "-m",
+        "snakemake",
+        "--snakefile",
+        str(repo / "Snakefile"),
+        "--configfile",
+        str(config_path),
+        "--use-conda",
+        "--conda-frontend",
+        "conda",
+        "--cores",
+        str(cores),
+    ]
+    if conda_prefix is not None:
+        cmd += ["--conda-prefix", str(conda_prefix)]
+
+    proc = subprocess.run(cmd, cwd=repo, env=env, capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"pipeline run from {repo} failed ({proc.returncode})\n"
+            f"--- stdout tail ---\n{proc.stdout[-3000:]}\n"
+            f"--- stderr tail ---\n{proc.stderr[-5000:]}"
+        )
+    _assert_the_foldseek_sleep_was_neutralised(output_dir, poll_counter)
+    _assert_the_foldseek_polls_were_bounded(output_dir, poll_counter)
+    return output_dir
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--baseline", required=True, help="path to the baseline checkout")
+    parser.add_argument("--repo", default=".", help="path to the checkout under test")
+    parser.add_argument("--workdir", default="/tmp/pc-parity")
+    parser.add_argument(
+        "--conda-prefix",
+        default=None,
+        help="shared conda env directory, so the baseline does not rebuild them",
+    )
+    args = parser.parse_args(argv)
+
+    repo, baseline = Path(args.repo).resolve(), Path(args.baseline).resolve()
+    work = Path(args.workdir)
+    prefix = Path(args.conda_prefix) if args.conda_prefix else repo / ".snakemake" / "conda"
+
+    print("running HEAD twice to establish the nondeterminism floor ...")
+    head_1 = run_pipeline(repo, work / "head1", conda_prefix=prefix)
+    head_2 = run_pipeline(repo, work / "head2", conda_prefix=prefix)
+    self_diff = compare_trees(head_1, head_2)
+    print("self-diff:\n" + self_diff.describe())
+
+    print("\nrunning the baseline ...")
+    base = run_pipeline(baseline, work / "base", conda_prefix=prefix)
+    parity = compare_trees(head_1, base, ignore=set(self_diff.differing), baseline="b")
+    print("parity vs baseline:\n" + parity.describe())
+
+    return 0 if parity.ok else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+
+
+def assert_critical_outputs_compared(report: ParityReport, analysis_name: str) -> None:
+    """Raise unless every artifact in :data:`CRITICAL_OUTPUTS` was really compared.
+
+    A parity test can be hollowed out one exclusion at a time without anyone
+    noticing, because each individual exclusion looks reasonable. This makes the
+    hollowing-out fail loudly: these specific files must appear in the compared
+    set, not in the excluded set.
+    """
+    compared = set(report.identical) | set(report.normalized_identical) | set(report.differing)
+    expected = {path.format(name=analysis_name) for path in CRITICAL_OUTPUTS}
+    missing = sorted(expected - compared)
+    if missing:
+        reasons = {m: report.excluded.get(m, "not produced by the run") for m in missing}
+        raise AssertionError(
+            "these outputs carry the backwards-compatibility promise but were not "
+            "compared:\n" + "\n".join(f"  {path}: {why}" for path, why in reasons.items())
+        )
+
+
+# ---------------------------------------------------------------------------
+# component-level parity at N > 500
+# ---------------------------------------------------------------------------
+#
+# The end-to-end fixture is 11 proteins, and mutation testing showed that is
+# structurally unable to see several realistic refactor errors: at N=11 the PCA
+# component count, the UMAP neighbour count and Leiden's n_pcs are all clamped
+# to the same value whatever the config says, and the censoring fill token never
+# appears because all 121 pairs are measured.
+#
+# Running the whole pipeline at N>500 would mean synthesizing 750 PDB files and
+# a Foldseek run. But the port only touched the reduction step, and that step
+# takes a matrix -- not structures. So the matrix is generated directly and the
+# reducers are run on it from both checkouts. This reaches the regime the small
+# fixture cannot: above 500 rows, `svd_solver="auto"` would switch to the
+# randomized solver, which is the defect PR #106 fixed.
+#
+# Procedural, seeded, and not committed as data: the seed is the fixture.
+
+CENSORED_FILL = "0.0"
+
+DEFAULT_FIXTURE_N = 750
+DEFAULT_FIXTURE_SEED = 0
+DEFAULT_FIXTURE_CAP = 300
+DEFAULT_FIXTURE_CLUSTERS = 6
+
+
+def synthetic_matrix(
+    path: Path,
+    *,
+    n: int = DEFAULT_FIXTURE_N,
+    seed: int = DEFAULT_FIXTURE_SEED,
+    cap: int = DEFAULT_FIXTURE_CAP,
+    n_clusters: int = DEFAULT_FIXTURE_CLUSTERS,
+    permute_columns: bool = False,
+) -> Path:
+    """Write a similarity matrix with the statistical shape of a real one.
+
+    Reproduces the three properties measured on production output that matter
+    for the code under test:
+
+    * a per-query cap, so most rows report exactly `cap` partners and the rest
+      are the literal ``"0.0"`` fill -- the censoring of ADR 0009;
+    * scores in Foldseek's ``%.3E`` form with no low tail, so a fill is a value
+      the generator never otherwise emits;
+    * an exact 1.0 on the *label* diagonal;
+    * **block structure** -- `n_clusters` groups that are mutually similar and
+      dissimilar across groups.
+
+    That last one was added after mutation testing: a matrix of uniform noise is
+    statistically realistic in its censoring and completely unrealistic as
+    biology, and a clustering-parameter mutation has nothing to bite on. Leiden
+    at 30 principal components and at 10 produced the *same* partition of pure
+    noise, so the mutation survived a test that was working correctly. Planting
+    real structure is what makes clustering parameters observable.
+
+    `permute_columns` reproduces the PR #106 defect for tests that need it.
+    """
+    import numpy as np
+
+    rng = np.random.RandomState(seed)
+    labels = [f"P{i:05d}" for i in range(n)]
+    columns = list(labels)
+    if permute_columns:
+        columns = [labels[i] for i in rng.permutation(n)]
+
+    # Column label -> the protein's canonical index, so a permuted header still
+    # writes each score into the cell its labels claim. Writing by position here
+    # would generate a matrix that is wrong rather than merely permuted.
+    index_of = {label: i for i, label in enumerate(labels)}
+
+    # Contiguous, equal-sized groups. Deterministic given the seed, and simple
+    # enough that a test can reconstruct the ground truth with `i * k // n`.
+    n_clusters = max(1, min(n_clusters, n))
+    cluster_of = np.arange(n) * n_clusters // n
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w") as fh:
+        fh.write("\t".join(["protid"] + columns) + "\n")
+        for i, row_label in enumerate(labels):
+            # Each query reports its own capped set of partners, chosen
+            # independently, so every row sits at exactly the cap while the
+            # columns vary -- the signature of a per-query limit rather than a
+            # score threshold. The self-hit is always reported and is counted
+            # against the cap, so the row totals are exactly uniform.
+            others = [j for j in range(n) if j != i]
+            k = max(0, min(cap, n) - 1)
+            partners = set(rng.choice(others, size=k, replace=False).tolist())
+            partners.add(i)
+            # Within-cluster pairs score high, between-cluster pairs low, with
+            # enough spread that the groups are findable but not trivial.
+            same = cluster_of == cluster_of[i]
+            scores = np.where(
+                same,
+                rng.uniform(0.70, 0.95, size=n),
+                rng.uniform(0.10, 0.45, size=n),
+            )
+            cells = []
+            for column_label in columns:
+                j = index_of[column_label]
+                if j == i:
+                    cells.append("1.000E+00")
+                elif j in partners:
+                    cells.append(f"{scores[j]:.3E}")
+                else:
+                    cells.append(CENSORED_FILL)
+            fh.write("\t".join([row_label] + cells) + "\n")
+    return path
+
+
+def run_reducer(
+    repo: Path,
+    matrix_path: Path,
+    workdir: Path,
+    *,
+    mode: str = "pca_umap",
+    python: str | None = None,
+) -> Path:
+    """Run `dim_reduction.py` from `repo` on `matrix_path`, into `workdir`.
+
+    The matrix is copied in first, because the script derives its output paths
+    from its input path.
+    """
+    workdir = Path(workdir)
+    if workdir.exists():
+        shutil.rmtree(workdir)
+    workdir.mkdir(parents=True)
+    local_matrix = workdir / Path(matrix_path).name
+    shutil.copy(matrix_path, local_matrix)
+
+    cmd = [
+        python or sys.executable,
+        str(Path(repo) / "ProteinCartography" / "dim_reduction.py"),
+        "--input",
+        str(local_matrix),
+        "--mode",
+        mode,
+    ]
+    proc = subprocess.run(cmd, cwd=repo, capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"dim_reduction from {repo} failed ({proc.returncode})\n{proc.stderr[-4000:]}"
+        )
+    return workdir
+
+
+def synthetic_pair_list(
+    path: Path,
+    *,
+    n: int = 200,
+    seed: int = DEFAULT_FIXTURE_SEED,
+    cap: int = 80,
+) -> Path:
+    """Write a raw Foldseek pair list: the *input* to `pivot_foldseek_results`.
+
+    The pivoted matrix is where the censoring fill is introduced, so testing
+    anything about that fill means exercising the pivot step, which starts from
+    this file rather than from a matrix. Pairs outside each query's cap are
+    simply absent -- which is exactly how Foldseek reports, and is what makes
+    the fill appear.
+    """
+    import numpy as np
+
+    rng = np.random.RandomState(seed)
+    labels = [f"P{i:05d}" for i in range(n)]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w") as fh:
+        for i, query in enumerate(labels):
+            others = [j for j in range(n) if j != i]
+            k = max(0, min(cap, n) - 1)
+            partners = sorted(set(rng.choice(others, size=k, replace=False).tolist()) | {i})
+            for j in partners:
+                score = 1.0 if j == i else rng.uniform(0.05, 0.99)
+                fh.write(f"{query}.pdb\t{labels[j]}.pdb\t{score:.3E}\n")
+    return path
+
+
+def run_pivot(repo: Path, pair_list: Path, workdir: Path, *, python: str | None = None) -> Path:
+    """Run `pivot_foldseek_results` from `repo` on a raw pair list.
+
+    Invoked as a subprocess against the given checkout so the baseline's copy of
+    the function is used, not the one already imported into this process.
+    """
+    workdir = Path(workdir)
+    if workdir.exists():
+        shutil.rmtree(workdir)
+    workdir.mkdir(parents=True)
+    out = workdir / "all_by_all_tmscore_pivoted.tsv"
+    script = (
+        "import sys; sys.path.insert(0, 'ProteinCartography');"
+        "from foldseek_clustering import pivot_foldseek_results;"
+        f"pivot_foldseek_results(input_file={str(pair_list)!r}, output_file={str(out)!r})"
+    )
+    proc = subprocess.run(
+        [python or sys.executable, "-c", script], cwd=repo, capture_output=True, text=True
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(f"pivot from {repo} failed ({proc.returncode})\n{proc.stderr[-3000:]}")
+    return workdir
+
+
+def run_leiden(repo: Path, matrix_path: Path, workdir: Path, *, python: str | None = None) -> Path:
+    """Run `leiden_clustering.py` from `repo` on a matrix.
+
+    Leiden forks from the matrix independently of the reduction path, so it
+    needs its own comparison; nothing in the reducer suite touches it.
+    """
+    workdir = Path(workdir)
+    if workdir.exists():
+        shutil.rmtree(workdir)
+    workdir.mkdir(parents=True)
+    out = workdir / "leiden_features.tsv"
+    proc = subprocess.run(
+        [
+            python or sys.executable,
+            str(Path(repo) / "ProteinCartography" / "leiden_clustering.py"),
+            "--input",
+            str(matrix_path),
+            "--output",
+            str(out),
+        ],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(f"leiden from {repo} failed ({proc.returncode})\n{proc.stderr[-3000:]}")
+    return workdir

@@ -3,19 +3,24 @@ Thanks for your interest in contributing to ProteinCartography!
 Please read this document in its entirety before contributing to help ensure that your contribution meets our standards and is readily accepted.
 
 ## Getting Started
-All the packages needed to develop for ProteinCartography are found in the `envs/cartography_dev.yml` conda environment.
-You can install this environment as follows:
+There is no single all-in-one development environment.
+`envs/cartography_tidy.yml` starts the pipeline, and snakemake solves each rule's own environment from `envs/` as it runs; the linters are installed with `pip` because they are not a pipeline dependency and pinning them into a rule environment would change what that rule solves.
 
 1. Make sure `miniconda` is installed. Even if you’re using an Apple Silicon (M1, M2, etc. macOS) laptop, you will need to install the macOS Intel x86-64 version of `miniconda` [here](https://docs.conda.io/projects/miniconda/en/latest/).
 
-2. Create a conda environment from the `cartography_dev.yml` file in the `envs/` directory.
+2. Create a conda environment from the `cartography_tidy.yml` file in the `envs/` directory.
 ```sh
-conda env create -n cartography_dev --file envs/cartography_dev.yml
+conda env create -n cartography_tidy --file envs/cartography_tidy.yml
 ```
 
 3. Activate the environment.
 ```sh
-conda activate cartography_dev
+conda activate cartography_tidy
+```
+
+4. Install the tools `make lint` and `make test` need. The three linter pins are the ones `.github/workflows/lint.yml` installs, so a passing `make lint` means a passing lint workflow.
+```sh
+pip install ruff==0.1.6 snakefmt==0.8.5 pre-commit==3.5.0 pytest==7.4.3
 ```
 
 ## How to contribute
@@ -132,18 +137,19 @@ def add_integers(first_integer: int, second_integer: int) -> int:
 We strive to encapsulate new functionality within modular Python scripts that accept arguments from the command line using `argparse`. These scripts are then called from snakemake rules and can also be run directly from the command line by the user.
 - Every script should include a `parse_args()` function and a `main()` function.
 - Every script with `#!/usr/bin/env python` (so that the scripts are executable from the command line on unix systems).
-- An example template for new scripts is found in [`template.py`](./ProteinCartography/template.py).
+- For a short script that follows all three conventions above, see
+  [`extract_blast_hits.py`](./ProteinCartography/extract_blast_hits.py): a shebang,
+  a `parse_args()`, one named function doing the work, and a `main()`.
 
 ### Adding new dependencies
 First, please consider carefully whether you need to add a new dependency to the project.
 When changes you have made absolutely require new dependencies, please make sure that they are `conda`-installable.
-Dependencies should be added to two environment files:
-1. the `cartography_dev.yml` file in the `envs/` directory.
-2. the appropriate snakemake rule environment file in the `envs/` directory.
+The dependency belongs in the environment file for the snakemake rule that needs it, in the `envs/` directory, and only there.
+Adding it anywhere else changes what a rule solves without changing what it needs.
 
-In both files, please include the version of the dependency you are using (this is called "pinning" the dependency).
+Please include the version of the dependency you are using (this is called "pinning" the dependency).
 Include only the exact version number; do not include the package hash.
-For example, if you are adding a new dependency called `new_dependency` and you are using version `1.2.3`, you would add the following line to the `cartography_dev.yml` file:
+For example, if you are adding a new dependency called `new_dependency` and you are using version `1.2.3`, you would add the following line to that rule's environment file:
 ```yaml
 - new_dependency=1.2.3
 ```

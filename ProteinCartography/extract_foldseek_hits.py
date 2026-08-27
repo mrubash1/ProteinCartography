@@ -5,6 +5,7 @@ import re
 
 import constants
 import pandas as pd
+from hit_significance import TmalignOutputError, looks_like_tmalign
 
 # only import these functions when using import *
 __all__ = ["extract_foldseekhits"]
@@ -17,6 +18,22 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "-i", "--input", nargs="+", required=True, help="Takes .m8 file paths as input."
+    )
+    parser.add_argument(
+        # No short flag: `-m` is already `--max-num-hits` on this parser, and
+        # argparse raises at PARSE-BUILD time, so the collision took down every
+        # `extract_foldseek_hits` job rather than failing a test. Caught by the
+        # end-to-end domain pipeline test, which is the only thing here that
+        # actually runs the script's command line.
+        "--mode",
+        default=None,
+        help=(
+            "The Foldseek search mode the .m8 files came from, if it is known. "
+            "'3diaa' is what this script can interpret. Passing 'tmalign' is refused "
+            "outright, because in that mode the 'evalue' column is a TM-score and "
+            "filtering it ascending keeps the LEAST similar structures. Omitted on a "
+            "direct invocation, where the shape of the columns is inspected instead."
+        ),
     )
     parser.add_argument("-o", "--output", required=True, help="Returns a .txt file as output.")
     parser.add_argument(
@@ -42,7 +59,11 @@ def parse_args():
 
 
 def extract_foldseekhits(
-    input_files: list, output_file: str, evalue=DEFAULT_EVALUE, max_num_hits=None
+    input_files: list,
+    output_file: str,
+    evalue=DEFAULT_EVALUE,
+    max_num_hits=None,
+    mode=None,
 ):
     """
     Takes a list of input tabular Foldseek results files from the API query (ending in .m8).
@@ -51,18 +72,43 @@ def extract_foldseekhits(
     Args:
         input_files (list): list of string paths to input files.
         output_file (str): path of destination file.
+        mode (str): the search mode the files came from, if it is known. A stated
+            `tmalign` is refused before anything is read; a stated `3diaa` is
+            trusted and the column-shape heuristic is skipped; `None` means the
+            caller does not know, and the shape is inspected per file.
     """
+    # A STATED MODE BEATS A GUESS. The heuristic below is good but it is a
+    # heuristic: it reads the shape of two columns and can only ever say
+    # "this looks wrong". When the pipeline knows what it asked for -- which it
+    # does, from `foldseek_mode` in the config -- saying so is better evidence
+    # than inspecting the result, and it catches an empty or all-filtered
+    # tmalign file that the heuristic cannot see at all.
+    if mode is not None and mode != "3diaa":
+        raise TmalignOutputError(
+            f"extract_foldseek_hits was told the search mode was {mode!r}, and it can "
+            "only interpret '3diaa'. In any other mode the server reuses the same "
+            "column positions for different quantities -- the column named 'evalue' "
+            "holds a TM-score -- so filtering it ascending keeps the LEAST similar "
+            "structures. Refusing rather than guessing."
+        )
 
     # empty df for collecting results
     dummy_df = pd.DataFrame()
 
     # iterate through results files, reading them
     for i, file in enumerate(input_files):
-        # load the file
-        file_df = pd.read_csv(file, sep="\t", names=constants.FOLDSEEK_COLUMN_NAMES)
-
+        # The size check has to come BEFORE the read, which is where it was not
+        # (FOLLOWUPS #24). It is inert under the pinned pandas 2.0.1 -- reading
+        # an empty file with `names=` supplied returns a 0-row frame rather than
+        # raising -- so moving it changes no output today. It is moved anyway
+        # because the guard only reads as a guard from here: a pandas that
+        # raises on the empty read, or a caller that supplies no `names`, would
+        # find the check sitting downstream of the thing it was meant to stop.
         if os.path.getsize(file) == 0:
             continue
+
+        # load the file
+        file_df = pd.read_csv(file, sep="\t", names=constants.FOLDSEEK_COLUMN_NAMES)
 
         # extract the model ID from the results target column
         file_df["modelid"] = file_df["target"].str.split(" ", expand=True)[0]
@@ -70,6 +116,31 @@ def extract_foldseekhits(
         # extract only models that contain AF model string
         # this will need to be changed in the future
         file_df = file_df[file_df["modelid"].str.contains("-F1-model")]
+
+        # Refuse a tmalign-shaped file BEFORE filtering on the e-value column,
+        # because in that mode the column is a TM-score and the filter's
+        # polarity inverts: `evalue < 0.001` would keep the LEAST similar
+        # structures and silently hand them to the map.
+        #
+        # One guard, one definition, two consumers: `hit_significance` has
+        # refused this since it was written, and this module -- which is the one
+        # that actually decides the cohort -- did not. The asymmetry was the
+        # defect, not the missing check.
+        if looks_like_tmalign(
+            pd.to_numeric(file_df["evalue"], errors="coerce"),
+            pd.to_numeric(file_df["bits"], errors="coerce"),
+        ):
+            evalues = pd.to_numeric(file_df["evalue"], errors="coerce").dropna()
+            raise TmalignOutputError(
+                f"{file} looks like `foldseek_apiquery.py --mode tmalign` output: its "
+                f"e-value column runs {evalues.min():.4g} to {evalues.max():.4g}, entirely "
+                "inside [0, 1], with bit scores at TM-score scale. In that mode the server "
+                "reuses the same column positions for different quantities -- the 'e-value' "
+                "is a TM-score -- so filtering it ascending keeps the LEAST similar "
+                "structures. Refusing rather than guessing: the mode is not recorded in the "
+                "output, so this file cannot be interpreted with confidence. The pipeline "
+                "runs 3diaa mode, which this does support."
+            )
 
         # filter by evalue
         file_df = file_df[file_df["evalue"] < evalue]
@@ -113,8 +184,19 @@ def main():
     evalue = args.evalue
     max_num_hits = args.max_num_hits
 
-    # send to map_refseqids
-    extract_foldseekhits(input_files, output_file, evalue=evalue, max_num_hits=max_num_hits)
+    if os.environ.get("PROTEINCARTOGRAPHY_SHOULD_USE_MOCKS") == "true":
+        from tests.mock_domain_hits import maybe_write_per_domain_hits
+
+        if maybe_write_per_domain_hits(output_file):
+            return
+
+    extract_foldseekhits(
+        input_files,
+        output_file,
+        evalue=evalue,
+        max_num_hits=max_num_hits,
+        mode=args.mode,
+    )
 
 
 # check if called from interpreter

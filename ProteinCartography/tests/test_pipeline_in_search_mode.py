@@ -70,15 +70,52 @@ def set_env_variables(pytestconfig):
     should_use_mocks = "PROTEINCARTOGRAPHY_SHOULD_USE_MOCKS"
     should_log_api_requests = "PROTEINCARTOGRAPHY_SHOULD_LOG_API_REQUESTS"
 
-    if not pytestconfig.getoption("no_mocks"):
+    using_mocks = not pytestconfig.getoption("no_mocks")
+    if using_mocks:
         os.environ[should_use_mocks] = "true"
 
     # Don't log API requests during the tests.
     should_log_api_requests_value = os.environ.pop(should_log_api_requests, None)
 
+    # `foldseek_apiquery.py` waits 30 s between polls of the public Foldseek
+    # server, and this test's DAG runs it. Under mocks the ticket is answered
+    # instantly, so that is pure wall clock -- about 30 s of this file's ~47 s.
+    # `parity.py` removes it for the parity runs without editing any source
+    # file, by handing the child processes a `usercustomize` module; the same
+    # mechanism works here, and for the same reason the comment above gives:
+    # rule environments inherit this process's environment.
+    #
+    # **Gated on mocks, and that is not a detail.** With `--no-mocks` this test
+    # polls the real server, where the 30 s wait is politeness toward a shared
+    # public resource rather than dead time. The cluster-mode test is left alone
+    # entirely for the same reason: it has no mocking fixture at all, and its
+    # `key_protids` pulls `run_foldseek` into the DAG, so its sleep is always
+    # against the real server.
+    # Both halves are inside the gate. An earlier version popped
+    # PYTHONNOUSERSITE unconditionally and gated only the redirect -- three
+    # lines below the paragraph above -- which under `--no-mocks` re-enabled the
+    # machine's real ~/.local site-packages on sys.path for every rule
+    # interpreter, and any usercustomize.py living there auto-executes. That is
+    # the isolation "optional deps stay optional" depends on, in the run closest
+    # to production. Fourth instance of a comment stating an invariant it does
+    # not enforce; Gate E's adversarial pass found it.
+    previous_user_base = os.environ.get("PYTHONUSERBASE")
+    previous_no_user_site = None
+    if using_mocks:
+        from parity import foldseek_sleep_user_base
+
+        previous_no_user_site = os.environ.pop("PYTHONNOUSERSITE", None)
+        os.environ["PYTHONUSERBASE"] = str(foldseek_sleep_user_base())
+
     yield
 
     os.environ.pop(should_use_mocks, None)
+    if previous_user_base is None:
+        os.environ.pop("PYTHONUSERBASE", None)
+    else:
+        os.environ["PYTHONUSERBASE"] = previous_user_base
+    if previous_no_user_site is not None:
+        os.environ["PYTHONNOUSERSITE"] = previous_no_user_site
 
     # As a convenience, restore the logging env variable to its original value.
     if should_log_api_requests_value is not None:
@@ -101,6 +138,7 @@ def test_pipeline_in_search_mode_with_mocked_api_calls(repo_dirpath, config_file
     )
 
     config = _load_config(config_filepath)
+    input_dirpath = pathlib.Path(config["input_dir"])
     output_dirpath = pathlib.Path(config["output_dir"])
 
     # Check (some of) the expected output files.
@@ -118,12 +156,25 @@ def test_pipeline_in_search_mode_with_mocked_api_calls(repo_dirpath, config_file
         # (not sure we can do a literal comparison because of timestamps, umap stochasticity, etc.)
         assert filepath.exists()
 
-    # Check that the shape of the all-by-all similarity matrix is correct;
-    # there should be 11 structures clustered by foldseek
-    # (the 10 determined by the `max_structures` config param, plus the input structure),
-    # so the dataframe should have 11 rows and 12 columns (since the first column is the index).
+    # Check that the shape of the all-by-all similarity matrix is correct: the
+    # structures foldseek clustered are the `max_structures` the cohort admits
+    # plus the query structures staged as input.
+    #
+    # Both terms are derived, not written out. They were `11` and `12` here and
+    # a bare `+ 1` in `test_parity.py`, so adding a second query structure to
+    # the fixture, or changing `max_structures` in the config above, would have
+    # failed this test in a way that says nothing about the pipeline.
+    # `test_pipeline_in_cluster_mode.py` already counts its inputs this way.
+    num_structures = config["max_structures"] + len(list(input_dirpath.glob("*.pdb")))
     similarity_matrix_filepath = (
         output_dirpath / "foldseek_clustering_results" / "all_by_all_tmscore_pivoted.tsv"
     )
     similarity_matrix = pd.read_csv(similarity_matrix_filepath, sep="\t")
-    assert similarity_matrix.shape == (11, 12)
+    # One row and one column per structure, plus one column for the index.
+    assert similarity_matrix.shape == (num_structures, num_structures + 1)
+
+    domain_html_name = f"{config['analysis_name']}_leiden_similarity_domain.html"
+    domain_html = output_dirpath / "final_results" / domain_html_name
+    assert not domain_html.exists()
+    domain_structs = output_dirpath / "domain_path" / "domain_structures"
+    assert not domain_structs.exists() or not any(domain_structs.glob("*.pdb"))

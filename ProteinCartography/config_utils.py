@@ -1,5 +1,31 @@
 import enum
 import pathlib
+import sys
+
+#: The search modes the Foldseek API itself accepts.
+#:
+#: This list lives HERE, and not in `foldseek_apiquery` where it used to, for a
+#: reason that has nothing to do with tidiness. This module is imported while
+#: the Snakefile is being PARSED, and `foldseek_apiquery` imports `api_utils`,
+#: whose line 4 is `from bioservices import UniProt`. `envs/cartography_test.yml`
+#: -- the environment both CI workflows use -- does not ship bioservices, so
+#: reaching for this list from there made `snakemake -n` fail before it had
+#: resolved a single rule. Measured: HEAD exited 1 where the fork point exited 0.
+#: Keeping this module's imports to the standard library is what stops that, and
+#: `test_snakefile_parses_without_optional_dependencies.py` is what enforces it.
+SET_MODES = ["3diaa", "tmalign"]
+
+#: The subset the pipeline can actually run to completion.
+#:
+#: `tmalign` is a real Foldseek mode and the API serves it, but this pipeline
+#: cannot consume it: the cohort rule is EVD statistics -- an `evalue < 0.001`
+#: filter and a significance ranking -- and a TM-score carries no significance
+#: model. tmalign returns the same 21 columns in the same positions with
+#: different meanings, so `extract_foldseek_hits.py:86` and
+#: `hit_significance.py:147` both REFUSE such a file rather than rank it
+#: backwards. Accepting the value here and dying inside the rule is the exact
+#: failure this validator exists to prevent, so it is refused at parse time.
+RUNNABLE_MODES = ["3diaa"]
 
 
 class ProteinCartographyInputError(Exception):
@@ -57,14 +83,30 @@ def _get_protids(config):
             filepath for filepath in input_dir.glob("*") if filepath.suffix[1:].lower() == "pdb"
         ]
 
-        # check that there is at least a reasonable number of PDB files provided
-        # (enough that it makes sense to do the clustering)
-        # TODO (KC): decide on a less arbitrary minimum number of PDBs
-        min_num_pdb_files = 10
-        if len(input_pdb_filepaths) < min_num_pdb_files:
+        # The pipeline clusters proteins by their pairwise structural similarity, so the
+        # only hard requirement is that there is at least one pair to compare; with zero or
+        # one structure there is no all-by-all matrix to build and no map to make.
+        # Below that, nothing downstream needs a larger cohort: `leiden_clustering` collapses
+        # to a single cluster for N < 3 and `dim_reduction` falls back to a small-N layout,
+        # both of which degrade on their own terms rather than failing. A larger cohort is
+        # therefore advice, not a requirement, and is reported as a warning so that small
+        # (but valid) inputs -- including the shipped 11-structure demo -- can still run.
+        min_num_pdb_files = 2
+        advisory_num_pdb_files = 10
+
+        num_pdb_files = len(input_pdb_filepaths)
+        if num_pdb_files < min_num_pdb_files:
             raise ProteinCartographyInputError(
-                f"In 'cluster' mode, at least {min_num_pdb_files} PDB files must be provided "
-                "in the input directory."
+                "In 'cluster' mode, the pipeline clusters proteins by their pairwise "
+                f"structural similarity, so at least {min_num_pdb_files} PDB files must be "
+                f"provided in the input directory (found {num_pdb_files})."
+            )
+        if num_pdb_files < advisory_num_pdb_files:
+            print(
+                f"Warning: only {num_pdb_files} PDB files were found in the input directory. "
+                "The pipeline will run, but clustering and dimensionality reduction are "
+                f"unlikely to be informative for fewer than {advisory_num_pdb_files} proteins.",
+                file=sys.stderr,
             )
 
         # in cluster mode, the 'key' protids are user-defined
@@ -119,3 +161,73 @@ def _get_features_override_file(config):
     if not features_override_file.is_file():
         features_override_file = ""
     return features_override_file
+
+
+def _get_domain_map(config) -> str:
+    """``auto`` (default) runs the domain DAG only for multi-domain queries; ``off`` never does."""
+    value = str(config.get("domain_map", "auto")).strip().lower()
+    if value not in {"auto", "off"}:
+        raise ProteinCartographyInputError("domain_map must be 'auto' or 'off'.")
+    return value
+
+
+def _get_foldseek_mode(config) -> str:
+    """Which Foldseek search to run, validated at config-parse time.
+
+    Checked here rather than where it is used, for the reason
+    `SIGNIFICANCE_MEASURES` gives: a typo must fail before a four-hour search,
+    not after it. `foldseek_apiquery.py` does check the value, but it checks it
+    inside the rule, once per query protein, after the DAG has been built.
+
+    Validated against `RUNNABLE_MODES`, not `SET_MODES`. The two differ, and the
+    difference is the point: the API accepts `tmalign` and this pipeline cannot
+    consume it, so accepting it here bought a config that parsed and then died
+    downstream -- late, and after the expensive search in a real run. The error
+    names the mode rather than pretending it does not exist, because it is a
+    documented Foldseek mode and a user who asked for it deserves to be told why
+    it is refused rather than that it is a typo.
+
+    This function no longer imports `foldseek_apiquery`. It used to, deferred
+    into the body with a docstring explaining that the deferral kept the
+    Snakefile free of a parse-time dependency on the HTTP stack. The deferral
+    achieved nothing: `Snakefile:167` CALLS this function while the Snakefile is
+    being parsed, which triggered the very import it was written to avoid, and
+    broke `snakemake -n` outright in any environment without bioservices. A
+    comment stating an invariant does not enforce it.
+    """
+    value = str(config.get("foldseek_mode", "3diaa")).strip()
+    if value not in RUNNABLE_MODES:
+        detail = (
+            " That is a real Foldseek mode and the API serves it, but this pipeline"
+            " cannot interpret its output: it returns the same 21 columns in the same"
+            " positions with different meanings -- the column named 'evalue' holds a"
+            " TM-score -- and the cohort rule downstream is e-value statistics, which a"
+            " TM-score has no equivalent of. extract_foldseek_hits.py and"
+            " hit_significance.py both refuse such a file rather than rank it backwards."
+            if value in SET_MODES
+            else ""
+        )
+        raise ProteinCartographyInputError(
+            f"foldseek_mode must be one of {RUNNABLE_MODES}; got {value!r}.{detail}"
+        )
+    return value
+
+
+def _get_user_domains_file(config) -> str:
+    """Optional TSV of parent_protid + chopping (or start/end). Empty string if unset."""
+    name = config.get("user_domains_file") or ""
+    if not name:
+        return ""
+    path = pathlib.Path(config["input_dir"]) / name
+    if not path.is_file():
+        raise ProteinCartographyInputError(
+            f"user_domains_file {path} does not exist. The file is resolved relative to input_dir."
+        )
+    return str(path)
+
+
+def _get_min_domain_length(config) -> int:
+    try:
+        return int(config.get("min_domain_length", 30))
+    except (TypeError, ValueError):
+        return 30

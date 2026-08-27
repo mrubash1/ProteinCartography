@@ -16,7 +16,7 @@ Comparing protein structures across organisms can help us generate interesting b
 
 Our pipeline starts with user-provided protein(s) of interest and searches the available sequence and structure databases for matches. Using the full list of matches, we can build a "map" of all the similar proteins and look for clusters of proteins with similar features. Overlaying a variety of different parameters such as taxonomy, sequence divergence, and other features onto these spaces allows us to explore the features that drive differences between clusters.
 
-Because this tool is based on global structural comparisons, note that the results are not always useful for long proteins (>1200 amino acids), multi-domain proteins, or proteins with large unstructured regions. Additionally, while we find that the results for average length, well-structured proteins appear generally as expected, we have not yet comprehensively validated the clustering parameters, so users may find that different parameters work better for their specific analyses.
+Because this tool is based on global structural comparisons, note that the results are not always useful for long proteins (>1200 amino acids), multi-domain proteins, or proteins with large unstructured regions. For multi-domain queries, the pipeline can also run a **parallel domain map** (see [Domain maps](#domain-maps)). Additionally, while we find that the results for average length, well-structured proteins appear generally as expected, we have not yet comprehensively validated the clustering parameters, so users may find that different parameters work better for their specific analyses.
 
 ## Quickstart
 
@@ -167,6 +167,18 @@ In this mode, the pipeline starts with a folder containing PDBs of interest and 
 snakemake --configfile config.yml --use-conda --cores n
 ```
 
+### Domain maps
+
+The protein search and map always run as described above. If a **query** protein has two or more structural domains, the pipeline also runs a **parallel domain path** that does not change protein-path inputs, directories, or filenames.
+
+- **Gate:** [TED](https://ted.cathdb.info/) (The Encyclopedia of Domains) is queried for each input UniProt accession, or you can supply `user_domains_file` (a TSV with `parent_protid` and `chopping`, or `start`/`end`). Spans shorter than `min_domain_length` (default 30) are ignored. The domain path starts only when at least one query has two or more kept domains.
+- **Single-domain queries:** the domain path does not run. There is no extra BLAST/Foldseek, no `*_domain.html`, and the protein map is unchanged. Set `domain_map: off` to force this skip even for multi-domain queries.
+- **When gated on:** each query domain is cropped (`{accession}__d01`, …) and searched with BLAST and Foldseek independently. Hits are unioned, downloaded, and TED-cropped. Clustering uses the same Foldseek/Leiden/plot scripts on those domain PDBs.
+- **Outputs:** `{analysis_name}_*_domain.html` / `.tsv` / `.pdf` in `final_results/`, plus `domain_path/` and `foldseek_clustering_results_domain/`. Protein `final_results` names are unchanged.
+- A TED failure on a query — an HTTP error, or boundaries this cohort's files cannot satisfy — is treated as “not multi-domain” and does not fail the protein pipeline; the accession and the reason are printed on stderr. Hit accessions with no TED assignment are omitted from the domain map only.
+
+TED: Lau et al., Science 386, eadq4946 (2024). https://doi.org/10.1126/science.adq4946
+
 ## Directory Structure
 
 - [Snakefile](Snakefile): the Snakemake pipeline that orchestrates this repo's functions.
@@ -175,6 +187,47 @@ snakemake --configfile config.yml --use-conda --cores n
 - [demo/](demo/): contains demo configs and input files for running the pipeline in both 'search' and 'cluster' modes.
 - [ProteinCartography/](ProteinCartography/): scripts that are called by Snakemake, importable in Python.
 - [pub/](pub/): files related to the ProteinCartography pub.
+
+## Multi-space cartography (optional)
+
+The pipeline above produces one map: proteins arranged by structural similarity.
+**Multi-space cartography is an optional layer that produces several maps of the
+same proteins and compares them.** It is entirely opt-in — a config without a
+`spaces:` key runs exactly as it always has, and the default output is
+byte-identical.
+
+Three concepts:
+
+- A **block** is one measurement of the proteins — an `(N, D)` feature matrix or
+  a precomputed distance. Four ship: `tmscore` (the existing TM-score path),
+  `threedi` (Foldseek 3Di k-mer profiles), `biophys` (physicochemical
+  descriptors) and `domains` (InterPro/Pfam architecture).
+- A **space** is a geometry built from one or more blocks, optionally *fused*,
+  and reduced for display.
+- A **view** is one rendering of a space.
+
+Several spaces over one shared `protid` index can be displayed side by side and
+compared pairwise — neighborhood Jaccard, rank correlation, Procrustes
+disparity, and cluster-assignment ARI — or combined into a single geometry, but
+only when a config asks for it explicitly.
+
+**Every space carries diagnostics saying what it cannot be read for**, and they
+run unconditionally rather than behind a flag. That is the part worth knowing
+before using any of this: a caveat you have to opt into is read only by people
+who already suspected the problem.
+
+| document | what it is for |
+|---|---|
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | the map: module layout, on-disk layout, data flow, and the ten contracts |
+| [docs/INTERPRETING.md](docs/INTERPRETING.md) | **read this before reading a map.** What a distance licenses and what it does not, and how to read each of the nine diagnostics |
+| [docs/EXTENDING.md](docs/EXTENDING.md) | adding your own block from a separate package, without editing this repository |
+| [docs/adr/](docs/adr/) | fifteen decision records, each with the alternatives that were rejected and why |
+
+A runnable example is in [demo/multispace/](demo/multispace/), which builds four
+co-registered spaces and three fused ones from the same inputs as the actin
+demo. Its config is annotated with what the diagnostics actually report on
+eleven proteins — which is largely *"this cohort is too small to support these
+maps"*, stated in numbers.
 
 ## Pipeline Overview
 
@@ -435,6 +488,9 @@ For either custom proteins provided through `override_file` in either mode, or b
 | feature | example | description | source |
 |--------:|:-------:|:------------|:-------|
 |`"protid"` | `"P42212"` | *(Required)* the unique identifier of the protein. Usually the UniProt accession, but can be any alphanumeric string | User-provided or UniProt |
+|`"parent_protid"` | `"P42212"` | *(Hovertext, domain map)* parent protein of a domain instance (`P42212__d01`) | TED / user TSV |
+|`"chopping"` | `"22-141"` | *(Hovertext, domain map)* 1-based residue span(s); discontinuous domains use `_` | TED / user TSV |
+|`"cath_label"` | `"1.10.530.10"` | *(Plotting, domain map)* CATH assignment from TED | TED |
 |`"Protein names"`| `"Green fluorescent protein"` | *(Hovertext)* a human-readable description of the protein | UniProt |
 |`"Gene Names (primary)"` | `"GFP"` | *(Hovertext)* a gene symbol for the protein | UniProt |
 |`"Annotation"`| `5` | *(Plotting)* UniProt [Annotation Score](https://www.uniprot.org/help/annotation_score) (0 to 5) | UniProt |
@@ -448,7 +504,6 @@ For either custom proteins provided through `override_file` in either mode, or b
 The pipeline uses a variety of conda environments to manage software dependencies.
 The major conda environments are:
 - `cartography_tidy`: used to run the pipeline. Includes only dependencies necessary to start the snakemake pipeline, which builds additional environments as needed based on each rule.
-- `cartography_dev`: used for development. Includes all dependencies for every of the snakemake pipeline and Python package dependencies together in one environment, plus dependencies for development support (e.g. `jupyter`, `ipython`) and experimental features not yet implemented in the main pipeline (e.g. `pytorch`).
 - `cartography_pub`: used to run the Jupyter notebooks in the `pub/` directory. Includes just the dependencies needed to run the notebooks.
 
 ## Contributing

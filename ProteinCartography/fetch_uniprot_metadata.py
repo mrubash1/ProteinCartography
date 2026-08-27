@@ -22,7 +22,7 @@ if os.environ.get("PROTEINCARTOGRAPHY_SHOULD_USE_MOCKS") == "true":
 
     mocks.mock_bioservices_uniprot_search()
 
-__all__ = ["query_uniprot"]
+__all__ = ["OPTIONAL_FIELDS", "OPTIONAL_FIELDS_DICT", "fields_for", "query_uniprot"]
 
 REQUIRED_FIELDS_DICT = {
     "Entry": "accession",
@@ -49,9 +49,29 @@ OTHER_FIELDS_DICT = {
     "Pfam": "xref_pfam",
     "InterPro": "xref_interpro",
 }
+#: Fields UniProt will return that this pipeline does NOT request by default,
+#: mapped to the exact header each one comes back as.
+#:
+#: THE HEADER STRINGS ARE THE POINT, and they are verified rather than typed.
+#: A header spelled from memory does not fail -- `enrich_clusters` reports the
+#: column absent and the run reads as a clean refusal, forever. Both were read
+#: off a live `GET /uniprotkb/accessions?fields=accession,ec,cc_subcellular_location`
+#: for P60709 on 2026-08-24, which returned exactly `EC number` and
+#: `Subcellular location [CC]`.
+#:
+#: Reachable today with `uniprot_additional_fields: [ec, cc_subcellular_location]`
+#: in a config; the default is `[]`, so nothing here changes what a default run
+#: fetches. FOLLOWUPS #35 recorded these two categories as having no data
+#: source, which was true of the default and never true of the pipeline.
+OPTIONAL_FIELDS_DICT = {
+    "EC number": "ec",
+    "Subcellular location [CC]": "cc_subcellular_location",
+}
+
 DEFAULT_FIELDS_DICT = REQUIRED_FIELDS_DICT | OTHER_FIELDS_DICT
 REQUIRED_FIELDS = list(REQUIRED_FIELDS_DICT.values())
 DEFAULT_FIELDS = list(DEFAULT_FIELDS_DICT.values())
+OPTIONAL_FIELDS = list(OPTIONAL_FIELDS_DICT.values())
 
 UNIPROT_ACCESSIONS = "https://rest.uniprot.org/uniprotkb/accessions"
 BATCH_SIZE = int(os.environ.get("PC_UNIPROT_META_BATCH", "100"))
@@ -257,13 +277,34 @@ def query_uniprot(
     return df
 
 
+def fields_for(additional_fields) -> list:
+    """The field ids this run asks UniProt for: the defaults, plus whatever the
+    config added.
+
+    Extracted from `main` so it can be checked without a network call. The
+    thing worth checking is unglamorous -- that `--additional-fields` actually
+    reaches the `fields` parameter of the request -- because if it did not, the
+    columns would simply never arrive and every downstream consumer would
+    report them absent, which is indistinguishable from not having asked.
+
+    `None` and `[]` behave alike: `nargs="*"` yields `[]` for a bare `-a`, and
+    neither should add anything.
+    """
+    fields = list(DEFAULT_FIELDS)
+    if additional_fields:
+        fields += list(additional_fields)
+    return fields
+
+
 def main():
     args = parse_args()
     service = UniProtService(args.service)
-    fields = list(DEFAULT_FIELDS)
-    if args.additional_fields is not None:
-        fields += args.additional_fields
-    query_uniprot(args.input, args.output, fields=fields, service=service)
+    query_uniprot(
+        args.input,
+        args.output,
+        fields=fields_for(args.additional_fields),
+        service=service,
+    )
 
 
 if __name__ == "__main__":

@@ -4,7 +4,7 @@ import os
 import subprocess
 from pathlib import Path
 
-from foldseek_clustering import pivot_foldseek_results
+from foldseek_clustering import pivot_foldseek_results, run_tmscore_pass
 
 __all__ = [
     "run_foldseek_clustering",
@@ -56,8 +56,11 @@ def run_foldseek_clustering(
     Puts temporary files in a temp_folder
     (called `temp` in the results_folder if not specified explicity.)
 
-    TODO (KC): Consider de-duplicating this method and `foldseek_clustering.run_foldseek_clustering`
-    as it is nearly identical to this method.
+    The three foldseek calls it shares with
+    `foldseek_clustering.run_foldseek_clustering` are now
+    `foldseek_clustering.run_tmscore_pass`; what is left here is the part that
+    genuinely differs -- a target database built from a folder, an exhaustive
+    search, and no clustering step.
 
     Args:
         query_database (str): path to the Foldseek database of the query .pdb files.
@@ -88,45 +91,15 @@ def run_foldseek_clustering(
     db_prefix_target = temp_path / "temp_db_target"
     subprocess.run(["foldseek", "createdb", target_path, db_prefix_target])
 
-    foldseek_out_query_vs_target = temp_path / "query_vs_target"
-    foldseek_tmp_query_vs_target = temp_path / "tmp_query_vs_target"
-    subprocess.run(
-        [
-            "foldseek",
-            "search",
-            query_path,
-            db_prefix_target,
-            foldseek_out_query_vs_target,
-            foldseek_tmp_query_vs_target,
-            "-a",
-            "--exhaustive-search",
-        ]
+    return run_tmscore_pass(
+        query_path,
+        db_prefix_target,
+        temp_path / "query_vs_target",
+        temp_path / "tmp_query_vs_target",
+        temp_path / "key_protid_tmscores.tsv",
+        foldseek_distances_tsv_query_vs_target,
+        exhaustive=True,
     )
-
-    foldseek_tmscore_query_vs_target = temp_path / "key_protid_tmscores.tsv"
-    subprocess.run(
-        [
-            "foldseek",
-            "aln2tmscore",
-            query_path,
-            db_prefix_target,
-            foldseek_out_query_vs_target,
-            foldseek_tmscore_query_vs_target,
-        ]
-    )
-
-    subprocess.run(
-        [
-            "foldseek",
-            "createtsv",
-            query_path,
-            db_prefix_target,
-            foldseek_tmscore_query_vs_target,
-            foldseek_distances_tsv_query_vs_target,
-        ]
-    )
-
-    return str(foldseek_distances_tsv_query_vs_target)
 
 
 def main():

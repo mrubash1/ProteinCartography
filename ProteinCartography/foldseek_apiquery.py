@@ -18,8 +18,14 @@ https://search.foldseek.com/api/ticket
 # only import these functions when using import *
 __all__ = ["foldseek_apiquery"]
 
-# Possible align mode options from API
-SET_MODES = ["3diaa", "tmalign"]
+# Possible align mode options from API.
+#
+# Defined in `config_utils` and imported here rather than the other way round.
+# The Snakefile validates the configured mode at parse time, so whichever module
+# owns this list is imported during parsing -- and this one reaches bioservices
+# through `api_utils`, which the CI environment does not have. The dependency
+# points this way so that a parse never touches the HTTP stack.
+from config_utils import SET_MODES  # noqa: E402
 
 # Possible databases options from API
 SET_DATABASES = [
@@ -52,7 +58,16 @@ def parse_args():
         "-m",
         "--mode",
         default="3diaa",
-        help=" | ".join([f"'{mode}'" for mode in SET_MODES]),
+        help=(
+            "Search mode: " + " | ".join([f"'{mode}'" for mode in SET_MODES]) + ". "
+            "THE PIPELINE RUNS '3diaa' and passes it explicitly from `foldseek_mode` "
+            "in the config. Nothing in the output distinguishes the two: tmalign "
+            "returns the same 21 columns in the same positions, with the column named "
+            "'evalue' holding a TM-score and 'bits' holding roughly that times 100. So "
+            "a file produced under the wrong mode cannot be identified with certainty "
+            "afterwards, and both `extract_foldseek_hits.py` and `hit_significance.py` "
+            "refuse one whose columns are tmalign-shaped."
+        ),
     )
     parser.add_argument(
         "-d",

@@ -1,4 +1,24 @@
 #!/usr/bin/env python
+"""Concordance between TM-score and fraction sequence identity, per protein.
+
+**Superseded, and deliberately still here.** `coregistration.neighborhood_jaccard`
+answers the same question in a defensible quantity; this module and its output
+column are kept because the existing plotting vocabulary depends on them and
+nothing in a large refactor should remove a working feature (invariant I6).
+Prefer the new metric for new work. See ADR 0011.
+
+What is wrong with this one: `linear_concordance` subtracts a fraction sequence
+identity from a TM-score. Both are numbers in `[0, 1]` and neither is on the
+other's scale -- a TM-score of 0.5 and a 50% sequence identity are not
+comparable quantities -- so the difference has no unit, no meaningful zero, and
+no defensible comparison between two proteins. It nonetheless reads like a
+measurement, and it is a column in the final results.
+
+The replacement compares the two kinds of evidence by asking whether they put
+the *same proteins* next to a given protein, which is a ratio of set sizes and
+therefore comparable across proteins, spaces and runs.
+"""
+
 import argparse
 
 import pandas as pd
