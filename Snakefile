@@ -1099,6 +1099,16 @@ rule leiden_clustering:
         "envs/analysis.yml"
     benchmark:
         BENCHMARKS_DIR / "leiden_clustering.txt"
+    # This clusters the RAW all-versus-all matrix. `diagnose_space` clusters the
+    # same matrix AFTER `reduce_space.fuse_blocks` applies the block's declared
+    # `unit_mean_distance`, so the two paths see inputs differing by a positive
+    # scalar -- 19.851134 on the actin production cohort.
+    #
+    # That is safe only because a scalar cannot change a partition. When that
+    # stopped being true the two paths silently wrote a 6-cluster and a
+    # 13-cluster partition of identical data into one output tree. See
+    # docs/FOLLOWUPS.md #105 and #106; the invariant is held up by
+    # `test_a_partition_does_not_depend_on_the_scale_of_its_input`.
     shell:
         """
         python ProteinCartography/leiden_clustering.py \

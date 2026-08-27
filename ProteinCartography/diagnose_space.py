@@ -418,6 +418,18 @@ def _own_partition(space_id, fused, protids, space_dir):
     if len(protids) < MIN_CLUSTERABLE:
         _skip(f"{space_id}: {len(protids)} proteins is too few to cluster")
         return None
+    # `fused.values` is POST-normalization: `reduce_space.fuse_blocks` has
+    # already applied the block's declared `spec.normalization`, so for the
+    # tmscore block this clusters the matrix divided by its mean pairwise
+    # distance -- 19.851134 on the actin production cohort. The legacy
+    # `leiden_clustering` rule clusters the same matrix RAW.
+    #
+    # That is deliberate and it is safe only because a positive scalar cannot
+    # change a partition. When that stopped being true it put a 6-cluster and a
+    # 13-cluster partition of identical data in one output tree; see
+    # docs/FOLLOWUPS.md #105 and #106, and
+    # `test_a_partition_does_not_depend_on_the_scale_of_its_input`, which is the
+    # test that holds this up.
     try:
         partition = leiden_partition(np.asarray(fused.values, dtype=np.float64), protids)
     except ClusteringError as error:

@@ -420,3 +420,59 @@ def test_the_installed_numba_computes_umaps_kernel_correctly():
             f"{compiled[0]} where umap's own uncompiled source returns {reference[0]}. "
             "The compiler changed the meaning of the function."
         )
+
+
+@needs_scanpy
+@pytest.mark.slow
+def test_a_partition_does_not_depend_on_the_scale_of_its_input():
+    """Multiplying every distance by a positive constant cannot move a protein
+    into a different cluster. FOLLOWUPS #106.
+
+    This is not a nicety, it is what makes the pipeline's two clustering paths
+    legitimate. `Snakefile`'s `leiden_clustering` rule clusters the raw TM-score
+    matrix; `diagnose_space` clusters the same matrix after
+    `reduce_space.fuse_blocks` has applied the block's declared
+    `unit_mean_distance` -- on the actin production cohort, the same numbers
+    divided by 19.851134. Two partitions of one matrix are only defensible if
+    the scalar cannot change the answer.
+
+    It did. Under numba 0.66.0 the miscompiled `smooth_knn_dist` (#105) returns
+    `sigma = +inf` for rows whose distances are large relative to umap's
+    hard-coded bisection seed `mid = 1.0`, so WHICH rows saturate is a function
+    of the scale. On the production cohorts that put a 6-cluster partition and a
+    13-cluster partition of identical data in the same output tree.
+
+    **THE OBVIOUS FIXTURE FOR THIS TEST CANNOT FAIL, and that is worth keeping
+    rather than quietly replacing.** Three well-separated blobs at n=249 pass on
+    a BROKEN toolchain at every scale: Leiden recovers obvious structure even
+    from a saturated graph. Measured. The fixture below is many weakly-separated
+    blobs, which is what a protein cohort looks like, and it separates the two
+    toolchains cleanly:
+
+        numba 0.66.0   scale 1 -> 11 clusters (92 of 300 rows saturated)
+                       scale 40 ->  8 clusters (300 of 300)   ARI 0.7871
+        numba 0.60.0   scale 1 -> 12 clusters (0 saturated)
+                       scale 40 -> 12 clusters (0)            ARI 1.0000
+
+    Note the broken toolchain is already corrupted at scale 1 -- it simply does
+    not change the answer there. Only comparing across scales exposes it, which
+    is the whole point of asserting an invariant rather than a value.
+    """
+    rng = np.random.default_rng(0)
+    n_blobs, per_blob = 12, 25
+    centres = rng.normal(0, 1.5, (n_blobs, 20))
+    values = np.vstack([c + rng.normal(0, 1, (per_blob, 20)) for c in centres])
+    protids = [f"p{i}" for i in range(len(values))]
+
+    reference = leiden_partition(values, protids).as_mapping()
+    scaled = leiden_partition(values * 40.0, protids).as_mapping()
+
+    disagreed = [p for p in protids if reference[p] != scaled[p]]
+    assert not disagreed, (
+        f"{len(disagreed)} of {len(protids)} proteins changed cluster when every "
+        "distance was multiplied by 40. A positive scalar cannot change a partition, "
+        "so this is the clustering stack disagreeing with itself -- check the "
+        "toolchain probe in this file first (FOLLOWUPS #105), then that the two "
+        "pipeline paths still agree (FOLLOWUPS #106)."
+    )
+    assert len(set(reference.values())) == len(set(scaled.values()))
